@@ -16,6 +16,7 @@
 #include "gxp-mailbox-driver.h"
 #include "gxp-mcu.h"
 #include "gxp-uci.h"
+#include "gxp.h"
 
 #define CIRCULAR_QUEUE_WRAP_BIT BIT(15)
 
@@ -368,4 +369,77 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_uci_command *cmd,
 err_free_resp:
 	kfree(async_uci_resp);
 	return ret;
+}
+
+int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
+				u64 *resp_seq, u32 *resp_retval,
+				u16 *error_code)
+{
+	long timeout;
+	struct gxp_async_response *async_resp;
+	struct gxp_uci_async_response *uci_async_resp;
+
+	spin_lock_irq(&uci_resp_queue->lock);
+
+	/*
+	 * The "exclusive" version of wait_event is used since each wake
+	 * corresponds to the addition of exactly one new response to be
+	 * consumed. Therefore, only one waiting responsecan ever proceed
+	 * per wake event.
+	 */
+	timeout = wait_event_interruptible_lock_irq_timeout_exclusive(
+		uci_resp_queue->waitq, !list_empty(&uci_resp_queue->queue),
+		uci_resp_queue->lock, msecs_to_jiffies(MAILBOX_TIMEOUT));
+	if (timeout <= 0) {
+		spin_unlock_irq(&uci_resp_queue->lock);
+		/* unusual case - this only happens when there is no command pushed */
+		return timeout ? -ETIMEDOUT : timeout;
+	}
+	async_resp = list_first_entry(&uci_resp_queue->queue,
+				      struct gxp_async_response, list_entry);
+	uci_async_resp = container_of(async_resp, struct gxp_uci_async_response,
+				      async_response);
+
+	/* Pop the front of the response list */
+	list_del(&(async_resp->list_entry));
+
+	spin_unlock_irq(&uci_resp_queue->lock);
+
+	*resp_seq = uci_async_resp->resp.seq;
+	switch (uci_async_resp->resp.code) {
+	case GXP_RESP_OK:
+		*error_code = GXP_RESPONSE_ERROR_NONE;
+		/* payload is only valid if code == GXP_RESP_OK */
+		*resp_retval = uci_async_resp->resp.payload;
+		break;
+	case GXP_RESP_CANCELLED:
+		*error_code = GXP_RESPONSE_ERROR_TIMEOUT;
+		break;
+	default:
+		/* No other code values are valid at this point */
+		dev_err(uci_async_resp->uci->gxp->dev,
+			"Completed response had invalid code %hu\n",
+			uci_async_resp->resp.code);
+		*error_code = GXP_RESPONSE_ERROR_INTERNAL;
+		break;
+	}
+
+	/*
+	 * We must be absolutely sure the timeout work has been cancelled
+	 * and/or completed before freeing the async response object.
+	 * There are 3 possible cases when we arrive at this point:
+	 *   1) The response arrived normally and the timeout was cancelled
+	 *   2) The response timedout and its timeout handler finished
+	 *   3) The response handler and timeout handler raced, and the response
+	 *      handler "cancelled" the timeout handler while it was already in
+	 *      progress.
+	 *
+	 * This call handles case #3, and ensures any in-process timeout
+	 * handler (which may reference the `gxp_async_response`) has
+	 * been able to exit cleanly.
+	 */
+	gcip_mailbox_cancel_async_resp_timeout(uci_async_resp->async_gcip_resp);
+	gcip_mailbox_release_async_resp(uci_async_resp->async_gcip_resp);
+
+	return 0;
 }

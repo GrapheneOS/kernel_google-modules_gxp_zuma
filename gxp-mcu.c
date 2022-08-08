@@ -23,6 +23,8 @@ static int gxp_alloc_shared_buffer(struct gxp_dev *gxp, struct gxp_mcu *mcu)
 	const size_t size = GXP_SHARED_BUFFER_SIZE * GXP_NUM_CORES;
 	phys_addr_t paddr;
 	struct gxp_mapped_resource *res = &mcu->gxp->shared_buf;
+	size_t offset;
+	void *vaddr;
 
 	paddr = gcip_mem_pool_alloc(&mcu->remap_data_pool, size);
 	if (!paddr)
@@ -30,6 +32,16 @@ static int gxp_alloc_shared_buffer(struct gxp_dev *gxp, struct gxp_mcu *mcu)
 	res->paddr = paddr;
 	res->size = size;
 	res->daddr = GXP_IOVA_SHARED_BUFFER;
+
+	/* clear shared buffer to make sure it's clean */
+	offset = gcip_mem_pool_offset(&mcu->remap_data_pool, paddr);
+	vaddr = offset + (mcu->fw.image_buf.vaddr + GXP_IREMAP_DATA_OFFSET);
+	memset(vaddr, 0, size);
+
+	ida_init(&gxp->shared_slice_idp);
+	gxp->num_shared_slices = GXP_SHARED_BUFFER_SIZE / GXP_SHARED_SLICE_SIZE;
+	gxp->shared_slice_size = GXP_SHARED_SLICE_SIZE;
+
 	return 0;
 }
 
@@ -37,6 +49,7 @@ static void gxp_free_shared_buffer(struct gxp_mcu *mcu)
 {
 	struct gxp_mapped_resource *res = &mcu->gxp->shared_buf;
 
+	ida_destroy(&mcu->gxp->shared_slice_idp);
 	gcip_mem_pool_free(&mcu->remap_data_pool, res->paddr, res->size);
 }
 

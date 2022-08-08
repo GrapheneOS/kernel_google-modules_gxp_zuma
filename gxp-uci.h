@@ -136,4 +136,14 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_uci_command *cmd,
 			 wait_queue_head_t *queue_waitq,
 			 struct gxp_eventfd *eventfd);
 
+/*
+ * gxp_uci_wait_async_response() - API for waiting and fetching a response from
+ * MCU firmware.
+ *
+ * Returns 0 on success, a negative errno on failure.
+ */
+int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
+				u64 *resp_seq, u32 *resp_retval,
+				u16 *error_code);
+
 #endif /* __GXP_UCI_H__ */

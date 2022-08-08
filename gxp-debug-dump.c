@@ -2,7 +2,7 @@
 /*
  * GXP debug dump handler
  *
- * Copyright (C) 2020 Google LLC
+ * Copyright (C) 2020-2022 Google LLC
  */
 
 #include <linux/bitops.h>
@@ -14,7 +14,7 @@
 #include <linux/string.h>
 #include <linux/workqueue.h>
 
-#if IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
+#if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
 #include <linux/platform_data/sscoredump.h>
 #endif
 
@@ -49,7 +49,11 @@ enum gxp_common_segments_idx {
 };
 
 /* Whether or not the debug dump subsystem should be enabled. */
+#if IS_ENABLED(CONFIG_GXP_TEST)
+static int gxp_debug_dump_enable = 1;
+#else
 static int gxp_debug_dump_enable;
+#endif
 module_param_named(debug_dump_enable, gxp_debug_dump_enable, int, 0660);
 
 static void gxp_debug_dump_cache_invalidate(struct gxp_dev *gxp)
@@ -297,7 +301,7 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 	return ret;
 }
 
-#if IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
+#if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
 static void gxp_send_to_sscd(struct gxp_dev *gxp, void *segs, int seg_cnt,
 			     const char *info)
 {
@@ -512,7 +516,7 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp, uint32_t core_id)
 		&core_dump->core_dump_header[core_id];
 	struct gxp_core_header *core_header = &core_dump_header->core_header;
 	int ret = 0;
-#if IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
+#if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
 	struct gxp_common_dump *common_dump = mgr->common_dump;
 	int i;
 	int seg_idx = 0;
@@ -529,7 +533,7 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp, uint32_t core_id)
 		goto out;
 	}
 
-#if IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
+#if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
 	/* Common */
 	data_addr = &common_dump->common_dump_data.common_regs;
 	for (i = 0; i < GXP_NUM_COMMON_SEGMENTS; i++) {
@@ -617,7 +621,7 @@ out:
 
 static int gxp_init_segments(struct gxp_dev *gxp)
 {
-#if !IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
+#if !(IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP))
 	return 0;
 #else
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
@@ -743,7 +747,7 @@ int gxp_debug_dump_init(struct gxp_dev *gxp, void *sscd_dev, void *sscd_pdata)
 	mgr->gxp = gxp;
 
 	mgr->buf.vaddr =
-		gxp_dma_alloc_coherent(gxp, NULL, 0, DEBUG_DUMP_MEMORY_SIZE,
+		gxp_dma_alloc_coherent(gxp, NULL, DEBUG_DUMP_MEMORY_SIZE,
 				       &mgr->buf.daddr, GFP_KERNEL, 0);
 	if (!mgr->buf.vaddr) {
 		dev_err(gxp->dev, "Failed to allocate memory for debug dump\n");
@@ -782,8 +786,8 @@ void gxp_debug_dump_exit(struct gxp_dev *gxp)
 	}
 
 	kfree(gxp->debug_dump_mgr->common_dump);
-	gxp_dma_free_coherent(gxp, NULL, 0, DEBUG_DUMP_MEMORY_SIZE,
-			      mgr->buf.vaddr, mgr->buf.daddr);
+	gxp_dma_free_coherent(gxp, NULL, DEBUG_DUMP_MEMORY_SIZE, mgr->buf.vaddr,
+			      mgr->buf.daddr);
 
 	mutex_destroy(&mgr->debug_dump_lock);
 	devm_kfree(mgr->gxp->dev, mgr);

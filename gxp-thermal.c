@@ -18,11 +18,13 @@
 #include <linux/thermal.h>
 #include <linux/version.h>
 
-// TODO(b/235433985): remove this workaround.
-// thermal_cdev_update is moved to drivers/thermal/thermal_core.h in kernel
-// 5.12. We need to fix the include when we want to upgrade our kernel version.
+/*
+ * thermal_cdev_update is moved to drivers/thermal/thermal_core.h in kernel
+ * 5.12. The symbol is still exported, manually declare the function prototype
+ * to get rid of the implicit declaration compilation error.
+ */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
-#define thermal_cdev_update(...)
+void thermal_cdev_update(struct thermal_cooling_device *cdev);
 #endif
 
 #include "gxp-internal.h"

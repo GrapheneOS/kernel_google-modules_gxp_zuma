@@ -204,12 +204,7 @@ int gxp_pm_blk_get_state_acpm(struct gxp_dev *gxp)
 
 int gxp_pm_blk_on(struct gxp_dev *gxp)
 {
-	int ret = 0;
-
-	if (WARN_ON(!gxp->power_mgr)) {
-		dev_err(gxp->dev, "%s: No PM found\n", __func__);
-		return -ENODEV;
-	}
+	int ret;
 
 	dev_info(gxp->dev, "Powering on BLK ...\n");
 	mutex_lock(&gxp->power_mgr->pm_lock);
@@ -232,10 +227,6 @@ int gxp_pm_blk_off(struct gxp_dev *gxp)
 {
 	int ret = 0;
 
-	if (WARN_ON(!gxp->power_mgr)) {
-		dev_err(gxp->dev, "%s: No PM found\n", __func__);
-		return -ENODEV;
-	}
 	dev_info(gxp->dev, "Powering off BLK ...\n");
 	mutex_lock(&gxp->power_mgr->pm_lock);
 	/*
@@ -263,10 +254,6 @@ int gxp_pm_get_blk_switch_count(struct gxp_dev *gxp)
 {
 	int ret;
 
-	if (!gxp->power_mgr) {
-		dev_err(gxp->dev, "%s: No PM found\n", __func__);
-		return -ENODEV;
-	}
 	mutex_lock(&gxp->power_mgr->pm_lock);
 	ret = gxp->power_mgr->blk_switch_count;
 	mutex_unlock(&gxp->power_mgr->pm_lock);
@@ -278,10 +265,6 @@ int gxp_pm_get_blk_state(struct gxp_dev *gxp)
 {
 	int ret;
 
-	if (!gxp->power_mgr) {
-		dev_err(gxp->dev, "%s: No PM found\n", __func__);
-		return -ENODEV;
-	}
 	mutex_lock(&gxp->power_mgr->pm_lock);
 	ret = gxp->power_mgr->curr_state;
 	mutex_unlock(&gxp->power_mgr->pm_lock);
@@ -291,12 +274,12 @@ int gxp_pm_get_blk_state(struct gxp_dev *gxp)
 
 int gxp_pm_core_on(struct gxp_dev *gxp, uint core, bool verbose)
 {
-	int ret = 0;
+	int ret;
 
-	/*
-	 * Check if TOP LPM is already on.
-	 */
-	WARN_ON(!gxp_lpm_is_initialized(gxp, LPM_TOP_PSM));
+	if (!gxp_lpm_is_initialized(gxp, LPM_TOP_PSM)) {
+		dev_err(gxp->dev, "unable to power on core without TOP powered");
+		return -EINVAL;
+	}
 
 	mutex_lock(&gxp->power_mgr->pm_lock);
 	ret = gxp_lpm_up(gxp, core);
@@ -313,18 +296,15 @@ int gxp_pm_core_on(struct gxp_dev *gxp, uint core, bool verbose)
 	return ret;
 }
 
-int gxp_pm_core_off(struct gxp_dev *gxp, uint core)
+void gxp_pm_core_off(struct gxp_dev *gxp, uint core)
 {
-	/*
-	 * Check if TOP LPM is already on.
-	 */
-	WARN_ON(!gxp_lpm_is_initialized(gxp, LPM_TOP_PSM));
+	if (!gxp_lpm_is_initialized(gxp, LPM_TOP_PSM))
+		return;
 
 	mutex_lock(&gxp->power_mgr->pm_lock);
 	gxp_lpm_down(gxp, core);
 	mutex_unlock(&gxp->power_mgr->pm_lock);
 	dev_notice(gxp->dev, "%s: Core %d down\n", __func__, core);
-	return 0;
 }
 
 static int gxp_pm_req_state_locked(struct gxp_dev *gxp,
@@ -344,39 +324,56 @@ static int gxp_pm_req_state_locked(struct gxp_dev *gxp,
 	}
 	if (state == AUR_OFF)
 		return 0;
-retry:
+
 	if (state != gxp->power_mgr->curr_state ||
 	    low_clkmux_vote != gxp->power_mgr->last_scheduled_low_clkmux) {
 		mutex_lock(&gxp->power_mgr->set_acpm_state_work_lock);
 
+		/* Look for an available worker */
 		for (i = 0; i < AUR_NUM_POWER_STATE_WORKER; i++) {
 			if (!gxp->power_mgr->set_acpm_state_work[i].using)
 				break;
 		}
-		/* The workqueue is full, wait for it  */
+
+		/*
+		 * If the workqueue is full, cancel the last scheduled worker
+		 * and use it for this request instead.
+		 */
 		if (i == AUR_NUM_POWER_STATE_WORKER) {
-			dev_warn(
-				gxp->dev,
-				"The workqueue for power state transition is full");
-			mutex_unlock(&gxp->power_mgr->set_acpm_state_work_lock);
-			mutex_unlock(&gxp->power_mgr->pm_lock);
-			flush_workqueue(gxp->power_mgr->wq);
-			mutex_lock(&gxp->power_mgr->pm_lock);
-			goto retry;
+			dev_dbg(gxp->dev,
+				"The workqueue for power state transition was full");
+			i = gxp->power_mgr->last_set_acpm_state_worker;
+			/*
+			 * The last worker's `prev_state` and `prev_low_clkmux`
+			 * fields are already set to the values this request
+			 * will be changing from.
+			 */
+		} else {
+			gxp->power_mgr->set_acpm_state_work[i].prev_state =
+				gxp->power_mgr->curr_state;
+			gxp->power_mgr->set_acpm_state_work[i].prev_low_clkmux =
+				gxp->power_mgr->last_scheduled_low_clkmux;
 		}
+
 		gxp->power_mgr->set_acpm_state_work[i].state = state;
 		gxp->power_mgr->set_acpm_state_work[i].low_clkmux =
 			low_clkmux_vote;
-		gxp->power_mgr->set_acpm_state_work[i].prev_state =
-			gxp->power_mgr->curr_state;
-		gxp->power_mgr->set_acpm_state_work[i].prev_low_clkmux =
-			gxp->power_mgr->last_scheduled_low_clkmux;
-		gxp->power_mgr->set_acpm_state_work[i].using = true;
-		queue_work(gxp->power_mgr->wq,
-			   &gxp->power_mgr->set_acpm_state_work[i].work);
 
+		/*
+		 * Schedule work to request the change, if not reusing an
+		 * already scheduled worker.
+		 */
+		if (!gxp->power_mgr->set_acpm_state_work[i].using) {
+			gxp->power_mgr->set_acpm_state_work[i].using = true;
+			queue_work(
+				gxp->power_mgr->wq,
+				&gxp->power_mgr->set_acpm_state_work[i].work);
+		}
+
+		/* Change the internal state */
 		gxp->power_mgr->curr_state = state;
 		gxp->power_mgr->last_scheduled_low_clkmux = low_clkmux_vote;
+		gxp->power_mgr->last_set_acpm_state_worker = i;
 
 		mutex_unlock(&gxp->power_mgr->set_acpm_state_work_lock);
 	}
@@ -525,33 +522,44 @@ static int gxp_pm_req_memory_state_locked(struct gxp_dev *gxp,
 			"Cannot request memory power state when BLK is off\n");
 		return -EBUSY;
 	}
-retry:
+
 	if (state != gxp->power_mgr->curr_memory_state) {
 		mutex_lock(&gxp->power_mgr->req_pm_qos_work_lock);
 
+		/* Look for an available worker */
 		for (i = 0; i < AUR_NUM_POWER_STATE_WORKER; i++) {
 			if (!gxp->power_mgr->req_pm_qos_work[i].using)
 				break;
 		}
-		/* The workqueue is full, wait for it  */
+
+		/*
+		 * If the workqueue is full, cancel the last scheduled worker
+		 * and use it for this request instead.
+		 */
 		if (i == AUR_NUM_POWER_STATE_WORKER) {
-			dev_warn(
-				gxp->dev,
-				"The workqueue for memory power state transition is full");
-			mutex_unlock(&gxp->power_mgr->req_pm_qos_work_lock);
-			mutex_unlock(&gxp->power_mgr->pm_lock);
-			flush_workqueue(gxp->power_mgr->wq);
-			mutex_lock(&gxp->power_mgr->pm_lock);
-			goto retry;
+			dev_dbg(gxp->dev,
+				"The workqueue for memory power state transition was full");
+			i = gxp->power_mgr->last_req_pm_qos_worker;
 		}
-		gxp->power_mgr->curr_memory_state = state;
+
 		int_val = aur_memory_state2int_table[state];
 		mif_val = aur_memory_state2mif_table[state];
 		gxp->power_mgr->req_pm_qos_work[i].int_val = int_val;
 		gxp->power_mgr->req_pm_qos_work[i].mif_val = mif_val;
-		gxp->power_mgr->req_pm_qos_work[i].using = true;
-		queue_work(gxp->power_mgr->wq,
-			   &gxp->power_mgr->req_pm_qos_work[i].work);
+
+		/*
+		 * Schedule work to request the change, if not reusing an
+		 * already scheduled worker.
+		 */
+		if (!gxp->power_mgr->req_pm_qos_work[i].using) {
+			gxp->power_mgr->req_pm_qos_work[i].using = true;
+			queue_work(gxp->power_mgr->wq,
+				   &gxp->power_mgr->req_pm_qos_work[i].work);
+		}
+
+		/* Change the internal state */
+		gxp->power_mgr->curr_memory_state = state;
+		gxp->power_mgr->last_req_pm_qos_worker = i;
 
 		mutex_unlock(&gxp->power_mgr->req_pm_qos_work_lock);
 	}

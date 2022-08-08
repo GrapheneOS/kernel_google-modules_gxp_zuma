@@ -352,11 +352,13 @@ typedef int (*execute_cmd_t)(struct gxp_mailbox *mailbox, u16 cmd_code,
  * Returns a non-zero value when error occurs while putting the command to the cmd_queue of
  * mailbox.
  */
-typedef int (*execute_cmd_async_t)(
-	struct gxp_mailbox *mailbox, struct mailbox_resp_queue *resp_queue,
-	u16 cmd_code, u8 cmd_priority, u64 cmd_daddr, u32 cmd_size,
-	u32 cmd_flags, uint gxp_power_state, uint memory_power_state,
-	bool requested_low_clkmux, struct gxp_eventfd *eventfd, u64 *cmd_seq);
+typedef int (*execute_cmd_async_t)(struct gxp_client *client,
+				   struct gxp_mailbox *mailbox, int virt_core,
+				   u16 cmd_code, u8 cmd_priority, u64 cmd_daddr,
+				   u32 cmd_size, u32 cmd_flags,
+				   uint gxp_power_state,
+				   uint memory_power_state,
+				   bool requested_low_clkmux, u64 *cmd_seq);
 
 /*
  * Called when waiting for an asynchronous response which is requested by `execute_cmd_async`.
@@ -367,7 +369,7 @@ typedef int (*execute_cmd_async_t)(
  *
  * Returns 0 if it succeed to get the response. Otherwise, returns a non-zero value as an error.
  */
-typedef int (*wait_async_resp_t)(struct mailbox_resp_queue *resp_queue,
+typedef int (*wait_async_resp_t)(struct gxp_client *client, int virt_core,
 				 u64 *resp_seq, u16 *resp_status,
 				 u32 *resp_retval, u16 *error_code);
 

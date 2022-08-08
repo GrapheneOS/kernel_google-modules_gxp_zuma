@@ -245,9 +245,7 @@ static int gxp_map_buffer(struct gxp_client *client,
 		goto out;
 	}
 
-	map = gxp_mapping_create(gxp, client->vd,
-				 BIT(client->vd->num_cores) - 1,
-				 ibuf.host_address, ibuf.size,
+	map = gxp_mapping_create(gxp, client->vd, ibuf.host_address, ibuf.size,
 				 /*gxp_dma_flags=*/0,
 				 mapping_flags_to_dma_dir(ibuf.flags));
 	if (IS_ERR(map)) {
@@ -434,11 +432,10 @@ gxp_mailbox_command_compat(struct gxp_client *client,
 	memory_power_state = AUR_MEM_UNDEFINED;
 
 	ret = gxp->mailbox_mgr->execute_cmd_async(
-		gxp->mailbox_mgr->mailboxes[phys_core],
-		&client->vd->mailbox_resp_queues[virt_core],
+		client, gxp->mailbox_mgr->mailboxes[phys_core], virt_core,
 		GXP_MBOX_CODE_DISPATCH, 0, ibuf.device_address, ibuf.size,
 		ibuf.flags, gxp_power_state, memory_power_state, false,
-		client->mb_eventfds[virt_core], &ibuf.sequence_number);
+		&ibuf.sequence_number);
 	if (ret) {
 		dev_err(gxp->dev, "Failed to enqueue mailbox command (ret=%d)\n",
 			ret);
@@ -543,12 +540,10 @@ static int gxp_mailbox_command(struct gxp_client *client,
 	requested_low_clkmux = (ibuf.power_flags & GXP_POWER_LOW_FREQ_CLKMUX) != 0;
 
 	ret = gxp->mailbox_mgr->execute_cmd_async(
-		gxp->mailbox_mgr->mailboxes[phys_core],
-		&client->vd->mailbox_resp_queues[virt_core],
+		client, gxp->mailbox_mgr->mailboxes[phys_core], virt_core,
 		GXP_MBOX_CODE_DISPATCH, 0, ibuf.device_address, ibuf.size,
 		ibuf.flags, gxp_power_state, memory_power_state,
-		requested_low_clkmux, client->mb_eventfds[virt_core],
-		&ibuf.sequence_number);
+		requested_low_clkmux, &ibuf.sequence_number);
 	if (ret) {
 		dev_err(gxp->dev, "Failed to enqueue mailbox command (ret=%d)\n",
 			ret);
@@ -597,10 +592,10 @@ static int gxp_mailbox_response(struct gxp_client *client,
 		goto out;
 	}
 
-	ret = gxp->mailbox_mgr->wait_async_resp(
-		&client->vd->mailbox_resp_queues[virt_core],
-		&ibuf.sequence_number, NULL, &ibuf.cmd_retval,
-		&ibuf.error_code);
+	ret = gxp->mailbox_mgr->wait_async_resp(client, virt_core,
+						&ibuf.sequence_number, NULL,
+						&ibuf.cmd_retval,
+						&ibuf.error_code);
 	if (ret)
 		goto out;
 
@@ -972,7 +967,6 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 	struct gxp_tpu_mbx_queue_ioctl ibuf;
 	struct edgetpu_ext_client_info gxp_tpu_info;
 	u32 phys_core_list = 0;
-	u32 virtual_core_list;
 	u32 core_count;
 	int ret = 0;
 
@@ -994,16 +988,8 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 
 	down_read(&gxp->vd_semaphore);
 
-	virtual_core_list = BIT(client->vd->num_cores) - 1;
-	core_count = hweight_long(virtual_core_list);
-	phys_core_list = gxp_vd_virt_core_list_to_phys_core_list(
-		client->vd, virtual_core_list);
-	if (!phys_core_list) {
-		dev_err(gxp->dev, "%s: invalid virtual core list 0x%x\n",
-			__func__, virtual_core_list);
-		ret = -EINVAL;
-		goto out;
-	}
+	core_count = client->vd->num_cores;
+	phys_core_list = gxp_vd_phys_core_list(client->vd);
 
 	mbx_info =
 		kmalloc(sizeof(struct edgetpu_ext_mailbox_info) + core_count *
@@ -1037,7 +1023,7 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 	mbx_info->cmdq_size = ALIGN(mbx_info->cmdq_size, PAGE_SIZE);
 	mbx_info->respq_size = ALIGN(mbx_info->respq_size, PAGE_SIZE);
 
-	ret = gxp_dma_map_tpu_buffer(gxp, client->vd, virtual_core_list,
+	ret = gxp_dma_map_tpu_buffer(gxp, client->vd->domain,
 				     phys_core_list, mbx_info);
 	if (ret) {
 		dev_err(gxp->dev, "%s: failed to map TPU mailbox buffer %d\n",
@@ -1049,7 +1035,6 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 		goto out_free;
 	}
 	client->mbx_desc.phys_core_list = phys_core_list;
-	client->mbx_desc.virt_core_list = virtual_core_list;
 	client->mbx_desc.cmdq_size = mbx_info->cmdq_size;
 	client->mbx_desc.respq_size = mbx_info->respq_size;
 	client->tpu_mbx_allocated = true;
@@ -1096,7 +1081,7 @@ static int gxp_unmap_tpu_mbx_queue(struct gxp_client *client,
 		goto out;
 	}
 
-	gxp_dma_unmap_tpu_buffer(gxp, client->vd, client->mbx_desc);
+	gxp_dma_unmap_tpu_buffer(gxp, client->vd->domain, client->mbx_desc);
 
 	gxp_tpu_info.tpu_fd = ibuf.tpu_fd;
 	ret = edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
@@ -1551,8 +1536,7 @@ static int gxp_map_dmabuf(struct gxp_client *client,
 		goto out_unlock;
 	}
 
-	mapping = gxp_dmabuf_map(gxp, client->vd, BIT(client->vd->num_cores) - 1,
-				 ibuf.dmabuf_fd,
+	mapping = gxp_dmabuf_map(gxp, client->vd, ibuf.dmabuf_fd,
 				 /*gxp_dma_flags=*/0,
 				 mapping_flags_to_dma_dir(ibuf.flags));
 	if (IS_ERR(mapping)) {
@@ -1942,8 +1926,8 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	struct platform_device *tpu_pdev;
 	struct platform_device *gsa_pdev;
 	int ret;
-	int  __maybe_unused i;
-	bool __maybe_unused tpu_found;
+	int i;
+	bool tpu_found;
 	u64 prop;
 
 	dev_notice(dev, "Probing gxp driver with commit %s\n", GIT_REPO_TAG);
@@ -1956,25 +1940,12 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 			return ret;
 	}
 
-	gxp->misc_dev.minor = MISC_DYNAMIC_MINOR;
-	gxp->misc_dev.name = "gxp";
-	gxp->misc_dev.fops = &gxp_fops;
-
 	gxp_wakelock_init(gxp);
-
-	ret = misc_register(&gxp->misc_dev);
-	if (ret) {
-		dev_err(dev, "Failed to register misc device (ret = %d)\n",
-			ret);
-		devm_kfree(dev, (void *)gxp);
-		return ret;
-	}
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (IS_ERR_OR_NULL(r)) {
 		dev_err(dev, "Failed to get memory resource\n");
-		ret = -ENODEV;
-		goto err;
+		return -ENODEV;
 	}
 
 	gxp->regs.paddr = r->start;
@@ -1982,8 +1953,7 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	gxp->regs.vaddr = devm_ioremap_resource(dev, r);
 	if (IS_ERR_OR_NULL(gxp->regs.vaddr)) {
 		dev_err(dev, "Failed to map registers\n");
-		ret = -ENODEV;
-		goto err;
+		return -ENODEV;
 	}
 
 	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "cmu");
@@ -2009,7 +1979,7 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	ret = gxp_pm_init(gxp);
 	if (ret) {
 		dev_err(dev, "Failed to init power management (ret=%d)\n", ret);
-		goto err;
+		return ret;
 	}
 
 	for (i = 0; i < GXP_NUM_MAILBOXES; i++) {
@@ -2157,8 +2127,21 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 			goto err_vd_destroy;
 	}
 
+	gxp->misc_dev.minor = MISC_DYNAMIC_MINOR;
+	gxp->misc_dev.name = "gxp";
+	gxp->misc_dev.fops = &gxp_fops;
+	ret = misc_register(&gxp->misc_dev);
+	if (ret) {
+		dev_err(dev, "Failed to register misc device: %d", ret);
+		goto err_before_remove;
+	}
+
 	dev_info(dev, "Probe finished");
 	return 0;
+
+err_before_remove:
+	if (gxp->before_remove)
+		gxp->before_remove(gxp);
 err_vd_destroy:
 	gxp_vd_destroy(gxp);
 err_domain_pool_destroy:
@@ -2173,17 +2156,14 @@ err_put_tpu_dev:
 	put_device(gxp->tpu_dev.dev);
 err_pm_destroy:
 	gxp_pm_destroy(gxp);
-err:
-	misc_deregister(&gxp->misc_dev);
-	devm_kfree(dev, (void *)gxp);
 	return ret;
 }
 
 static int gxp_common_platform_remove(struct platform_device *pdev)
 {
-	struct device *dev = &pdev->dev;
 	struct gxp_dev *gxp = platform_get_drvdata(pdev);
 
+	misc_deregister(&gxp->misc_dev);
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);
 	gxp_remove_debugfs(gxp);
@@ -2197,9 +2177,6 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 	gxp_dma_exit(gxp);
 	put_device(gxp->tpu_dev.dev);
 	gxp_pm_destroy(gxp);
-	misc_deregister(&gxp->misc_dev);
-
-	devm_kfree(dev, (void *)gxp);
 
 	return 0;
 }

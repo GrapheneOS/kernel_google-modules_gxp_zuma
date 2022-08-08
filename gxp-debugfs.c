@@ -73,6 +73,7 @@ static int gxp_firmware_run_set(void *data, u64 val)
 	struct gxp_dev *gxp = (struct gxp_dev *) data;
 	struct gxp_client *client;
 	int ret = 0;
+	uint core;
 
 	ret = gxp_firmware_request_if_needed(gxp);
 	if (ret) {
@@ -87,6 +88,22 @@ static int gxp_firmware_run_set(void *data, u64 val)
 			dev_err(gxp->dev, "Firmware already running!\n");
 			ret = -EIO;
 			goto out;
+		}
+
+		/*
+		 * Since this debugfs node destroys, then creates new fw_data,
+		 * and runs firmware on every DSP core, it cannot be run if
+		 * any of the cores already has a VD running on it.
+		 */
+		down_write(&gxp->vd_semaphore);
+		for (core = 0; core < GXP_NUM_CORES; core++) {
+			if (gxp->core_to_vd[core]) {
+				dev_err(gxp->dev,
+					"Unable to run firmware with debugfs while other clients are running\n");
+				ret = -EBUSY;
+				up_write(&gxp->vd_semaphore);
+				goto out;
+			}
 		}
 
 		/*
@@ -121,7 +138,6 @@ static int gxp_firmware_run_set(void *data, u64 val)
 						     AUR_MEM_UNDEFINED,
 						     AUR_MEM_UNDEFINED);
 
-		down_write(&gxp->vd_semaphore);
 		ret = gxp_vd_start(gxp->debugfs_client->vd);
 		up_write(&gxp->vd_semaphore);
 		if (ret) {

@@ -370,7 +370,7 @@ static int gxp_firmware_handshake(struct gxp_dev *gxp, uint core)
 	}
 	dev_notice(gxp->dev, "Core %u is alive!\n", core);
 
-#ifndef CONFIG_GXP_GEM5
+#if !IS_ENABLED(CONFIG_GXP_GEM5)
 	/*
 	 * FW reads the INT_MASK0 register (written by the driver) to
 	 * validate TOP access. The value read is echoed back by the FW to
@@ -394,7 +394,7 @@ static int gxp_firmware_handshake(struct gxp_dev *gxp, uint core)
 		return -EIO;
 	}
 	dev_notice(gxp->dev, "TOP access from core %u successful!\n", core);
-#endif  // !CONFIG_GXP_GEM5
+#endif
 
 	/* Stop bus performance monitors */
 	gxp_bpm_stop(gxp, core);
@@ -724,7 +724,7 @@ static void gxp_firmware_wakeup_cores(struct gxp_dev *gxp, uint core_list)
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (!(core_list & BIT(core)))
 			continue;
-#ifndef CONFIG_GXP_GEM5
+#if !IS_ENABLED(CONFIG_GXP_GEM5)
 		gxp_doorbell_enable_for_core(gxp, CORE_WAKEUP_DOORBELL(core),
 					     core);
 #endif
@@ -736,7 +736,7 @@ static int gxp_firmware_finish_startup(struct gxp_dev *gxp,
 				       struct gxp_virtual_device *vd,
 				       uint virt_core, uint core)
 {
-	int ret = 0;
+	int ret;
 	struct work_struct *work;
 	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
 
@@ -810,12 +810,14 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 	int ret;
 	uint core, virt_core;
 	uint failed_cores = 0;
+	int failed_ret;
 
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (core_list & BIT(core)) {
 			ret = gxp_firmware_setup(gxp, core);
 			if (ret) {
 				failed_cores |= BIT(core);
+				failed_ret = ret;
 				dev_err(gxp->dev, "Failed to run firmware on core %u\n",
 					core);
 			}
@@ -834,9 +836,9 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 				}
 			}
 		}
-		goto out;
+		return failed_ret;
 	}
-#ifdef CONFIG_GXP_GEM5
+#if IS_ENABLED(CONFIG_GXP_GEM5)
 	/*
 	 * GEM5 starts firmware after LPM is programmed, so we need to call
 	 * gxp_doorbell_enable_for_core here to set GXP_REG_COMMON_INT_MASK_0
@@ -868,18 +870,20 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 	}
 
 	if (failed_cores != 0) {
+		virt_core = 0;
 		for (core = 0; core < GXP_NUM_CORES; core++) {
 			if (core_list & BIT(core)) {
 				if (!(failed_cores & BIT(core))) {
 					gxp_firmware_stop_core(gxp, vd,
 							       virt_core, core);
 				}
+				virt_core++;
 			}
 		}
 	}
 	/* Check if we need to set clock mux to low state as requested */
 	gxp_pm_resume_clkmux(gxp);
-out:
+
 	return ret;
 }
 

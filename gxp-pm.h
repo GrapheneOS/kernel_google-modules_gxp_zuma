@@ -64,7 +64,7 @@ enum aur_power_cmu_mux_state {
 #define AUR_MAX_ALLOW_STATE AUR_UD_PLUS
 #define AUR_MAX_ALLOW_MEMORY_STATE AUR_MEM_MAX
 
-#define AUR_NUM_POWER_STATE_WORKER 16
+#define AUR_NUM_POWER_STATE_WORKER 4
 
 struct gxp_pm_device_ops {
 	int (*pre_blk_powerup)(struct gxp_dev *gxp);
@@ -113,7 +113,9 @@ struct gxp_power_manager {
 		set_acpm_state_work[AUR_NUM_POWER_STATE_WORKER];
 	/* Serializes searching for an open worker in set_acpm_state_work[] */
 	struct mutex set_acpm_state_work_lock;
+	uint last_set_acpm_state_worker;
 	struct gxp_req_pm_qos_work req_pm_qos_work[AUR_NUM_POWER_STATE_WORKER];
+	uint last_req_pm_qos_worker;
 	/* Serializes searching for an open worker in req_pm_qos_work[] */
 	struct mutex req_pm_qos_work_lock;
 	struct workqueue_struct *wq;
@@ -181,11 +183,8 @@ int gxp_pm_core_on(struct gxp_dev *gxp, uint core, bool verbose);
  * gxp_pm_core_off() - Turn off a core on GXP device
  * @gxp: The GXP device to operate
  * @core: The core ID to turn off
- *
- * Return:
- * * 0       - Core off process finished successfully
  */
-int gxp_pm_core_off(struct gxp_dev *gxp, uint core);
+void gxp_pm_core_off(struct gxp_dev *gxp, uint core);
 
 /**
  * gxp_pm_init() - API for initialize PM interface for GXP, should only be

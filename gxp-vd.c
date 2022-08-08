@@ -6,6 +6,7 @@
  */
 
 #include <linux/bitops.h>
+#include <linux/idr.h>
 #include <linux/slab.h>
 
 #include "gxp-config.h"
@@ -61,7 +62,6 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	struct gxp_virtual_device *vd;
 	int i;
 	int err;
-	int ret;
 
 	/* Assumes 0 < requested_cores <= GXP_NUM_CORES */
 	if (requested_cores == 0 || requested_cores > GXP_NUM_CORES)
@@ -74,18 +74,21 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	vd->gxp = gxp;
 	vd->num_cores = requested_cores;
 	vd->state = GXP_VD_OFF;
+	vd->slice_index = -1;
 
-	vd->core_domains =
-		kcalloc(requested_cores, sizeof(*vd->core_domains), GFP_KERNEL);
-	if (!vd->core_domains) {
-		err = -ENOMEM;
+	vd->domain = gxp_domain_pool_alloc(gxp->domain_pool);
+	if (!vd->domain) {
+		err = -EBUSY;
 		goto error_free_vd;
 	}
-	for (i = 0; i < requested_cores; i++) {
-		vd->core_domains[i] = gxp_domain_pool_alloc(gxp->domain_pool);
-		if (!vd->core_domains[i]) {
-			err = -EBUSY;
-			goto error_free_domains;
+
+	if (gxp->num_shared_slices) {
+		vd->slice_index =
+			ida_alloc_max(&gxp->shared_slice_idp,
+				      gxp->num_shared_slices - 1, GFP_KERNEL);
+		if (vd->slice_index < 0) {
+			err = vd->slice_index;
+			goto error_free_domain;
 		}
 	}
 
@@ -93,7 +96,7 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 		vd->num_cores, sizeof(*vd->mailbox_resp_queues), GFP_KERNEL);
 	if (!vd->mailbox_resp_queues) {
 		err = -ENOMEM;
-		goto error_free_domains;
+		goto error_free_slice_index;
 	}
 
 	for (i = 0; i < vd->num_cores; i++) {
@@ -105,23 +108,13 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	vd->mappings_root = RB_ROOT;
 	init_rwsem(&vd->mappings_semaphore);
 
-	/*
-	 * TODO(b/238631871) Should refine the virtual device usage in MCU mode
-	 * to avoid attachment failures when gxp_vd_start is called. (The
-	 * failures are ignored there, so it doesn't actually hurt for now.)
-	 */
-	if (!gxp_is_direct_mode(gxp)) {
-		ret = iommu_aux_attach_device(vd->core_domains[0], gxp->dev);
-		if (ret)
-			goto error_free_domains;
-	}
-
 	return vd;
 
-error_free_domains:
-	for (i -= 1; i >= 0; i--)
-		gxp_domain_pool_free(gxp->domain_pool, vd->core_domains[i]);
-	kfree(vd->core_domains);
+error_free_slice_index:
+	if (vd->slice_index >= 0)
+		ida_free(&gxp->shared_slice_idp, vd->slice_index);
+error_free_domain:
+	gxp_domain_pool_free(gxp->domain_pool, vd->domain);
 error_free_vd:
 	kfree(vd);
 
@@ -130,7 +123,6 @@ error_free_vd:
 
 void gxp_vd_release(struct gxp_virtual_device *vd)
 {
-	int i;
 	struct rb_node *node;
 	struct gxp_mapping *mapping;
 
@@ -149,15 +141,15 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	}
 	up_write(&vd->mappings_semaphore);
 
-	for (i = 0; i < vd->num_cores; i++)
-		gxp_domain_pool_free(vd->gxp->domain_pool, vd->core_domains[i]);
-	kfree(vd->core_domains);
 	kfree(vd->mailbox_resp_queues);
+	if (vd->slice_index >= 0)
+		ida_free(&vd->gxp->shared_slice_idp, vd->slice_index);
+	gxp_domain_pool_free(vd->gxp->domain_pool, vd->domain);
 	kfree(vd);
 }
 
 static void map_telemetry_buffers(struct gxp_dev *gxp,
-				  struct gxp_virtual_device *vd, uint virt_core,
+				  struct gxp_virtual_device *vd,
 				  uint core_list)
 {
 	struct buffer_data *data[2] = {
@@ -173,7 +165,7 @@ static void map_telemetry_buffers(struct gxp_dev *gxp,
 			if (!(BIT(core) & core_list))
 				continue;
 			ret = gxp_dma_map_allocated_coherent_buffer(
-				gxp, data[i]->buffers[core], vd, BIT(virt_core),
+				gxp, data[i]->buffers[core], vd->domain,
 				data[i]->size, data[i]->buffer_daddrs[core], 0);
 			if (ret)
 				dev_err(gxp->dev,
@@ -185,7 +177,7 @@ static void map_telemetry_buffers(struct gxp_dev *gxp,
 
 static void unmap_telemetry_buffers(struct gxp_dev *gxp,
 				    struct gxp_virtual_device *vd,
-				    uint virt_core, uint core_list)
+				    uint core_list)
 {
 	struct buffer_data *data[2] = {
 		gxp->telemetry_mgr->logging_buff_data,
@@ -200,34 +192,33 @@ static void unmap_telemetry_buffers(struct gxp_dev *gxp,
 			if (!(BIT(core) & core_list))
 				continue;
 			gxp_dma_unmap_allocated_coherent_buffer(
-				gxp, vd, BIT(virt_core), data[i]->size,
+				gxp, vd->domain, data[i]->size,
 				data[i]->buffer_daddrs[core]);
 		}
 	}
 }
 
 static void map_debug_dump_buffer(struct gxp_dev *gxp,
-				  struct gxp_virtual_device *vd, uint virt_core)
+				  struct gxp_virtual_device *vd)
 {
 	if (!gxp->debug_dump_mgr)
 		return;
 
 	gxp_dma_map_allocated_coherent_buffer(
-		gxp, gxp->debug_dump_mgr->buf.vaddr, vd, BIT(virt_core),
+		gxp, gxp->debug_dump_mgr->buf.vaddr, vd->domain,
 		gxp->debug_dump_mgr->buf.size, gxp->debug_dump_mgr->buf.daddr,
 		0);
 }
 
 static void unmap_debug_dump_buffer(struct gxp_dev *gxp,
-				    struct gxp_virtual_device *vd,
-				    uint virt_core)
+				    struct gxp_virtual_device *vd)
 {
 	if (!gxp->debug_dump_mgr)
 		return;
 
-	gxp_dma_unmap_allocated_coherent_buffer(
-		gxp, vd, BIT(virt_core), gxp->debug_dump_mgr->buf.size,
-		gxp->debug_dump_mgr->buf.daddr);
+	gxp_dma_unmap_allocated_coherent_buffer(gxp, vd->domain,
+						gxp->debug_dump_mgr->buf.size,
+						gxp->debug_dump_mgr->buf.daddr);
 }
 
 /* Caller must hold gxp->vd_semaphore for writing */
@@ -238,7 +229,6 @@ int gxp_vd_start(struct gxp_virtual_device *vd)
 	uint available_cores = 0;
 	uint cores_remaining = vd->num_cores;
 	uint core_list = 0;
-	uint virt_core = 0;
 	int ret = 0;
 
 	for (core = 0; core < GXP_NUM_CORES; core++) {
@@ -257,6 +247,8 @@ int gxp_vd_start(struct gxp_virtual_device *vd)
 
 	vd->fw_app = gxp_fw_data_create_app(gxp, core_list);
 
+	gxp_dma_map_core_resources(gxp, vd->domain, core_list,
+				   vd->slice_index);
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (cores_remaining == 0)
 			break;
@@ -264,13 +256,11 @@ int gxp_vd_start(struct gxp_virtual_device *vd)
 		if (core_list & BIT(core)) {
 			gxp->core_to_vd[core] = vd;
 			cores_remaining--;
-			gxp_dma_domain_attach_device(gxp, vd, virt_core, core);
-			gxp_dma_map_core_resources(gxp, vd, virt_core, core_list);
-			map_telemetry_buffers(gxp, vd, virt_core, core_list);
-			map_debug_dump_buffer(gxp, vd, virt_core);
-			virt_core++;
 		}
 	}
+	map_telemetry_buffers(gxp, vd, core_list);
+	map_debug_dump_buffer(gxp, vd);
+	gxp_dma_domain_attach_device(gxp, vd->domain, core_list);
 
 	ret = gxp_firmware_run(gxp, vd, core_list);
 	if (ret)
@@ -280,17 +270,14 @@ int gxp_vd_start(struct gxp_virtual_device *vd)
 	return ret;
 
 error:
-	virt_core = 0;
+	gxp_dma_domain_detach_device(gxp, vd->domain);
 	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (core_list & BIT(core)) {
-			unmap_debug_dump_buffer(gxp, vd, virt_core);
-			unmap_telemetry_buffers(gxp, vd, virt_core, core_list);
-			gxp_dma_unmap_core_resources(gxp, vd, virt_core, core_list);
-			gxp_dma_domain_detach_device(gxp, vd, virt_core);
+		if (core_list & BIT(core))
 			gxp->core_to_vd[core] = NULL;
-			virt_core++;
-		}
 	}
+	unmap_debug_dump_buffer(gxp, vd);
+	unmap_telemetry_buffers(gxp, vd, core_list);
+	gxp_dma_unmap_core_resources(gxp, vd->domain, core_list);
 	gxp_fw_data_destroy_app(gxp, vd->fw_app);
 
 	return ret;
@@ -301,7 +288,6 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
 	uint core, core_list = 0;
-	uint virt_core = 0;
 	uint lpm_state;
 
 	if ((vd->state == GXP_VD_OFF || vd->state == GXP_VD_RUNNING) &&
@@ -324,17 +310,15 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 
 	gxp_firmware_stop(gxp, vd, core_list);
 
+	if (vd->state == GXP_VD_RUNNING)
+		gxp_dma_domain_detach_device(gxp, vd->domain);
 	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (gxp->core_to_vd[core] == vd) {
-			unmap_debug_dump_buffer(gxp, vd, virt_core);
-			unmap_telemetry_buffers(gxp, vd, virt_core, core_list);
-			gxp_dma_unmap_core_resources(gxp, vd, virt_core, core_list);
-			if (vd->state == GXP_VD_RUNNING)
-				gxp_dma_domain_detach_device(gxp, vd, virt_core);
+		if (gxp->core_to_vd[core] == vd)
 			gxp->core_to_vd[core] = NULL;
-			virt_core++;
-		}
 	}
+	unmap_debug_dump_buffer(gxp, vd);
+	unmap_telemetry_buffers(gxp, vd, core_list);
+	gxp_dma_unmap_core_resources(gxp, vd->domain, core_list);
 
 	if (!IS_ERR_OR_NULL(vd->fw_app)) {
 		gxp_fw_data_destroy_app(gxp, vd->fw_app);
@@ -413,10 +397,10 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 							     LPM_CG_STATE);
 				}
 			}
-			gxp_dma_domain_detach_device(gxp, vd, virt_core);
 			virt_core++;
 		}
 	}
+	gxp_dma_domain_detach_device(gxp, vd->domain);
 	if (vd->state == GXP_VD_UNAVAILABLE) {
 		/* shutdown all cores if virtual device is unavailable */
 		for (core = 0; core < GXP_NUM_CORES; core++)
@@ -438,7 +422,7 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 {
 	int ret = 0;
 	uint core;
-	uint virt_core = 0;
+	uint core_list = 0;
 	uint timeout;
 	u32 boot_state;
 	struct gxp_dev *gxp = vd->gxp;
@@ -454,13 +438,18 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 	}
 	gxp_pm_force_clkmux_normal(gxp);
 	curr_blk_switch_count = gxp_pm_get_blk_switch_count(gxp);
+
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		if (gxp->core_to_vd[core] == vd)
+			core_list |= BIT(core);
+	}
+	gxp_dma_domain_attach_device(gxp, vd->domain, core_list);
 	/*
 	 * Start the resume process for all of this VD's cores without waiting
 	 * for completion.
 	 */
 	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (gxp->core_to_vd[core] == vd) {
-			gxp_dma_domain_attach_device(gxp, vd, virt_core, core);
+		if (BIT(core) & core_list) {
 			/*
 			 * The comparison is to check if blk_switch_count is
 			 * changed. If it's changed, it means the block is rebooted and
@@ -472,7 +461,6 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 				if (ret) {
 					vd->state = GXP_VD_UNAVAILABLE;
 					failed_cores |= BIT(core);
-					virt_core++;
 					dev_err(gxp->dev, "Failed to power up core %u\n", core);
 					continue;
 				}
@@ -486,12 +474,11 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 			 */
 			gxp_lpm_set_state(gxp, core, LPM_ACTIVE_STATE,
 					  /*verbose=*/false);
-			virt_core++;
 		}
 	}
 	/* Wait for all cores to complete core resumption. */
 	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (gxp->core_to_vd[core] == vd) {
+		if (BIT(core) & core_list) {
 			if (!(failed_cores & BIT(core))) {
 				/* in microseconds */
 				timeout = 1000000;
@@ -518,14 +505,11 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 	}
 	if (vd->state == GXP_VD_UNAVAILABLE) {
 		/* shutdown all cores if virtual device is unavailable */
-		virt_core = 0;
 		for (core = 0; core < GXP_NUM_CORES; core++) {
-			if (gxp->core_to_vd[core] == vd) {
-				gxp_dma_domain_detach_device(gxp, vd, virt_core);
+			if (BIT(core) & core_list)
 				gxp_pm_core_off(gxp, core);
-				virt_core++;
-			}
 		}
+		gxp_dma_domain_detach_device(gxp, vd->domain);
 	} else {
 		vd->state = GXP_VD_RUNNING;
 	}
@@ -555,60 +539,18 @@ int gxp_vd_virt_core_to_phys_core(struct gxp_virtual_device *vd, u16 virt_core)
 	return -EINVAL;
 }
 
-/* Caller must have locked `gxp->vd_semaphore` for reading */
-uint gxp_vd_virt_core_list_to_phys_core_list(struct gxp_virtual_device *vd,
-					     u16 virt_core_list)
+uint gxp_vd_phys_core_list(struct gxp_virtual_device *vd)
 {
-	uint phys_core_list = 0;
-	uint virt_core = 0;
-	int phys_core;
+	uint core_list = 0;
+	int core;
 
-	while (virt_core_list) {
-		/*
-		 * Get the next virt core by finding the index of the first
-		 * set bit in the core list.
-		 *
-		 * Subtract 1 since `ffs()` returns a 1-based index. Since
-		 * virt_core_list cannot be 0 at this point, no need to worry
-		 * about wrap-around.
-		 */
-		virt_core = ffs(virt_core_list) - 1;
-
-		/* Any invalid virt cores invalidate the whole list */
-		phys_core = gxp_vd_virt_core_to_phys_core(vd, virt_core);
-		if (phys_core < 0)
-			return 0;
-
-		phys_core_list |= BIT(phys_core);
-		virt_core_list &= ~BIT(virt_core);
+	lockdep_assert_held(&vd->gxp->vd_semaphore);
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		if (vd->gxp->core_to_vd[core] == vd)
+			core_list |= BIT(core);
 	}
 
-	return phys_core_list;
-}
-
-/* Caller must have locked `gxp->vd_semaphore` for reading */
-int gxp_vd_phys_core_to_virt_core(struct gxp_virtual_device *vd,
-						u16 phys_core)
-{
-	struct gxp_dev *gxp = vd->gxp;
-	int virt_core = 0;
-	uint core;
-
-	if (gxp->core_to_vd[phys_core] != vd) {
-		virt_core = -EINVAL;
-		goto out;
-	}
-
-	/*
-	 * A core's virtual core ID == the number of physical cores in the same
-	 * virtual device with a lower physical core ID than its own.
-	 */
-	for (core = 0; core < phys_core; core++) {
-		if (gxp->core_to_vd[core] == vd)
-			virt_core++;
-	}
-out:
-	return virt_core;
+	return core_list;
 }
 
 int gxp_vd_mapping_store(struct gxp_virtual_device *vd,

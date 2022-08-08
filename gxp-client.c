@@ -43,13 +43,14 @@ void gxp_client_destroy(struct gxp_client *client)
 
 	down_write(&gxp->vd_semaphore);
 
-#if IS_ENABLED(CONFIG_ANDROID) && !IS_ENABLED(CONFIG_GXP_GEM5)
+#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
 	/*
 	 * Unmap TPU buffers, if the mapping is already removed, this
 	 * is a no-op.
 	 */
-	gxp_dma_unmap_tpu_buffer(gxp, client->vd, client->mbx_desc);
-#endif  // CONFIG_ANDROID && !CONFIG_GXP_GEM5
+	if (client->vd)
+		gxp_dma_unmap_tpu_buffer(gxp, client->vd->domain, client->mbx_desc);
+#endif
 
 	if (client->vd && client->vd->state != GXP_VD_OFF)
 		gxp_vd_stop(client->vd);

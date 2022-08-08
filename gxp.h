@@ -434,8 +434,15 @@ struct gxp_mailbox_command_ioctl {
 	/*
 	 * Input:
 	 * The virtual core to dispatch the command to.
+	 * Only used in direct mode.
 	 */
 	__u16 virtual_core_id;
+	/*
+	 * Input:
+	 * The number of cores to dispatch the command to.
+	 * Only used in non-direct mode.
+	 */
+	__u16 num_cores;
 	/*
 	 * Output:
 	 * The sequence number assigned to this command. The caller can use
@@ -512,6 +519,7 @@ struct gxp_mailbox_command_ioctl {
  */
 struct gxp_mailbox_command_compat_ioctl {
 	__u16 virtual_core_id;
+	__u16 num_cores;
 	__u64 sequence_number;
 	__u64 device_address;
 	__u32 size;
@@ -531,6 +539,7 @@ struct gxp_mailbox_response_ioctl {
 	/*
 	 * Input:
 	 * The virtual core to fetch a response from.
+	 * Only used in direct mode.
 	 */
 	__u16 virtual_core_id;
 	/*

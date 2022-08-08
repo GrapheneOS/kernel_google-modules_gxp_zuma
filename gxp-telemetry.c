@@ -392,7 +392,7 @@ int gxp_telemetry_enable(struct gxp_dev *gxp, u8 type)
 {
 	struct buffer_data *data;
 	int ret = 0;
-	uint core, virt_core;
+	uint core;
 	struct gxp_virtual_device *vd;
 
 	mutex_lock(&gxp->telemetry_mgr->lock);
@@ -419,9 +419,8 @@ int gxp_telemetry_enable(struct gxp_dev *gxp, u8 type)
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		vd = gxp->core_to_vd[core];
 		if (vd != NULL) {
-			virt_core = gxp_vd_phys_core_to_virt_core(vd, core);
 			ret = gxp_dma_map_allocated_coherent_buffer(
-				gxp, data->buffers[core], vd, BIT(virt_core),
+				gxp, data->buffers[core], vd->domain,
 				data->size, data->buffer_daddrs[core], 0);
 			if (ret)
 				goto err;
@@ -446,12 +445,10 @@ int gxp_telemetry_enable(struct gxp_dev *gxp, u8 type)
 err:
 	while (core--) {
 		vd = gxp->core_to_vd[core];
-		if (vd != NULL) {
-			virt_core = gxp_vd_phys_core_to_virt_core(vd, core);
+		if (vd)
 			gxp_dma_unmap_allocated_coherent_buffer(
-				gxp, vd, BIT(virt_core), data->size,
+				gxp, vd->domain, data->size,
 				data->buffer_daddrs[core]);
-		}
 	}
 
 up_sem:
@@ -546,7 +543,7 @@ static int telemetry_disable_locked(struct gxp_dev *gxp, u8 type)
 	struct buffer_data *data;
 	int ret = 0;
 	dma_addr_t null_daddrs[GXP_NUM_CORES] = {0};
-	uint core, virt_core;
+	uint core;
 	struct gxp_virtual_device *vd;
 
 	lockdep_assert_held(&gxp->telemetry_mgr->lock);
@@ -586,12 +583,10 @@ static int telemetry_disable_locked(struct gxp_dev *gxp, u8 type)
 					__func__, core, type, ret);
 		}
 		vd = gxp->core_to_vd[core];
-		if (vd != NULL) {
-			virt_core = gxp_vd_phys_core_to_virt_core(vd, core);
+		if (vd)
 			gxp_dma_unmap_allocated_coherent_buffer(
-				gxp, vd, BIT(virt_core), data->size,
+				gxp, vd->domain, data->size,
 				data->buffer_daddrs[core]);
-		}
 	}
 
 	if (refcount_dec_and_test(&data->ref_count)) {

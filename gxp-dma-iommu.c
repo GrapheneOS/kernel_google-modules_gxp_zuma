@@ -18,7 +18,6 @@
 #include "gxp-mapping.h"
 #include "gxp-pm.h"
 #include "gxp-ssmt.h"
-#include "gxp-vd.h"
 
 struct gxp_dma_iommu_manager {
 	struct gxp_dma_manager dma_mgr;
@@ -57,19 +56,22 @@ static int dma_info_to_prot(enum dma_data_direction dir, bool coherent,
 }
 
 static int gxp_dma_ssmt_program(struct gxp_dev *gxp,
-				struct gxp_virtual_device *vd, uint virt_core,
-				uint core)
+				struct iommu_domain *domain, uint core_list)
 {
 	struct gxp_dma_iommu_manager *mgr = container_of(
 		gxp->dma_mgr, struct gxp_dma_iommu_manager, dma_mgr);
-	int core_vid;
+	int pasid;
+	uint core;
 
-	core_vid = iommu_aux_get_pasid(vd->core_domains[0], gxp->dev);
-	dev_dbg(gxp->dev, "SysMMU: core%u assigned vid %d\n", core, core_vid);
-	gxp_ssmt_set_core_vid(&mgr->ssmt, core, core_vid);
+	pasid = iommu_aux_get_pasid(domain, gxp->dev);
+	for (core = 0; core < GXP_NUM_CORES; core++)
+		if (BIT(core) & core_list) {
+			dev_dbg(gxp->dev, "Assign core%u to PASID %d\n", core,
+				pasid);
+			gxp_ssmt_set_core_vid(&mgr->ssmt, core, pasid);
+		}
 	return 0;
 }
-
 
 /* Fault handler */
 
@@ -109,21 +111,28 @@ static int sysmmu_fault_handler(struct iommu_fault *fault, void *token)
 
 /* Maps the shared buffer region to @domain. */
 static int gxp_map_core_shared_buffer(struct gxp_dev *gxp,
-				      struct iommu_domain *domain)
+				      struct iommu_domain *domain,
+				      u8 slice_index)
 {
+	size_t shared_size = GXP_NUM_CORES * gxp->shared_slice_size;
+
 	if (!gxp->shared_buf.paddr)
 		return 0;
-	return iommu_map(domain, gxp->shared_buf.daddr, gxp->shared_buf.paddr,
-			 gxp->shared_buf.size, IOMMU_READ | IOMMU_WRITE);
+	return iommu_map(domain, gxp->shared_buf.daddr,
+			 gxp->shared_buf.paddr + shared_size * slice_index,
+			 shared_size, IOMMU_READ | IOMMU_WRITE);
 }
+
 
 /* Reverts gxp_map_core_shared_buffer. */
 static void gxp_unmap_core_shared_buffer(struct gxp_dev *gxp,
 					 struct iommu_domain *domain)
 {
+	size_t shared_size = GXP_NUM_CORES * gxp->shared_slice_size;
+
 	if (!gxp->shared_buf.paddr)
 		return;
-	iommu_unmap(domain, gxp->shared_buf.daddr, gxp->shared_buf.size);
+	iommu_unmap(domain, gxp->shared_buf.daddr, shared_size);
 }
 
 /* gxp-dma.h Interface */
@@ -205,32 +214,29 @@ void gxp_dma_init_default_resources(struct gxp_dev *gxp)
 }
 
 int gxp_dma_domain_attach_device(struct gxp_dev *gxp,
-				 struct gxp_virtual_device *vd, uint virt_core,
-				 uint core)
+				 struct iommu_domain *domain, uint core_list)
 {
 	int ret;
 
-	ret = iommu_aux_attach_device(vd->core_domains[virt_core], gxp->dev);
+	ret = iommu_aux_attach_device(domain, gxp->dev);
 	if (ret)
 		goto out;
-	gxp_dma_ssmt_program(gxp, vd, virt_core, core);
+	gxp_dma_ssmt_program(gxp, domain, core_list);
 out:
 	return ret;
 }
 
 void gxp_dma_domain_detach_device(struct gxp_dev *gxp,
-				  struct gxp_virtual_device *vd, uint virt_core)
+				  struct iommu_domain *domain)
 {
-	iommu_aux_detach_device(vd->core_domains[virt_core], gxp->dev);
+	iommu_aux_detach_device(domain, gxp->dev);
 }
 
-int gxp_dma_map_core_resources(struct gxp_dev *gxp,
-			       struct gxp_virtual_device *vd, uint virt_core,
-			       uint core_list)
+int gxp_dma_map_core_resources(struct gxp_dev *gxp, struct iommu_domain *domain,
+			       uint core_list, u8 slice_index)
 {
 	int ret;
 	uint i;
-	struct iommu_domain *domain = vd->core_domains[virt_core];
 
 	ret = iommu_map(domain, gxp->regs.daddr, gxp->regs.paddr,
 			gxp->regs.size, IOMMU_READ | IOMMU_WRITE);
@@ -268,7 +274,7 @@ int gxp_dma_map_core_resources(struct gxp_dev *gxp,
 			gxp->fwdatabuf.size, IOMMU_READ | IOMMU_WRITE);
 	if (ret)
 		goto err;
-	ret = gxp_map_core_shared_buffer(gxp, domain);
+	ret = gxp_map_core_shared_buffer(gxp, domain, slice_index);
 	if (ret)
 		goto err;
 	/* Only map the TPU mailboxes if they were found on probe */
@@ -293,16 +299,14 @@ err:
 	 * Any resource that hadn't been mapped yet will cause `iommu_unmap()`
 	 * to return immediately, so its safe to try to unmap everything.
 	 */
-	gxp_dma_unmap_core_resources(gxp, vd, virt_core, core_list);
+	gxp_dma_unmap_core_resources(gxp, domain, core_list);
 	return ret;
 }
 
 void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
-				  struct gxp_virtual_device *vd, uint virt_core,
-				  uint core_list)
+				  struct iommu_domain *domain, uint core_list)
 {
 	uint i;
-	struct iommu_domain *domain = vd->core_domains[virt_core];
 
 	/* Only unmap the TPU mailboxes if they were found on probe */
 	if (gxp->tpu_dev.mbx_paddr) {
@@ -402,132 +406,106 @@ alloc_sgt_for_buffer(void *ptr, size_t size,
 }
 
 #if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
-int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
-			   uint virt_core_list, uint core_list,
+int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp, struct iommu_domain *domain,
+			   uint core_list,
 			   struct edgetpu_ext_mailbox_info *mbx_info)
 {
-	uint orig_virt_core_list = virt_core_list;
+	uint orig_core_list = core_list;
 	u64 queue_iova;
-	uint virt_core;
 	int core;
 	int ret;
 	int i = 0;
 
-	while (virt_core_list) {
+	while (core_list) {
 		phys_addr_t cmdq_pa = mbx_info->mailboxes[i].cmdq_pa;
 		phys_addr_t respq_pa = mbx_info->mailboxes[i++].respq_pa;
 
-		virt_core = ffs(virt_core_list) - 1;
-		virt_core_list &= ~BIT(virt_core);
 		core = ffs(core_list) - 1;
-		core_list &= ~BIT(core);
 		queue_iova = GXP_IOVA_TPU_MBX_BUFFER(core);
-		ret = iommu_map(vd->core_domains[virt_core], queue_iova,
-				cmdq_pa, mbx_info->cmdq_size, IOMMU_WRITE);
+		ret = iommu_map(domain, queue_iova, cmdq_pa,
+				mbx_info->cmdq_size, IOMMU_WRITE);
 		if (ret)
 			goto error;
-		ret = iommu_map(vd->core_domains[virt_core],
-				queue_iova + mbx_info->cmdq_size, respq_pa,
-				mbx_info->respq_size, IOMMU_READ);
+		ret = iommu_map(domain, queue_iova + mbx_info->cmdq_size,
+				respq_pa, mbx_info->respq_size, IOMMU_READ);
 		if (ret) {
-			iommu_unmap(vd->core_domains[virt_core], queue_iova,
-				    mbx_info->cmdq_size);
+			iommu_unmap(domain, queue_iova, mbx_info->cmdq_size);
 			goto error;
 		}
+		core_list &= ~BIT(core);
 	}
 	return 0;
 
 error:
-	virt_core_list ^= orig_virt_core_list;
-	while (virt_core_list) {
-		virt_core = ffs(virt_core_list) - 1;
-		virt_core_list &= ~BIT(virt_core);
+	core_list ^= orig_core_list;
+	while (core_list) {
 		core = ffs(core_list) - 1;
 		core_list &= ~BIT(core);
 		queue_iova = GXP_IOVA_TPU_MBX_BUFFER(core);
-		iommu_unmap(vd->core_domains[virt_core], queue_iova,
-			    mbx_info->cmdq_size);
-		iommu_unmap(vd->core_domains[virt_core], queue_iova +
-			    mbx_info->cmdq_size, mbx_info->respq_size);
+		iommu_unmap(domain, queue_iova, mbx_info->cmdq_size);
+		iommu_unmap(domain, queue_iova + mbx_info->cmdq_size,
+			    mbx_info->respq_size);
 	}
 	return ret;
 }
 
 void gxp_dma_unmap_tpu_buffer(struct gxp_dev *gxp,
-			      struct gxp_virtual_device *vd,
+			      struct iommu_domain *domain,
 			      struct gxp_tpu_mbx_desc mbx_desc)
 {
-	uint virt_core_list = mbx_desc.virt_core_list;
 	uint core_list = mbx_desc.phys_core_list;
 	u64 queue_iova;
 	int core;
-	uint virt_core;
 
-	while (virt_core_list) {
-		virt_core = ffs(virt_core_list) - 1;
-		virt_core_list &= ~BIT(virt_core);
+	while (core_list) {
 		core = ffs(core_list) - 1;
 		core_list &= ~BIT(core);
 		queue_iova = GXP_IOVA_TPU_MBX_BUFFER(core);
-		iommu_unmap(vd->core_domains[virt_core], queue_iova,
-			    mbx_desc.cmdq_size);
-		iommu_unmap(vd->core_domains[virt_core], queue_iova +
-			    mbx_desc.cmdq_size, mbx_desc.respq_size);
+		iommu_unmap(domain, queue_iova, mbx_desc.cmdq_size);
+		iommu_unmap(domain, queue_iova + mbx_desc.cmdq_size,
+			    mbx_desc.respq_size);
 	}
 }
 #endif  // (CONFIG_GXP_TEST || CONFIG_ANDROID) && !CONFIG_GXP_GEM5
 
 int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp, void *buf,
-					  struct gxp_virtual_device *vd,
-					  uint virt_core_list, size_t size,
-					  dma_addr_t dma_handle,
+					  struct iommu_domain *domain,
+					  size_t size, dma_addr_t dma_handle,
 					  uint gxp_dma_flags)
 {
 	struct gxp_dma_iommu_manager *mgr = container_of(
 		gxp->dma_mgr, struct gxp_dma_iommu_manager, dma_mgr);
 	struct sg_table *sgt;
-	int virt_core;
 	ssize_t size_mapped;
+	int ret = 0;
 
 	size = size < PAGE_SIZE ? PAGE_SIZE : size;
 	sgt = alloc_sgt_for_buffer(buf, size, mgr->default_domain, dma_handle);
 	if (IS_ERR(sgt)) {
 		dev_err(gxp->dev,
 			"Failed to allocate sgt for coherent buffer\n");
-		return -ENOMEM;
+		return PTR_ERR(sgt);
 	}
 
-	/* Create identical mappings in the specified cores' domains */
-	for (virt_core = 0; virt_core < vd->num_cores; virt_core++) {
-		/*
-		 * In Linux 5.15 and beyond, `iommu_map_sg()` returns a
-		 * `ssize_t` to encode errors that earlier versions throw out.
-		 * Explicitly cast here for backwards compatibility.
-		 */
-		size_mapped = (ssize_t)iommu_map_sg(vd->core_domains[virt_core],
-						    dma_handle, sgt->sgl,
-						    sgt->orig_nents,
-						    IOMMU_READ | IOMMU_WRITE);
-		if (size_mapped != size)
-			goto err;
-	}
+	/*
+	 * In Linux 5.15 and beyond, `iommu_map_sg()` returns a
+	 * `ssize_t` to encode errors that earlier versions throw out.
+	 * Explicitly cast here for backwards compatibility.
+	 */
+	size_mapped =
+		(ssize_t)iommu_map_sg(domain, dma_handle,
+				      sgt->sgl, sgt->orig_nents,
+				      IOMMU_READ | IOMMU_WRITE);
+	if (size_mapped != size)
+		ret = size_mapped < 0 ? -EINVAL : (int)size_mapped;
 
 	sg_free_table(sgt);
 	kfree(sgt);
-	return 0;
-
-err:
-	for (virt_core -= 1; virt_core >= 0; virt_core--)
-		iommu_unmap(vd->core_domains[virt_core], dma_handle, size);
-
-	sg_free_table(sgt);
-	kfree(sgt);
-	return -EINVAL;
+	return ret;
 }
 
-void *gxp_dma_alloc_coherent(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
-			     uint virt_core_list, size_t size,
-			     dma_addr_t *dma_handle, gfp_t flag,
+void *gxp_dma_alloc_coherent(struct gxp_dev *gxp, struct iommu_domain *domain,
+			     size_t size, dma_addr_t *dma_handle, gfp_t flag,
 			     uint gxp_dma_flags)
 {
 	void *buf;
@@ -542,11 +520,9 @@ void *gxp_dma_alloc_coherent(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 		dev_err(gxp->dev, "Failed to allocate coherent buffer\n");
 		return NULL;
 	}
-	if (vd != NULL) {
-		ret = gxp_dma_map_allocated_coherent_buffer(gxp, buf, vd,
-							    virt_core_list,
-							    size, daddr,
-							    gxp_dma_flags);
+	if (domain != NULL) {
+		ret = gxp_dma_map_allocated_coherent_buffer(
+			gxp, buf, domain, size, daddr, gxp_dma_flags);
 		if (ret) {
 			dma_free_coherent(gxp->dev, size, buf, daddr);
 			return NULL;
@@ -560,45 +536,32 @@ void *gxp_dma_alloc_coherent(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 }
 
 void gxp_dma_unmap_allocated_coherent_buffer(struct gxp_dev *gxp,
-					     struct gxp_virtual_device *vd,
-					     uint virt_core_list, size_t size,
-					     dma_addr_t dma_handle)
+					     struct iommu_domain *domain,
+					     size_t size, dma_addr_t dma_handle)
 {
-	int virt_core;
-
 	size = size < PAGE_SIZE ? PAGE_SIZE : size;
-
-	for (virt_core = 0; virt_core < vd->num_cores; virt_core++) {
-		if (size !=
-		    iommu_unmap(vd->core_domains[virt_core], dma_handle, size))
-			dev_warn(gxp->dev, "Failed to unmap coherent buffer\n");
-	}
+	if (size != iommu_unmap(domain, dma_handle, size))
+		dev_warn(gxp->dev, "Failed to unmap coherent buffer\n");
 }
 
-void gxp_dma_free_coherent(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
-			   uint virt_core_list, size_t size, void *cpu_addr,
-			   dma_addr_t dma_handle)
+void gxp_dma_free_coherent(struct gxp_dev *gxp, struct iommu_domain *domain,
+			   size_t size, void *cpu_addr, dma_addr_t dma_handle)
 {
-	if (vd != NULL)
-		gxp_dma_unmap_allocated_coherent_buffer(gxp, vd, virt_core_list,
-							size, dma_handle);
+	if (domain != NULL)
+		gxp_dma_unmap_allocated_coherent_buffer(gxp, domain, size,
+							dma_handle);
 	dma_free_coherent(gxp->dev, size, cpu_addr, dma_handle);
 }
 
-int gxp_dma_map_sg(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
-		   int virt_core_list, struct scatterlist *sg, int nents,
+int gxp_dma_map_sg(struct gxp_dev *gxp, struct iommu_domain *domain,
+		   struct scatterlist *sg, int nents,
 		   enum dma_data_direction direction, unsigned long attrs,
 		   uint gxp_dma_flags)
 {
 	int nents_mapped;
 	dma_addr_t daddr;
 	int prot = dma_info_to_prot(direction, 0, attrs);
-	int virt_core;
 	ssize_t size_mapped;
-	/* Variables needed to cleanup if an error occurs */
-	struct scatterlist *s;
-	int i;
-	size_t size = 0;
 
 	nents_mapped = dma_map_sg_attrs(gxp->dev, sg, nents, direction, attrs);
 	if (!nents_mapped)
@@ -606,53 +569,35 @@ int gxp_dma_map_sg(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 
 	daddr = sg_dma_address(sg);
 
-	for (virt_core = 0; virt_core < vd->num_cores; virt_core++) {
-		if (!(virt_core_list & BIT(virt_core)))
-			continue;
-		/*
-		 * In Linux 5.15 and beyond, `iommu_map_sg()` returns a
-		 * `ssize_t` to encode errors that earlier versions throw out.
-		 * Explicitly cast here for backwards compatibility.
-		 */
-		size_mapped = (ssize_t)iommu_map_sg(vd->core_domains[virt_core],
-						    daddr, sg, nents, prot);
-		if (size_mapped <= 0)
-			goto err;
-	}
+	/*
+	 * In Linux 5.15 and beyond, `iommu_map_sg()` returns a
+	 * `ssize_t` to encode errors that earlier versions throw out.
+	 * Explicitly cast here for backwards compatibility.
+	 */
+	size_mapped = (ssize_t)iommu_map_sg(domain, daddr, sg, nents, prot);
+	if (size_mapped <= 0)
+		goto err;
 
 	return nents_mapped;
 
 err:
-	for_each_sg(sg, s, nents, i) {
-		size += sg_dma_len(s);
-	}
-
-	for (virt_core -= 1; virt_core >= 0; virt_core--)
-		iommu_unmap(vd->core_domains[virt_core], daddr, size);
 	dma_unmap_sg_attrs(gxp->dev, sg, nents, direction, attrs);
 	return 0;
 }
 
-void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
-		      uint virt_core_list, struct scatterlist *sg, int nents,
+void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct iommu_domain *domain,
+		      struct scatterlist *sg, int nents,
 		      enum dma_data_direction direction, unsigned long attrs)
 {
 	struct scatterlist *s;
 	int i;
 	size_t size = 0;
-	int virt_core;
 
-	for_each_sg(sg, s, nents, i) {
+	for_each_sg (sg, s, nents, i)
 		size += sg_dma_len(s);
-	}
 
-	for (virt_core = 0; virt_core < vd->num_cores; virt_core++) {
-		if (!(virt_core_list & BIT(virt_core)))
-			continue;
-		if (!iommu_unmap(vd->core_domains[virt_core], sg_dma_address(sg),
-				 size))
-			dev_warn(gxp->dev, "Failed to unmap sg\n");
-	}
+	if (!iommu_unmap(domain, sg_dma_address(sg), size))
+		dev_warn(gxp->dev, "Failed to unmap sg\n");
 
 	dma_unmap_sg_attrs(gxp->dev, sg, nents, direction, attrs);
 }
@@ -671,20 +616,15 @@ void gxp_dma_sync_sg_for_device(struct gxp_dev *gxp, struct scatterlist *sg,
 	dma_sync_sg_for_device(gxp->dev, sg, nents, direction);
 }
 
-struct sg_table *gxp_dma_map_dmabuf_attachment(
-	struct gxp_dev *gxp, struct gxp_virtual_device *vd, uint virt_core_list,
-	struct dma_buf_attachment *attachment,
-	enum dma_data_direction direction)
+struct sg_table *
+gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp, struct iommu_domain *domain,
+			      struct dma_buf_attachment *attachment,
+			      enum dma_data_direction direction)
 {
 	struct sg_table *sgt;
 	int prot = dma_info_to_prot(direction, /*coherent=*/0, /*attrs=*/0);
 	ssize_t size_mapped;
-	int virt_core;
 	int ret;
-	/* Variables needed to cleanup if an error occurs */
-	struct scatterlist *s;
-	int i;
-	size_t size = 0;
 
 	/* Map the attachment into the default domain */
 	sgt = dma_buf_map_attachment(attachment, direction);
@@ -695,49 +635,33 @@ struct sg_table *gxp_dma_map_dmabuf_attachment(
 		return sgt;
 	}
 
-	/* Map the sgt into the aux domain of all specified cores */
-	for (virt_core = 0; virt_core < vd->num_cores; virt_core++) {
-		if (!(virt_core_list & BIT(virt_core)))
-			continue;
+	/*
+	 * In Linux 5.15 and beyond, `iommu_map_sg()` returns a
+	 * `ssize_t` to encode errors that earlier versions throw out.
+	 * Explicitly cast here for backwards compatibility.
+	 */
+	size_mapped = (ssize_t)iommu_map_sg(domain, sg_dma_address(sgt->sgl),
+					    sgt->sgl, sgt->orig_nents, prot);
+	if (size_mapped <= 0) {
+		dev_err(gxp->dev, "Failed to map dma-buf: %ld\n", size_mapped);
 		/*
-		 * In Linux 5.15 and beyond, `iommu_map_sg()` returns a
-		 * `ssize_t` to encode errors that earlier versions throw out.
-		 * Explicitly cast here for backwards compatibility.
+		 * Prior to Linux 5.15, `iommu_map_sg()` returns 0 for
+		 * any failure. Return a generic IO error in this case.
 		 */
-		size_mapped =
-			(ssize_t)iommu_map_sg(vd->core_domains[virt_core],
-					      sg_dma_address(sgt->sgl),
-					      sgt->sgl, sgt->orig_nents, prot);
-		if (size_mapped <= 0) {
-			dev_err(gxp->dev,
-				"Failed to map dma-buf to virtual core %d (ret=%ld)\n",
-				virt_core, size_mapped);
-			/*
-			 * Prior to Linux 5.15, `iommu_map_sg()` returns 0 for
-			 * any failure. Return a generic IO error in this case.
-			 */
-			ret = size_mapped == 0 ? -EIO : (int)size_mapped;
-			goto err;
-		}
+		ret = size_mapped == 0 ? -EIO : (int)size_mapped;
+		goto err;
 	}
 
 	return sgt;
 
 err:
-	for_each_sg(sgt->sgl, s, sgt->nents, i)
-		size += sg_dma_len(s);
-
-	for (virt_core -= 1; virt_core >= 0; virt_core--)
-		iommu_unmap(vd->core_domains[virt_core], sg_dma_address(sgt->sgl), size);
 	dma_buf_unmap_attachment(attachment, sgt, direction);
 
 	return ERR_PTR(ret);
-
 }
 
 void gxp_dma_unmap_dmabuf_attachment(struct gxp_dev *gxp,
-				     struct gxp_virtual_device *vd,
-				     uint virt_core_list,
+				     struct iommu_domain *domain,
 				     struct dma_buf_attachment *attachment,
 				     struct sg_table *sgt,
 				     enum dma_data_direction direction)
@@ -745,23 +669,13 @@ void gxp_dma_unmap_dmabuf_attachment(struct gxp_dev *gxp,
 	struct scatterlist *s;
 	int i;
 	size_t size = 0;
-	int virt_core;
 
 	/* Find the size of the mapping in IOVA-space */
-	for_each_sg(sgt->sgl, s, sgt->nents, i)
+	for_each_sg (sgt->sgl, s, sgt->nents, i)
 		size += sg_dma_len(s);
 
-	/* Unmap the dma-buf from the aux domain of all specified cores */
-	for (virt_core = 0; virt_core < vd->num_cores; virt_core++) {
-		if (!(virt_core_list & BIT(virt_core)))
-			continue;
-		if (!iommu_unmap(vd->core_domains[virt_core],
-				 sg_dma_address(sgt->sgl), size))
-			dev_warn(
-				gxp->dev,
-				"Failed to unmap dma-buf from virtual core %d\n",
-				virt_core);
-	}
+	if (!iommu_unmap(domain, sg_dma_address(sgt->sgl), size))
+		dev_warn(gxp->dev, "Failed to unmap dma-buf\n");
 
 	/* Unmap the attachment from the default domain */
 	dma_buf_unmap_attachment(attachment, sgt, direction);

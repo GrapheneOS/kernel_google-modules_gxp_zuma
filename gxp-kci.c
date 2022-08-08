@@ -286,7 +286,7 @@ int gxp_kci_init(struct gxp_mcu *mcu)
 	gkci->gxp = gxp;
 	gkci->mcu = mcu;
 	gkci->mailbox = gxp_mailbox_alloc(gxp->mailbox_mgr, NULL, 0,
-					  GXP_MCU_CORE_ID, &mbx_args);
+					  KCI_MAILBOX_ID, &mbx_args);
 	if (IS_ERR(gkci->mailbox))
 		return PTR_ERR(gkci->mailbox);
 

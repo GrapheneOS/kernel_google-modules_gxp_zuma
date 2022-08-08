@@ -10,6 +10,7 @@
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
+#include <linux/idr.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
 #include <linux/list.h>
@@ -26,7 +27,6 @@
 /* Holds Client's TPU mailboxes info used during mapping */
 struct gxp_tpu_mbx_desc {
 	uint phys_core_list;
-	uint virt_core_list;
 	size_t cmdq_size, respq_size;
 };
 
@@ -112,6 +112,17 @@ struct gxp_dev {
 	 * to us.
 	 */
 	struct gxp_mapped_resource shared_buf;
+	/*
+	 * If the @shared_buf is used as split slices, it will keep track of
+	 * which indexes of slices are used by ID allocator.
+	 */
+	struct ida shared_slice_idp;
+	size_t shared_slice_size; /* The size of each slice. */
+	/*
+	 * The total number of slices.
+	 * It can be zero if there is no shared buffer support.
+	 */
+	unsigned int num_shared_slices;
 	struct gxp_usage_stats *usage_stats; /* Stores the usage stats */
 
 	/* callbacks for chip-dependent implementations */

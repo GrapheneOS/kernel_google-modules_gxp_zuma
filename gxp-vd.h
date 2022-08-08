@@ -2,8 +2,9 @@
 /*
  * GXP virtual device manager.
  *
- * Copyright (C) 2021 Google LLC
+ * Copyright (C) 2021-2022 Google LLC
  */
+
 #ifndef __GXP_VD_H__
 #define __GXP_VD_H__
 
@@ -43,7 +44,7 @@ struct gxp_virtual_device {
 	struct gxp_dev *gxp;
 	uint num_cores;
 	void *fw_app;
-	struct iommu_domain **core_domains;
+	struct iommu_domain *domain;
 	struct mailbox_resp_queue *mailbox_resp_queues;
 	struct rb_root mappings_root;
 	struct rw_semaphore mappings_semaphore;
@@ -55,6 +56,11 @@ struct gxp_virtual_device {
 	 * process.
 	 */
 	u64 blk_switch_count_when_suspended;
+	/*
+	 * @domain of each virtual device will map a slice of shared buffer. It stores which index
+	 * of slice is used by this VD.
+	 */
+	int slice_index;
 };
 
 /*
@@ -83,6 +89,7 @@ void gxp_vd_destroy(struct gxp_dev *gxp);
  * * -EINVAL - The number of requested cores was invalid
  * * -ENOMEM - Unable to allocate the virtual device
  * * -EBUSY  - Not enough iommu domains available
+ * * -ENOSPC - There is no more available shared slices
  */
 struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp, u16 requested_cores);
 
@@ -124,23 +131,11 @@ void gxp_vd_stop(struct gxp_virtual_device *vd);
 int gxp_vd_virt_core_to_phys_core(struct gxp_virtual_device *vd, u16 virt_core);
 
 /*
- * Converts a bitfield of virtual core IDs to a bitfield of physical core IDs.
- *
- * If the virtual list contains any invalid IDs, the entire physical ID list
- * will be considered invalid and this function will return 0.
+ * Acquires the physical core IDs assigned to the virtual device.
  *
  * The caller must have locked gxp->vd_semaphore for reading.
  */
-uint gxp_vd_virt_core_list_to_phys_core_list(struct gxp_virtual_device *vd,
-					     u16 virt_core_list);
-
-/*
- * Returns the virtual core number assigned the phys_core, inside of this
- * virtual device or -EINVAL if this core is not part of this virtual device.
- *
- * The caller must have locked gxp->vd_semaphore for reading.
- */
-int gxp_vd_phys_core_to_virt_core(struct gxp_virtual_device *vd, u16 phys_core);
+uint gxp_vd_phys_core_list(struct gxp_virtual_device *vd);
 
 /**
  * gxp_vd_mapping_store() - Store a mapping in a virtual device's records

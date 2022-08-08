@@ -21,6 +21,7 @@
 #include "gxp-lpm.h"
 #include "gxp-mcu-firmware.h"
 #include "gxp-mcu.h"
+#include "gxp-pm.h"
 
 /*
  * Programs instruction remap CSRs.
@@ -33,7 +34,7 @@ static void program_iremap_csr(struct gxp_dev *gxp,
 
 	gxp_write_32(gxp, GXP_REG_IREMAP_LOW, buf->daddr);
 	gxp_write_32(gxp, GXP_REG_IREMAP_HIGH, buf->daddr + buf->size);
-	gxp_write_32(gxp, GXP_REG_IREMAP_TARGET, buf->paddr);
+	gxp_write_32(gxp, GXP_REG_IREMAP_TARGET, buf->daddr);
 	gxp_write_32(gxp, GXP_REG_IREMAP_ENABLE, 1);
 }
 
@@ -68,16 +69,9 @@ static int gxp_mcu_firmware_load_locked(struct gxp_mcu_firmware *mcu_fw,
 		program_iremap_csr(gxp, &mcu_fw->image_buf);
 	gxp_bpm_configure(gxp, GXP_MCU_CORE_ID, INST_BPM_OFFSET,
 			  BPM_EVENT_READ_XFER);
-#ifdef ZEBU_SYSMMU_WORKAROUND
-	/*
-	 * Only required on ZeBu where forwards instruction fetching to
-	 * non-secure SysMMU. On Silicon this is not required as TZ should
-	 * either help programming secure SysMMU or left it as in bypass mode.
-	 */
-	iommu_map(iommu_get_domain_for_dev(gxp->dev), mcu_fw->image_buf.paddr,
+	iommu_map(iommu_get_domain_for_dev(gxp->dev), mcu_fw->image_buf.daddr,
 		  mcu_fw->image_buf.paddr, mcu_fw->image_buf.size,
 		  IOMMU_READ | IOMMU_WRITE);
-#endif
 
 out_release_firmware:
 	release_firmware(fw);
@@ -91,10 +85,8 @@ out_release_firmware:
 static void gxp_mcu_firmware_unload_locked(struct gxp_mcu_firmware *mcu_fw)
 {
 	lockdep_assert_held(&mcu_fw->lock);
-#ifdef ZEBU_SYSMMU_WORKAROUND
 	iommu_unmap(iommu_get_domain_for_dev(mcu_fw->gxp->dev),
-		    mcu_fw->image_buf.paddr, mcu_fw->image_buf.size);
-#endif
+		    mcu_fw->image_buf.daddr, mcu_fw->image_buf.size);
 	mcu_fw->name = NULL;
 }
 
@@ -259,6 +251,15 @@ static ssize_t load_firmware_store(struct device *dev,
 		return -EBUSY;
 	name = fw_name_from_buf(gxp, buf);
 	dev_info(gxp->dev, "loading firmware %s from SysFS", name);
+	/*
+	 * TODO(b/241044848): replace here as simply powering on the block, which will
+	 * include MCU firmware run.
+	 */
+	ret = gxp_pm_blk_on(gxp);
+	if (ret) {
+		dev_err(gxp->dev, "gxp_pm_blk_on failed");
+		return ret;
+	}
 	mutex_lock(&mcu_fw->lock);
 	ret = gxp_mcu_firmware_run_locked(mcu_fw, name);
 	mutex_unlock(&mcu_fw->lock);

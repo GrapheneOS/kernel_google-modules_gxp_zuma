@@ -2,8 +2,9 @@
 /*
  * GXP debug dump handler
  *
- * Copyright (C) 2020 Google LLC
+ * Copyright (C) 2020-2022 Google LLC
  */
+
 #ifndef __GXP_DEBUG_DUMP_H__
 #define __GXP_DEBUG_DUMP_H__
 
@@ -11,7 +12,7 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
-#if IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
+#if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
 #include <linux/platform_data/sscoredump.h>
 #endif
 
@@ -192,7 +193,7 @@ struct gxp_debug_dump_manager {
 	 * time
 	 */
 	struct mutex debug_dump_lock;
-#if IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
+#if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
 	struct sscd_segment segs[GXP_NUM_CORES][GXP_NUM_SEGMENTS_PER_CORE];
 #endif
 };

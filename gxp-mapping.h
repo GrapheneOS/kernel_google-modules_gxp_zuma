@@ -27,7 +27,6 @@ struct gxp_mapping {
 	 */
 	u64 host_address;
 	struct gxp_dev *gxp;
-	uint virt_core_list;
 	struct gxp_virtual_device *vd;
 	/*
 	 * `device_address` and `size` are the base address and size of the
@@ -59,7 +58,6 @@ struct gxp_mapping {
  * gxp_mapping_create() - Create a mapping for a user buffer
  * @gxp: The GXP device to create the mapping for
  * @vd: The virtual device to create the mapping for
- * @virt_core_list: A bitfield indicating the cores in @vd to map the buffer to
  * @user_address: The user-space address of the buffer to map
  * @size: The size of the buffer to be mapped
  * @flags: Flags describing the type of mapping to create; currently unused
@@ -77,8 +75,7 @@ struct gxp_mapping {
  */
 struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
 				       struct gxp_virtual_device *vd,
-				       uint virt_core_list, u64 user_address,
-				       size_t size, u32 flags,
+				       u64 user_address, size_t size, u32 flags,
 				       enum dma_data_direction dir);
 
 /**

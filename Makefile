@@ -95,10 +95,6 @@ ccflags-y += -DCONFIG_GXP_$(GXP_PLATFORM) -DCONFIG_$(GXP_CHIP)=1 \
 	     -I$(srctree)/$(M)/gcip-kernel-driver/include \
 	     -I$(srctree)/drivers/gxp/include
 
-ifeq ($(GXP_PLATFORM), $(filter $(GXP_PLATFORM),GEM5 IP_ZEBU))
-ccflags-y += -DZEBU_SYSMMU_WORKAROUND
-endif
-
 KBUILD_OPTIONS += GXP_CHIP=$(GXP_CHIP) GXP_PLATFORM=$(GXP_PLATFORM)
 
 # Access TPU driver's exported symbols.

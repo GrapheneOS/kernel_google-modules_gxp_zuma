@@ -15,10 +15,12 @@
 #define GXP_NUM_CORES 3
 /* three for cores, one for KCI, and one for UCI */
 #define GXP_NUM_MAILBOXES (GXP_NUM_CORES + 2)
+/* Indexes of the mailbox reg in device tree */
+#define KCI_MAILBOX_ID (GXP_NUM_CORES)
+#define UCI_MAILBOX_ID (GXP_NUM_CORES + 1)
+
 /* three for cores, one for MCU */
 #define GXP_NUM_WAKEUP_DOORBELLS (GXP_NUM_CORES + 1)
-/* Use the last mailbox for UCI */
-#define UCI_MAILBOX_ID (GXP_NUM_CORES + 1)
 
 /* TODO(b/234098135): remove this when FW supports suspend / resume */
 #define DISABLE_VD_SUSPEND_RESUME_SUPPORT

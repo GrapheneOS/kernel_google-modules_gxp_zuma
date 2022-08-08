@@ -52,13 +52,16 @@ static int gxp_dci_mailbox_manager_execute_cmd(struct gxp_mailbox *mailbox,
 }
 
 static int gxp_dci_mailbox_manager_execute_cmd_async(
-	struct gxp_mailbox *mailbox, struct mailbox_resp_queue *resp_queue,
+	struct gxp_client *client, struct gxp_mailbox *mailbox, int virt_core,
 	u16 cmd_code, u8 cmd_priority, u64 cmd_daddr, u32 cmd_size,
 	u32 cmd_flags, uint gxp_power_state, uint memory_power_state,
-	bool requested_low_clkmux, struct gxp_eventfd *eventfd, u64 *cmd_seq)
+	bool requested_low_clkmux, u64 *cmd_seq)
 {
 	struct gxp_dci_command cmd;
 	struct gxp_dci_buffer_descriptor buffer;
+	struct mailbox_resp_queue *resp_queue =
+		&client->vd->mailbox_resp_queues[virt_core];
+	struct gxp_eventfd *eventfd = client->mb_eventfds[virt_core];
 	int ret;
 
 	/* Pack the command structure */
@@ -81,12 +84,15 @@ static int gxp_dci_mailbox_manager_execute_cmd_async(
 	return ret;
 }
 
-static int
-gxp_dci_mailbox_manager_wait_async_resp(struct mailbox_resp_queue *resp_queue,
-					u64 *resp_seq, u16 *resp_status,
-					u32 *resp_retval, u16 *error_code)
+static int gxp_dci_mailbox_manager_wait_async_resp(struct gxp_client *client,
+						   int virt_core, u64 *resp_seq,
+						   u16 *resp_status,
+						   u32 *resp_retval,
+						   u16 *error_code)
 {
 	struct gxp_dci_async_response *resp_ptr;
+	struct mailbox_resp_queue *resp_queue =
+		&client->vd->mailbox_resp_queues[virt_core];
 	long timeout;
 
 	spin_lock_irq(&resp_queue->lock);
@@ -401,7 +407,7 @@ static int gxp_dci_allocate_resources(struct gxp_mailbox *mailbox,
 {
 	/* Allocate and initialize the command queue */
 	mailbox->cmd_queue = (struct gxp_dci_command *)gxp_dma_alloc_coherent(
-		mailbox->gxp, vd, BIT(virt_core),
+		mailbox->gxp, vd->domain,
 		sizeof(struct gxp_dci_command) * MBOX_CMD_QUEUE_NUM_ENTRIES,
 		&(mailbox->cmd_queue_device_addr), GFP_KERNEL, 0);
 	if (!mailbox->cmd_queue)
@@ -413,7 +419,7 @@ static int gxp_dci_allocate_resources(struct gxp_mailbox *mailbox,
 
 	/* Allocate and initialize the response queue */
 	mailbox->resp_queue = (struct gxp_dci_response *)gxp_dma_alloc_coherent(
-		mailbox->gxp, vd, BIT(virt_core),
+		mailbox->gxp, vd->domain,
 		sizeof(struct gxp_dci_response) * MBOX_RESP_QUEUE_NUM_ENTRIES,
 		&(mailbox->resp_queue_device_addr), GFP_KERNEL, 0);
 	if (!mailbox->resp_queue)
@@ -426,7 +432,7 @@ static int gxp_dci_allocate_resources(struct gxp_mailbox *mailbox,
 	/* Allocate and initialize the mailbox descriptor */
 	mailbox->descriptor =
 		(struct gxp_mailbox_descriptor *)gxp_dma_alloc_coherent(
-			mailbox->gxp, vd, BIT(virt_core),
+			mailbox->gxp, vd->domain,
 			sizeof(struct gxp_mailbox_descriptor),
 			&(mailbox->descriptor_device_addr), GFP_KERNEL, 0);
 	if (!mailbox->descriptor)
@@ -443,12 +449,12 @@ static int gxp_dci_allocate_resources(struct gxp_mailbox *mailbox,
 
 err_descriptor:
 	gxp_dma_free_coherent(
-		mailbox->gxp, vd, BIT(virt_core),
+		mailbox->gxp, vd->domain,
 		sizeof(struct gxp_dci_response) * mailbox->resp_queue_size,
 		mailbox->resp_queue, mailbox->resp_queue_device_addr);
 err_resp_queue:
 	gxp_dma_free_coherent(
-		mailbox->gxp, vd, BIT(virt_core),
+		mailbox->gxp, vd->domain,
 		sizeof(struct gxp_dci_command) * mailbox->cmd_queue_size,
 		mailbox->cmd_queue, mailbox->cmd_queue_device_addr);
 err_cmd_queue:
@@ -460,14 +466,14 @@ static void gxp_dci_release_resources(struct gxp_mailbox *mailbox,
 				      uint virt_core)
 {
 	gxp_dma_free_coherent(
-		mailbox->gxp, vd, BIT(virt_core),
+		mailbox->gxp, vd->domain,
 		sizeof(struct gxp_dci_command) * mailbox->cmd_queue_size,
 		mailbox->cmd_queue, mailbox->cmd_queue_device_addr);
 	gxp_dma_free_coherent(
-		mailbox->gxp, vd, BIT(virt_core),
+		mailbox->gxp, vd->domain,
 		sizeof(struct gxp_dci_response) * mailbox->resp_queue_size,
 		mailbox->resp_queue, mailbox->resp_queue_device_addr);
-	gxp_dma_free_coherent(mailbox->gxp, vd, BIT(virt_core),
+	gxp_dma_free_coherent(mailbox->gxp, vd->domain,
 			      sizeof(struct gxp_mailbox_descriptor),
 			      mailbox->descriptor,
 			      mailbox->descriptor_device_addr);
