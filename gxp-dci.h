@@ -98,6 +98,12 @@ enum gxp_dci_response_status {
 };
 
 /*
+ * Initializes the DCI to be able to work with user commands.
+ * Calling this function means that the device will communicate with the firmware side via DCI.
+ */
+void gxp_dci_init(struct gxp_mailbox_manager *mgr);
+
+/*
  * The following functions all require their caller have locked
  * gxp->vd_semaphore for reading.
  */

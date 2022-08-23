@@ -16,6 +16,8 @@
 #include "gxp-internal.h"
 #include "gxp-mailbox.h"
 
+#define UCI_RESOURCE_ID 0
+
 struct gxp_mcu;
 
 /* Command/Response Structures */

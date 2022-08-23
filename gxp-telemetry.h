@@ -27,6 +27,7 @@ struct gxp_telemetry_manager {
 		dma_addr_t buffer_daddrs[GXP_NUM_CORES];
 		u32 size;
 		refcount_t ref_count;
+		bool is_enabled;
 	} *logging_buff_data, *tracing_buff_data;
 	/* Protects logging_buff_data and tracing_buff_data */
 	struct mutex lock;

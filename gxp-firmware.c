@@ -749,15 +749,19 @@ static int gxp_firmware_finish_startup(struct gxp_dev *gxp,
 	}
 
 	/* Initialize mailbox */
-	gxp->mailbox_mgr->mailboxes[core] = gxp->mailbox_mgr->allocate_mailbox(
-		gxp->mailbox_mgr, vd, virt_core, core);
-	if (IS_ERR(gxp->mailbox_mgr->mailboxes[core])) {
-		dev_err(gxp->dev,
-			"Unable to allocate mailbox (core=%u, ret=%ld)\n", core,
-			PTR_ERR(gxp->mailbox_mgr->mailboxes[core]));
-		ret = PTR_ERR(gxp->mailbox_mgr->mailboxes[core]);
-		gxp->mailbox_mgr->mailboxes[core] = NULL;
-		goto out_firmware_unload;
+	if (gxp->mailbox_mgr->allocate_mailbox) {
+		gxp->mailbox_mgr->mailboxes[core] =
+			gxp->mailbox_mgr->allocate_mailbox(gxp->mailbox_mgr, vd,
+							   virt_core, core);
+		if (IS_ERR(gxp->mailbox_mgr->mailboxes[core])) {
+			dev_err(gxp->dev,
+				"Unable to allocate mailbox (core=%u, ret=%ld)\n",
+				core,
+				PTR_ERR(gxp->mailbox_mgr->mailboxes[core]));
+			ret = PTR_ERR(gxp->mailbox_mgr->mailboxes[core]);
+			gxp->mailbox_mgr->mailboxes[core] = NULL;
+			goto out_firmware_unload;
+		}
 	}
 
 	work = gxp_debug_dump_get_notification_handler(gxp, core);
@@ -795,9 +799,12 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 	gxp_notification_unregister_handler(gxp, core,
 					    HOST_NOTIF_TELEMETRY_STATUS);
 
-	gxp->mailbox_mgr->release_mailbox(gxp->mailbox_mgr, vd, virt_core,
-					  gxp->mailbox_mgr->mailboxes[core]);
-	dev_notice(gxp->dev, "Mailbox %u released\n", core);
+	if (gxp->mailbox_mgr->release_mailbox) {
+		gxp->mailbox_mgr->release_mailbox(
+			gxp->mailbox_mgr, vd, virt_core,
+			gxp->mailbox_mgr->mailboxes[core]);
+		dev_notice(gxp->dev, "Mailbox %u released\n", core);
+	}
 
 	if (vd->state == GXP_VD_RUNNING)
 		gxp_pm_core_off(gxp, core);

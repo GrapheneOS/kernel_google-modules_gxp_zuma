@@ -2,16 +2,17 @@
 /*
  * GXP mailbox driver.
  *
- * Copyright (C) 2020 Google LLC
+ * Copyright (C) 2020-2022 Google LLC
  */
 #ifndef __GXP_MAILBOX_DRIVER_H__
 #define __GXP_MAILBOX_DRIVER_H__
 
-#if !IS_ENABLED(CONFIG_AMALTHEA)
+#include "gxp-config.h"
+#include "gxp-mailbox.h"
+
+#ifdef GXP_HAS_DCI
 #include <gcip/gcip-mailbox.h>
 #endif
-
-#include "gxp-mailbox.h"
 
 /* Utilities of circular queue operations */
 
@@ -132,7 +133,7 @@ int gxp_mailbox_inc_resp_queue_head_nolock(struct gxp_mailbox *mailbox, u32 inc,
 int gxp_mailbox_inc_resp_queue_head_locked(struct gxp_mailbox *mailbox, u32 inc,
 					   u32 wrap_bit);
 
-#if !IS_ENABLED(CONFIG_AMALTHEA)
+#ifdef GXP_HAS_DCI
 /*
  * Following functions are used when setting the operators of `struct gcip_mailbox_ops`.
  * To use these functions, @mailbox->data should be set as an instance of `struct gxp_mailbox`.
@@ -167,6 +168,6 @@ int gxp_mailbox_gcip_ops_after_enqueue_cmd(struct gcip_mailbox *mailbox,
 					   void *cmd);
 void gxp_mailbox_gcip_ops_after_fetch_resps(struct gcip_mailbox *mailbox,
 					    u32 num_resps);
-#endif /* !CONFIG_AMALTHEA */
+#endif /* GXP_HAS_DCI */
 
 #endif /* __GXP_MAILBOX_DRIVER_H__ */

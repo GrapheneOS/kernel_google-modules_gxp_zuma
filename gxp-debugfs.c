@@ -138,7 +138,7 @@ static int gxp_firmware_run_set(void *data, u64 val)
 						     AUR_MEM_UNDEFINED,
 						     AUR_MEM_UNDEFINED);
 
-		ret = gxp_vd_start(gxp->debugfs_client->vd);
+		ret = gxp_vd_run(gxp->debugfs_client->vd);
 		up_write(&gxp->vd_semaphore);
 		if (ret) {
 			dev_err(gxp->dev, "Failed to start VD\n");

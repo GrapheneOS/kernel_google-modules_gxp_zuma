@@ -23,6 +23,44 @@
 #define MBOX_CMD_QUEUE_NUM_ENTRIES 1024
 #define MBOX_RESP_QUEUE_NUM_ENTRIES 1024
 
+static void gxp_uci_mailbox_manager_release_unconsumed_async_resps(
+	struct gxp_virtual_device *vd)
+{
+	struct gxp_async_response *cur, *nxt;
+	struct gxp_uci_async_response *uci_async_resp;
+	unsigned long flags;
+
+	/*
+	 * Cleanup any unconsumed responses.
+	 * Since VD is releasing, it is not necessary to lock here.
+	 * Do it anyway for consistency.
+	 */
+	spin_lock_irqsave(&vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
+			  flags);
+	list_for_each_entry_safe (
+		cur, nxt, &vd->mailbox_resp_queues[UCI_RESOURCE_ID].queue,
+		list_entry) {
+		list_del(&cur->list_entry);
+		uci_async_resp = container_of(
+			cur, struct gxp_uci_async_response, async_response);
+		kfree(uci_async_resp);
+	}
+	spin_unlock_irqrestore(&vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
+			       flags);
+}
+
+static void gxp_uci_mailbox_manager_set_ops(struct gxp_mailbox_manager *mgr)
+{
+	/*
+	 * Most mailbox manager operators are used by the `gxp-common-platform.c` when the device
+	 * uses direct mode. The only one that should be implemented among them from the UCI is the
+	 * `release_unconsumed_async_resps` operator which is used by the `gxp-vd.c` in both direct
+	 * and MCU mode.
+	 */
+	mgr->release_unconsumed_async_resps =
+		gxp_uci_mailbox_manager_release_unconsumed_async_resps;
+}
+
 static u64 gxp_uci_get_cmd_elem_seq(struct gcip_mailbox *mailbox, void *cmd)
 {
 	struct gxp_uci_command *elem = cmd;
@@ -86,7 +124,8 @@ static void gxp_uci_handle_async_resp_arrived(
 
 	spin_lock_irqsave(async_resp->dest_queue_lock, flags);
 
-	list_add_tail(&async_resp->list_entry, async_resp->dest_queue);
+	if (async_resp->dest_queue)
+		list_add_tail(&async_resp->list_entry, async_resp->dest_queue);
 	/*
 	 * Marking the dest_queue as NULL indicates the
 	 * response was handled in case its timeout
@@ -323,6 +362,7 @@ int gxp_uci_init(struct gxp_mcu *mcu)
 					 UCI_MAILBOX_ID, &mbx_args);
 	if (IS_ERR(uci->gxp_mbx))
 		return PTR_ERR(uci->gxp_mbx);
+	gxp_uci_mailbox_manager_set_ops(gxp->mailbox_mgr);
 
 	return 0;
 }
@@ -349,7 +389,13 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_uci_command *cmd,
 	async_resp = &async_uci_resp->async_response;
 	async_uci_resp->uci = uci;
 
-	async_resp->dest_queue = resp_queue;
+	/*
+	 * If the command is a wakelock command, keep dest_queue as a null
+	 * pointer to indicate that we will not expose the response to the
+	 * client.
+	 */
+	if (cmd->type != WAKELOCK_COMMAND)
+		async_resp->dest_queue = resp_queue;
 	async_resp->dest_queue_lock = queue_lock;
 	async_resp->dest_queue_waitq = queue_waitq;
 	if (eventfd && gxp_eventfd_get(eventfd))

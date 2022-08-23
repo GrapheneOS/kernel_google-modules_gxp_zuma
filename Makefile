@@ -23,6 +23,7 @@ gxp-objs += \
 		gxp-firmware.o \
 		gxp-lpm.o \
 		gxp-mailbox-driver.o \
+		gxp-mailbox-manager.o \
 		gxp-mailbox.o \
 		gxp-mapping.o \
 		gxp-mb-notification.o \
@@ -89,11 +90,12 @@ endif
 # Defaults to building for SILICON if not otherwise specified.
 GXP_PLATFORM ?= SILICON
 
-ccflags-y += -DCONFIG_GXP_$(GXP_PLATFORM) -DCONFIG_$(GXP_CHIP)=1 \
+gxp-flags := -DCONFIG_GXP_$(GXP_PLATFORM) -DCONFIG_$(GXP_CHIP)=1 \
 	     -I$(M)/include -I$(M)/gcip-kernel-driver/include \
 	     -I$(srctree)/$(M)/include \
 	     -I$(srctree)/$(M)/gcip-kernel-driver/include \
 	     -I$(srctree)/drivers/gxp/include
+ccflags-y += $(EXTRA_CFLAGS) $(gxp-flags)
 
 KBUILD_OPTIONS += GXP_CHIP=$(GXP_CHIP) GXP_PLATFORM=$(GXP_PLATFORM)
 

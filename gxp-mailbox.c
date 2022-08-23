@@ -42,10 +42,10 @@ module_param_named(mbx_timeout, gxp_mbx_timeout, int, 0660);
 
 /*
  * Following codes are the implementation of the mailbox manager for the legacy mailbox. They will
- * be compiled only when the `CONFIG_AMALTHEA` is defined.
+ * be compiled only when the `GXP_HAS_DCI` is not defined.
  */
 
-#if IS_ENABLED(CONFIG_AMALTHEA)
+#ifndef GXP_HAS_DCI
 
 static struct gxp_mailbox *
 gxp_mailbox_manager_allocate_mailbox(struct gxp_mailbox_manager *mgr,
@@ -230,19 +230,8 @@ static void gxp_mailbox_manager_release_unconsumed_async_resps(
 	}
 }
 
-struct gxp_mailbox_manager *gxp_mailbox_create_manager(struct gxp_dev *gxp,
-						       uint num_cores)
+static void gxp_mailbox_manager_set_ops(struct gxp_mailbox_manager *mgr)
 {
-	struct gxp_mailbox_manager *mgr;
-
-	mgr = devm_kzalloc(gxp->dev, sizeof(*mgr), GFP_KERNEL);
-	if (!mgr)
-		return ERR_PTR(-ENOMEM);
-
-	mgr->gxp = gxp;
-	mgr->num_cores = num_cores;
-	mgr->get_mailbox_csr_base = gxp_mailbox_get_csr_base;
-	mgr->get_mailbox_data_base = gxp_mailbox_get_data_base;
 	mgr->allocate_mailbox = gxp_mailbox_manager_allocate_mailbox;
 	mgr->release_mailbox = gxp_mailbox_release;
 	mgr->reset_mailbox = gxp_mailbox_reset;
@@ -251,15 +240,8 @@ struct gxp_mailbox_manager *gxp_mailbox_create_manager(struct gxp_dev *gxp,
 	mgr->wait_async_resp = gxp_mailbox_manager_wait_async_resp;
 	mgr->release_unconsumed_async_resps =
 		gxp_mailbox_manager_release_unconsumed_async_resps;
-
-	mgr->mailboxes = devm_kcalloc(gxp->dev, mgr->num_cores,
-				      sizeof(*mgr->mailboxes), GFP_KERNEL);
-	if (!mgr->mailboxes)
-		return ERR_PTR(-ENOMEM);
-
-	return mgr;
 }
-#endif /* CONFIG_AMALTHEA */
+#endif /* !GXP_HAS_DCI */
 
 /*
  * Fetches and handles responses, then wakes up threads that are waiting for a
@@ -532,11 +514,11 @@ int gxp_mailbox_unregister_interrupt_handler(struct gxp_mailbox *mailbox,
 
 /*
  * Following codes are the implementation of legacy mailbox. They will be compiled only when the
- * `CONFIG_AMALTHEA` is defined. The logic is identical with before refactoring but the only one
+ * `GXP_HAS_DCI` is not defined. The logic is identical with before refactoring but the only one
  * difference is that the interface of `gxp_mailbox_ops` and `gxp_mailbox_args` are applied.
  */
 
-#if IS_ENABLED(CONFIG_AMALTHEA)
+#ifndef GXP_HAS_DCI
 static int gxp_mailbox_ops_allocate_resources(struct gxp_mailbox *mailbox,
 					      struct gxp_virtual_device *vd,
 					      uint virt_core)
@@ -1013,6 +995,11 @@ out:
 	return ret;
 }
 
+void gxp_mailbox_init(struct gxp_mailbox_manager *mgr)
+{
+	gxp_mailbox_manager_set_ops(mgr);
+}
+
 int gxp_mailbox_execute_cmd(struct gxp_mailbox *mailbox,
 			    struct gxp_command *cmd, struct gxp_response *resp)
 {
@@ -1135,4 +1122,4 @@ err_free_resp:
 	kfree(async_resp);
 	return ret;
 }
-#endif /* CONFIG_AMALTHEA */
+#endif /* !GXP_HAS_DCI */

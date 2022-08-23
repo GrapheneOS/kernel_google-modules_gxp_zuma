@@ -16,10 +16,8 @@
 #include "gxp-uci.h"
 #include "gxp-usage-stats.h"
 
-static char *callisto_work_mode_name = "direct";
+char *callisto_work_mode_name = "direct";
 module_param_named(work_mode, callisto_work_mode_name, charp, 0660);
-
-#define UCI_RESOURCE_ID 0
 
 static int callisto_platform_parse_dt(struct platform_device *pdev,
 				      struct gxp_dev *gxp)
@@ -52,6 +50,9 @@ static int callisto_platform_after_probe(struct gxp_dev *gxp)
 {
 	struct callisto_dev *callisto = to_callisto_dev(gxp);
 
+	if (gxp_is_direct_mode(gxp))
+		return 0;
+
 	gxp_usage_stats_init(gxp);
 	return gxp_mcu_init(gxp, &callisto->mcu);
 }
@@ -59,6 +60,9 @@ static int callisto_platform_after_probe(struct gxp_dev *gxp)
 static void callisto_platform_before_remove(struct gxp_dev *gxp)
 {
 	struct callisto_dev *callisto = to_callisto_dev(gxp);
+
+	if (gxp_is_direct_mode(gxp))
+		return;
 
 	gxp_mcu_exit(&callisto->mcu);
 	gxp_usage_stats_exit(gxp);
@@ -237,6 +241,33 @@ static long callisto_platform_ioctl(struct file *file, uint cmd, ulong arg)
 	return ret;
 }
 
+static int callisto_request_power_states(struct gxp_client *client, uint power_state,
+				  uint memory_power_state, bool low_clkmux)
+{
+	struct gxp_dev *gxp = client->gxp;
+	struct callisto_dev *callisto = to_callisto_dev(gxp);
+	struct gxp_uci_command cmd;
+	int ret;
+
+	if (gxp_is_direct_mode(gxp))
+		return -EOPNOTSUPP;
+
+	/* Plus 1 to align with power states in MCU firmware. */
+	cmd.wakelock_command_params.dsp_operating_point = power_state + 1;
+	cmd.wakelock_command_params.memory_operating_point = memory_power_state;
+	cmd.type = WAKELOCK_COMMAND;
+	cmd.priority = 0; /* currently unused */
+	cmd.client_id = iommu_aux_get_pasid(client->vd->domain, gxp->dev);
+
+	ret = gxp_uci_send_command(
+		&callisto->mcu.uci, &cmd,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].queue,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
+		client->mb_eventfds[UCI_RESOURCE_ID]);
+	return ret;
+}
+
 static int gxp_platform_probe(struct platform_device *pdev)
 {
 	struct callisto_dev *callisto =
@@ -245,14 +276,13 @@ static int gxp_platform_probe(struct platform_device *pdev)
 	if (!callisto)
 		return -ENOMEM;
 
+	callisto->mode = callisto_dev_parse_work_mode(callisto_work_mode_name);
+
 	callisto->gxp.parse_dt = callisto_platform_parse_dt;
 	callisto->gxp.after_probe = callisto_platform_after_probe;
 	callisto->gxp.before_remove = callisto_platform_before_remove;
 	callisto->gxp.handle_ioctl = callisto_platform_ioctl;
-	if (!strcmp(callisto_work_mode_name, "mcu"))
-		callisto->mode = MCU;
-	else
-		callisto->mode = DIRECT;
+	callisto->gxp.request_power_states = callisto_request_power_states;
 
 	return gxp_common_platform_probe(pdev, &callisto->gxp);
 }
@@ -304,6 +334,13 @@ bool gxp_is_direct_mode(struct gxp_dev *gxp)
 	struct callisto_dev *callisto = to_callisto_dev(gxp);
 
 	return callisto->mode == DIRECT;
+}
+
+enum callisto_work_mode callisto_dev_parse_work_mode(const char *work_mode)
+{
+	if (!strcmp(work_mode, "mcu"))
+		return MCU;
+	return DIRECT;
 }
 
 MODULE_DESCRIPTION("Google GXP platform driver");

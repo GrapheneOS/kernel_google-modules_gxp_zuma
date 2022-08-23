@@ -107,11 +107,20 @@ static int gxp_mcu_firmware_handshake(struct gxp_mcu_firmware *mcu_fw)
 		mcu_fw->fw_info.fw_flavor = GCIP_FW_FLAVOR_UNKNOWN;
 		mcu_fw->fw_info.fw_changelist = 0;
 		mcu_fw->fw_info.fw_build_time = 0;
-		return fw_flavor;
+		/*
+		 * TODO(b/215413402): Directly return fw_flavor after FW
+		 * supports KCI.
+		 */
+		if (fw_flavor == -ETIMEDOUT)
+			return fw_flavor;
+		dev_notice(
+			gxp->dev,
+			"Temporarily ignore KCI timeout - assume MCU FW boots");
+	} else {
+		dev_info(gxp->dev, "loaded %s MCU firmware (%u)",
+			 gcip_fw_flavor_str(fw_flavor),
+			 mcu_fw->fw_info.fw_changelist);
 	}
-
-	dev_info(gxp->dev, "loaded %s MCU firmware (%u)",
-		 gcip_fw_flavor_str(fw_flavor), mcu_fw->fw_info.fw_changelist);
 
 	gxp_bpm_stop(gxp, GXP_MCU_CORE_ID);
 	dev_notice(gxp->dev, "R52 Instruction read transactions: 0x%x\n",

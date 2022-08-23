@@ -189,19 +189,8 @@ static void gxp_dci_mailbox_manager_release_unconsumed_async_resps(
 	}
 }
 
-struct gxp_mailbox_manager *gxp_mailbox_create_manager(struct gxp_dev *gxp,
-						       uint num_cores)
+static void gxp_dci_mailbox_manager_set_ops(struct gxp_mailbox_manager *mgr)
 {
-	struct gxp_mailbox_manager *mgr;
-
-	mgr = devm_kzalloc(gxp->dev, sizeof(*mgr), GFP_KERNEL);
-	if (!mgr)
-		return ERR_PTR(-ENOMEM);
-
-	mgr->gxp = gxp;
-	mgr->num_cores = num_cores;
-	mgr->get_mailbox_csr_base = gxp_mailbox_get_csr_base;
-	mgr->get_mailbox_data_base = gxp_mailbox_get_data_base;
 	mgr->allocate_mailbox = gxp_dci_alloc;
 	mgr->release_mailbox = gxp_dci_release;
 	mgr->reset_mailbox = gxp_mailbox_reset;
@@ -210,13 +199,6 @@ struct gxp_mailbox_manager *gxp_mailbox_create_manager(struct gxp_dev *gxp,
 	mgr->wait_async_resp = gxp_dci_mailbox_manager_wait_async_resp;
 	mgr->release_unconsumed_async_resps =
 		gxp_dci_mailbox_manager_release_unconsumed_async_resps;
-
-	mgr->mailboxes = devm_kcalloc(gxp->dev, mgr->num_cores,
-				      sizeof(*mgr->mailboxes), GFP_KERNEL);
-	if (!mgr->mailboxes)
-		return ERR_PTR(-ENOMEM);
-
-	return mgr;
 }
 
 /* Private data structure of DCI mailbox. */
@@ -533,6 +515,11 @@ static struct gxp_mailbox_ops gxp_dci_gxp_mbx_ops = {
 		gxp_dci_release_consume_responses_work,
 	.consume_responses_work = gxp_dci_consume_responses_work,
 };
+
+void gxp_dci_init(struct gxp_mailbox_manager *mgr)
+{
+	gxp_dci_mailbox_manager_set_ops(mgr);
+}
 
 struct gxp_mailbox *gxp_dci_alloc(struct gxp_mailbox_manager *mgr,
 				  struct gxp_virtual_device *vd, uint virt_core,

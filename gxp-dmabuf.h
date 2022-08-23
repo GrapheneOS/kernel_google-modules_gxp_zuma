@@ -7,7 +7,7 @@
 #ifndef __GXP_DMABUF_H__
 #define __GXP_DMABUF_H__
 
-#include <linux/dma-direction.h>
+#include <linux/iommu.h>
 #include <linux/types.h>
 
 #include "gxp-internal.h"
@@ -16,7 +16,7 @@
 /**
  * gxp_dmabuf_map() - Map a dma-buf for access by the specified virtual device
  * @gxp: The GXP device to map the dma-buf for
- * @vd: The virtual device includes the virtual cores the dma-buf is mapped for
+ * @domain: The iommu domain the dma-buf is mapped for
  * @fd: A file descriptor for the dma-buf to be mapped
  * @flags: The type of mapping to create; Currently unused
  * @direction: DMA direction
@@ -27,7 +27,7 @@
  *         mapping of the dma-buf. Returns ERR_PTR on failure.
  */
 struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp,
-				   struct gxp_virtual_device *vd, int fd,
+				   struct iommu_domain *domain, int fd,
 				   u32 flags, enum dma_data_direction dir);
 
 #endif /* __GXP_DMABUF_H__ */

@@ -31,29 +31,161 @@ static inline void hold_core_in_reset(struct gxp_dev *gxp, uint core)
 		     1 << GXP_REG_ETM_PWRCTL_CORE_RESET_SHIFT);
 }
 
-int gxp_vd_init(struct gxp_dev *gxp)
+void gxp_vd_init(struct gxp_dev *gxp)
 {
 	uint core;
-	int ret;
 
 	init_rwsem(&gxp->vd_semaphore);
 
 	/* All cores start as free */
 	for (core = 0; core < GXP_NUM_CORES; core++)
 		gxp->core_to_vd[core] = NULL;
-
-	ret = gxp_fw_init(gxp);
-
-	return ret;
 }
 
 void gxp_vd_destroy(struct gxp_dev *gxp)
 {
-	down_write(&gxp->vd_semaphore);
+	/* NO-OP for now. */
+}
 
-	gxp_fw_destroy(gxp);
+static int map_telemetry_buffers(struct gxp_dev *gxp,
+				 struct gxp_virtual_device *vd, uint core_list)
+{
+	struct buffer_data *data[2];
+	int i, core, ret;
 
-	up_write(&gxp->vd_semaphore);
+	if (!gxp->telemetry_mgr)
+		return 0;
+
+	mutex_lock(&gxp->telemetry_mgr->lock);
+	data[0] = gxp->telemetry_mgr->logging_buff_data;
+	data[1] = gxp->telemetry_mgr->tracing_buff_data;
+
+	for (i = 0; i < ARRAY_SIZE(data); i++) {
+		if (!data[i] || !data[i]->is_enabled)
+			continue;
+		for (core = 0; core < GXP_NUM_CORES; core++) {
+			if (!(BIT(core) & core_list))
+				continue;
+			ret = gxp_dma_map_allocated_coherent_buffer(
+				gxp, data[i]->buffers[core], vd->domain,
+				data[i]->size, data[i]->buffer_daddrs[core], 0);
+			if (ret) {
+				dev_err(gxp->dev,
+					"Mapping telemetry buffer to core %d failed",
+					core);
+				goto error;
+			}
+		}
+	}
+	mutex_unlock(&gxp->telemetry_mgr->lock);
+	return 0;
+error:
+	while (core--) {
+		if (!(BIT(core) & core_list))
+			continue;
+		gxp_dma_unmap_allocated_coherent_buffer(
+			gxp, vd->domain, data[i]->size,
+			data[i]->buffer_daddrs[core]);
+	}
+	while (i--) {
+		if (!data[i] || !data[i]->is_enabled)
+			continue;
+		for (core = 0; core < GXP_NUM_CORES; core++) {
+			if (!(BIT(core) & core_list))
+				continue;
+			gxp_dma_unmap_allocated_coherent_buffer(
+				gxp, vd->domain, data[i]->size,
+				data[i]->buffer_daddrs[core]);
+		}
+	}
+	mutex_unlock(&gxp->telemetry_mgr->lock);
+	return ret;
+}
+
+static void unmap_telemetry_buffers(struct gxp_dev *gxp,
+				    struct gxp_virtual_device *vd,
+				    uint core_list)
+{
+	struct buffer_data *data[2];
+	int i, core;
+
+	if (!gxp->telemetry_mgr)
+		return;
+	mutex_lock(&gxp->telemetry_mgr->lock);
+	data[0] = gxp->telemetry_mgr->logging_buff_data;
+	data[1] = gxp->telemetry_mgr->tracing_buff_data;
+
+	for (i = 0; i < ARRAY_SIZE(data); i++) {
+		if (!data[i] || !data[i]->is_enabled)
+			continue;
+		for (core = 0; core < GXP_NUM_CORES; core++) {
+			if (!(BIT(core) & core_list))
+				continue;
+			gxp_dma_unmap_allocated_coherent_buffer(
+				gxp, vd->domain, data[i]->size,
+				data[i]->buffer_daddrs[core]);
+		}
+	}
+	mutex_unlock(&gxp->telemetry_mgr->lock);
+}
+
+static int map_debug_dump_buffer(struct gxp_dev *gxp,
+				  struct gxp_virtual_device *vd)
+{
+	if (!gxp->debug_dump_mgr)
+		return 0;
+
+	return gxp_dma_map_allocated_coherent_buffer(
+		gxp, gxp->debug_dump_mgr->buf.vaddr, vd->domain,
+		gxp->debug_dump_mgr->buf.size, gxp->debug_dump_mgr->buf.daddr,
+		0);
+}
+
+static void unmap_debug_dump_buffer(struct gxp_dev *gxp,
+				    struct gxp_virtual_device *vd)
+{
+	if (!gxp->debug_dump_mgr)
+		return;
+
+	gxp_dma_unmap_allocated_coherent_buffer(gxp, vd->domain,
+						gxp->debug_dump_mgr->buf.size,
+						gxp->debug_dump_mgr->buf.daddr);
+}
+
+static int assign_cores(struct gxp_virtual_device *vd)
+{
+	struct gxp_dev *gxp = vd->gxp;
+	uint core;
+	uint available_cores = 0;
+
+	vd->core_list = 0;
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		if (gxp->core_to_vd[core] == NULL) {
+			if (available_cores < vd->num_cores)
+				vd->core_list |= BIT(core);
+			available_cores++;
+		}
+	}
+	if (available_cores < vd->num_cores) {
+		dev_err(gxp->dev, "Insufficient available cores. Available: %u. Requested: %u\n",
+			available_cores, vd->num_cores);
+		return -EBUSY;
+	}
+	for (core = 0; core < GXP_NUM_CORES; core++)
+		if (vd->core_list & BIT(core))
+			gxp->core_to_vd[core] = vd;
+	return 0;
+}
+
+static void unassign_cores(struct gxp_virtual_device *vd)
+{
+	struct gxp_dev *gxp = vd->gxp;
+	uint core;
+
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		if (gxp->core_to_vd[core] == vd)
+			gxp->core_to_vd[core] = NULL;
+	}
 }
 
 struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
@@ -63,6 +195,7 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	int i;
 	int err;
 
+	lockdep_assert_held_write(&gxp->vd_semaphore);
 	/* Assumes 0 < requested_cores <= GXP_NUM_CORES */
 	if (requested_cores == 0 || requested_cores > GXP_NUM_CORES)
 		return ERR_PTR(-EINVAL);
@@ -108,8 +241,36 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	vd->mappings_root = RB_ROOT;
 	init_rwsem(&vd->mappings_semaphore);
 
+	err = assign_cores(vd);
+	if (err)
+		goto error_free_slice_index;
+
+	if (gxp->data_mgr) {
+		vd->fw_app = gxp_fw_data_create_app(gxp, vd->core_list);
+		if (IS_ERR_OR_NULL(vd->fw_app))
+			goto error_unassign_cores;
+	}
+	err = gxp_dma_map_core_resources(gxp, vd->domain, vd->core_list,
+					 vd->slice_index);
+	if (err)
+		goto error_destroy_fw_data;
+	err = map_telemetry_buffers(gxp, vd, vd->core_list);
+	if (err)
+		goto error_unmap_core_resources;
+	err = map_debug_dump_buffer(gxp, vd);
+	if (err)
+		goto error_unmap_telemetry_buffer;
+
 	return vd;
 
+error_unmap_telemetry_buffer:
+	unmap_telemetry_buffers(gxp, vd, vd->core_list);
+error_unmap_core_resources:
+	gxp_dma_unmap_core_resources(gxp, vd->domain, vd->core_list);
+error_destroy_fw_data:
+	gxp_fw_data_destroy_app(gxp, vd->fw_app);
+error_unassign_cores:
+	unassign_cores(vd);
 error_free_slice_index:
 	if (vd->slice_index >= 0)
 		ida_free(&gxp->shared_slice_idp, vd->slice_index);
@@ -125,6 +286,19 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 {
 	struct rb_node *node;
 	struct gxp_mapping *mapping;
+	struct gxp_dev *gxp = vd->gxp;
+	uint core_list = vd->core_list;
+
+	lockdep_assert_held_write(&gxp->vd_semaphore);
+	unassign_cores(vd);
+	unmap_debug_dump_buffer(gxp, vd);
+	unmap_telemetry_buffers(gxp, vd, core_list);
+	gxp_dma_unmap_core_resources(gxp, vd->domain, core_list);
+
+	if (!IS_ERR_OR_NULL(vd->fw_app)) {
+		gxp_fw_data_destroy_app(gxp, vd->fw_app);
+		vd->fw_app = NULL;
+	}
 
 	vd->gxp->mailbox_mgr->release_unconsumed_async_resps(vd);
 
@@ -148,148 +322,46 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	kfree(vd);
 }
 
-static void map_telemetry_buffers(struct gxp_dev *gxp,
-				  struct gxp_virtual_device *vd,
-				  uint core_list)
-{
-	struct buffer_data *data[2] = {
-		gxp->telemetry_mgr->logging_buff_data,
-		gxp->telemetry_mgr->tracing_buff_data
-	};
-	int i, core, ret;
-
-	for (i = 0; i < ARRAY_SIZE(data); i++) {
-		if (!data[i])
-			continue;
-		for (core = 0; core < GXP_NUM_CORES; core++) {
-			if (!(BIT(core) & core_list))
-				continue;
-			ret = gxp_dma_map_allocated_coherent_buffer(
-				gxp, data[i]->buffers[core], vd->domain,
-				data[i]->size, data[i]->buffer_daddrs[core], 0);
-			if (ret)
-				dev_err(gxp->dev,
-					"Mapping telemetry buffer to core %d failed",
-					core);
-		}
-	}
-}
-
-static void unmap_telemetry_buffers(struct gxp_dev *gxp,
-				    struct gxp_virtual_device *vd,
-				    uint core_list)
-{
-	struct buffer_data *data[2] = {
-		gxp->telemetry_mgr->logging_buff_data,
-		gxp->telemetry_mgr->tracing_buff_data
-	};
-	int i, core;
-
-	for (i = 0; i < ARRAY_SIZE(data); i++) {
-		if (!data[i])
-			continue;
-		for (core = 0; core < GXP_NUM_CORES; core++) {
-			if (!(BIT(core) & core_list))
-				continue;
-			gxp_dma_unmap_allocated_coherent_buffer(
-				gxp, vd->domain, data[i]->size,
-				data[i]->buffer_daddrs[core]);
-		}
-	}
-}
-
-static void map_debug_dump_buffer(struct gxp_dev *gxp,
-				  struct gxp_virtual_device *vd)
-{
-	if (!gxp->debug_dump_mgr)
-		return;
-
-	gxp_dma_map_allocated_coherent_buffer(
-		gxp, gxp->debug_dump_mgr->buf.vaddr, vd->domain,
-		gxp->debug_dump_mgr->buf.size, gxp->debug_dump_mgr->buf.daddr,
-		0);
-}
-
-static void unmap_debug_dump_buffer(struct gxp_dev *gxp,
-				    struct gxp_virtual_device *vd)
-{
-	if (!gxp->debug_dump_mgr)
-		return;
-
-	gxp_dma_unmap_allocated_coherent_buffer(gxp, vd->domain,
-						gxp->debug_dump_mgr->buf.size,
-						gxp->debug_dump_mgr->buf.daddr);
-}
-
-/* Caller must hold gxp->vd_semaphore for writing */
-int gxp_vd_start(struct gxp_virtual_device *vd)
+int gxp_vd_block_ready(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
-	uint core;
-	uint available_cores = 0;
-	uint cores_remaining = vd->num_cores;
-	uint core_list = 0;
+	int ret;
+
+	if (vd->state != GXP_VD_OFF)
+		return -EINVAL;
+	ret = gxp_dma_domain_attach_device(gxp, vd->domain, vd->core_list);
+	if (ret)
+		return ret;
+	vd->state = GXP_VD_READY;
+	return 0;
+}
+
+int gxp_vd_run(struct gxp_virtual_device *vd)
+{
+	struct gxp_dev *gxp = vd->gxp;
 	int ret = 0;
 
-	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (gxp->core_to_vd[core] == NULL) {
-			if (available_cores < vd->num_cores)
-				core_list |= BIT(core);
-			available_cores++;
-		}
-	}
-
-	if (available_cores < vd->num_cores) {
-		dev_err(gxp->dev, "Insufficient available cores. Available: %u. Requested: %u\n",
-			available_cores, vd->num_cores);
-		return -EBUSY;
-	}
-
-	vd->fw_app = gxp_fw_data_create_app(gxp, core_list);
-
-	gxp_dma_map_core_resources(gxp, vd->domain, core_list,
-				   vd->slice_index);
-	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (cores_remaining == 0)
-			break;
-
-		if (core_list & BIT(core)) {
-			gxp->core_to_vd[core] = vd;
-			cores_remaining--;
-		}
-	}
-	map_telemetry_buffers(gxp, vd, core_list);
-	map_debug_dump_buffer(gxp, vd);
-	gxp_dma_domain_attach_device(gxp, vd->domain, core_list);
-
-	ret = gxp_firmware_run(gxp, vd, core_list);
+	lockdep_assert_held(&gxp->vd_semaphore);
+	if (vd->state != GXP_VD_READY && vd->state != GXP_VD_OFF)
+		return -EINVAL;
+	if (vd->state == GXP_VD_OFF)
+		gxp_vd_block_ready(vd);
+	ret = gxp_firmware_run(gxp, vd, vd->core_list);
 	if (ret)
-		goto error;
-
-	vd->state = GXP_VD_RUNNING;
-	return ret;
-
-error:
-	gxp_dma_domain_detach_device(gxp, vd->domain);
-	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (core_list & BIT(core))
-			gxp->core_to_vd[core] = NULL;
-	}
-	unmap_debug_dump_buffer(gxp, vd);
-	unmap_telemetry_buffers(gxp, vd, core_list);
-	gxp_dma_unmap_core_resources(gxp, vd->domain, core_list);
-	gxp_fw_data_destroy_app(gxp, vd->fw_app);
-
+		vd->state = GXP_VD_UNAVAILABLE;
+	else
+		vd->state = GXP_VD_RUNNING;
 	return ret;
 }
 
-/* Caller must hold gxp->vd_semaphore for writing */
+/* Caller must hold gxp->vd_semaphore */
 void gxp_vd_stop(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
-	uint core, core_list = 0;
+	uint core;
 	uint lpm_state;
 
+	lockdep_assert_held(&gxp->vd_semaphore);
 	if ((vd->state == GXP_VD_OFF || vd->state == GXP_VD_RUNNING) &&
 	    gxp_pm_get_blk_state(gxp) != AUR_OFF) {
 		/*
@@ -304,26 +376,9 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 		}
 	}
 
-	for (core = 0; core < GXP_NUM_CORES; core++)
-		if (gxp->core_to_vd[core] == vd)
-			core_list |= BIT(core);
-
-	gxp_firmware_stop(gxp, vd, core_list);
-
+	gxp_firmware_stop(gxp, vd, vd->core_list);
 	if (vd->state == GXP_VD_RUNNING)
 		gxp_dma_domain_detach_device(gxp, vd->domain);
-	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (gxp->core_to_vd[core] == vd)
-			gxp->core_to_vd[core] = NULL;
-	}
-	unmap_debug_dump_buffer(gxp, vd);
-	unmap_telemetry_buffers(gxp, vd, core_list);
-	gxp_dma_unmap_core_resources(gxp, vd->domain, core_list);
-
-	if (!IS_ERR_OR_NULL(vd->fw_app)) {
-		gxp_fw_data_destroy_app(gxp, vd->fw_app);
-		vd->fw_app = NULL;
-	}
 	vd->state = GXP_VD_OFF;
 }
 

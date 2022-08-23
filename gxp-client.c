@@ -31,7 +31,6 @@ struct gxp_client *gxp_client_create(struct gxp_dev *gxp)
 	client->requested_power_state = AUR_OFF;
 	client->requested_memory_power_state = 0;
 	client->vd = NULL;
-	client->tpu_mbx_allocated = false;
 	client->requested_low_clkmux = false;
 	return client;
 }
@@ -41,26 +40,26 @@ void gxp_client_destroy(struct gxp_client *client)
 	struct gxp_dev *gxp = client->gxp;
 	int core;
 
-	down_write(&gxp->vd_semaphore);
-
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
-	/*
-	 * Unmap TPU buffers, if the mapping is already removed, this
-	 * is a no-op.
-	 */
-	if (client->vd)
-		gxp_dma_unmap_tpu_buffer(gxp, client->vd->domain, client->mbx_desc);
-#endif
-
-	if (client->vd && client->vd->state != GXP_VD_OFF)
+	if (client->vd && client->vd->state != GXP_VD_OFF) {
+		down_read(&gxp->vd_semaphore);
 		gxp_vd_stop(client->vd);
+		up_read(&gxp->vd_semaphore);
+	}
 
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (client->mb_eventfds[core])
 			gxp_eventfd_put(client->mb_eventfds[core]);
 	}
 
-	up_write(&gxp->vd_semaphore);
+#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
+	if (client->tpu_file) {
+		fput(client->tpu_file);
+		client->tpu_file = NULL;
+		if (client->vd)
+			gxp_dma_unmap_tpu_buffer(gxp, client->vd->domain,
+						 client->mbx_desc);
+	}
+#endif
 
 	if (client->has_block_wakelock) {
 		gxp_wakelock_release(client->gxp);
@@ -74,8 +73,185 @@ void gxp_client_destroy(struct gxp_client *client)
 	if (client->vd) {
 		if (gxp->before_release_vd)
 			gxp->before_release_vd(gxp, client->vd);
+		down_write(&gxp->vd_semaphore);
 		gxp_vd_release(client->vd);
+		up_write(&gxp->vd_semaphore);
 	}
 
 	kfree(client);
+}
+
+int gxp_client_allocate_virtual_device(struct gxp_client *client,
+				       uint core_count)
+{
+	struct gxp_dev *gxp = client->gxp;
+	struct gxp_virtual_device *vd;
+	int ret;
+
+	lockdep_assert_held(&client->semaphore);
+	if (client->vd) {
+		dev_err(gxp->dev,
+			"Virtual device was already allocated for client\n");
+		return -EINVAL;
+	}
+
+	down_write(&gxp->vd_semaphore);
+	vd = gxp_vd_allocate(gxp, core_count);
+	if (IS_ERR(vd)) {
+		ret = PTR_ERR(vd);
+		dev_err(gxp->dev,
+			"Failed to allocate virtual device for client (%d)\n",
+			ret);
+		goto error;
+	}
+
+	if (gxp->after_allocate_vd) {
+		ret = gxp->after_allocate_vd(gxp, vd);
+		if (ret) {
+			gxp_vd_release(vd);
+			goto error;
+		}
+	}
+	up_write(&gxp->vd_semaphore);
+
+	if (client->has_block_wakelock)
+		gxp_vd_block_ready(client->vd);
+
+	client->vd = vd;
+	return 0;
+error:
+	up_write(&gxp->vd_semaphore);
+	return ret;
+}
+
+static int gxp_client_request_power_states(struct gxp_client *client,
+					   uint power_state,
+					   uint memory_power_state,
+					   bool low_clkmux)
+{
+	struct gxp_dev *gxp = client->gxp;
+	int ret;
+
+	if (gxp->request_power_states) {
+		ret = gxp->request_power_states(client, power_state,
+						memory_power_state, low_clkmux);
+		if (ret != -EOPNOTSUPP)
+			return ret;
+	}
+	gxp_pm_update_requested_power_states(
+		gxp, client->requested_power_state,
+		client->requested_low_clkmux, power_state, low_clkmux,
+		client->requested_memory_power_state,
+		memory_power_state);
+	client->requested_power_state = power_state;
+	client->requested_low_clkmux = low_clkmux;
+	client->requested_memory_power_state = memory_power_state;
+	return 0;
+}
+
+int gxp_client_acquire_block_wakelock(struct gxp_client *client,
+				      bool *acquired_wakelock, uint power_state,
+				      uint memory_power_state, bool low_clkmux)
+{
+	struct gxp_dev *gxp = client->gxp;
+	int ret;
+
+	lockdep_assert_held(&client->semaphore);
+	if (!client->has_block_wakelock) {
+		ret = gxp_wakelock_acquire(gxp);
+		if (ret)
+			return ret;
+		*acquired_wakelock = true;
+		if (client->vd)
+			gxp_vd_block_ready(client->vd);
+	} else {
+		*acquired_wakelock = false;
+	}
+	client->has_block_wakelock = true;
+
+	/*
+	 * Update client's TGID+PID in case the process that opened
+	 * /dev/gxp is not the one that called this IOCTL.
+	 */
+	client->tgid = current->tgid;
+	client->pid = current->pid;
+
+	ret = gxp_client_request_power_states(client, power_state,
+					      memory_power_state, low_clkmux);
+
+	return ret;
+}
+
+void gxp_client_release_block_wakelock(struct gxp_client *client)
+{
+	struct gxp_dev *gxp = client->gxp;
+
+	lockdep_assert_held(&client->semaphore);
+	if (!client->has_block_wakelock)
+		return;
+
+	if (client->has_vd_wakelock)
+		gxp_client_release_vd_wakelock(client);
+
+	gxp_client_request_power_states(client, AUR_OFF, AUR_MEM_UNDEFINED,
+					false);
+	gxp_wakelock_release(gxp);
+	client->has_block_wakelock = false;
+}
+
+int gxp_client_acquire_vd_wakelock(struct gxp_client *client)
+{
+	struct gxp_dev *gxp = client->gxp;
+	int ret = 0;
+
+	lockdep_assert_held(&client->semaphore);
+	if (!client->has_block_wakelock) {
+		dev_err(gxp->dev,
+			"Must hold BLOCK wakelock to acquire VIRTUAL_DEVICE wakelock\n");
+		return -EINVAL;
+	}
+
+	if (client->vd->state == GXP_VD_UNAVAILABLE) {
+		dev_err(gxp->dev,
+			"Cannot acquire VIRTUAL_DEVICE wakelock on a broken virtual device\n");
+		return -ENODEV;
+	}
+
+	if (!client->has_vd_wakelock) {
+		down_write(&gxp->vd_semaphore);
+		if (client->vd->state == GXP_VD_READY || client->vd->state == GXP_VD_OFF)
+			ret = gxp_vd_run(client->vd);
+		else
+			ret = gxp_vd_resume(client->vd);
+		up_write(&gxp->vd_semaphore);
+	}
+
+	if (!ret)
+		client->has_vd_wakelock = true;
+
+	return ret;
+}
+
+void gxp_client_release_vd_wakelock(struct gxp_client *client)
+{
+	struct gxp_dev *gxp = client->gxp;
+
+	lockdep_assert_held(&client->semaphore);
+	if (!client->has_vd_wakelock)
+		return;
+
+	/*
+	 * Currently VD state will not be GXP_VD_UNAVAILABLE if
+	 * has_vd_wakelock is true. Add this check just in case
+	 * GXP_VD_UNAVAILABLE will occur in more scenarios in the
+	 * future.
+	 */
+	if (client->vd->state == GXP_VD_UNAVAILABLE)
+		return;
+
+	down_write(&gxp->vd_semaphore);
+	gxp_vd_suspend(client->vd);
+	up_write(&gxp->vd_semaphore);
+
+	client->has_vd_wakelock = false;
 }

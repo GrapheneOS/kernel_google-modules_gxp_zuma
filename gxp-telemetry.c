@@ -222,6 +222,7 @@ static struct buffer_data *allocate_telemetry_buffers(struct gxp_dev *gxp,
 	}
 	data->size = size;
 	refcount_set(&data->ref_count, 1);
+	data->is_enabled = false;
 
 	return data;
 
@@ -395,6 +396,11 @@ int gxp_telemetry_enable(struct gxp_dev *gxp, u8 type)
 	uint core;
 	struct gxp_virtual_device *vd;
 
+	/*
+	 * `vd_semaphore` cannot be acquired while holding the telemetry lock,
+	 * so acquire it here before locking the telemetry lock.
+	 */
+	down_read(&gxp->vd_semaphore);
 	mutex_lock(&gxp->telemetry_mgr->lock);
 
 	switch (type) {
@@ -415,7 +421,6 @@ int gxp_telemetry_enable(struct gxp_dev *gxp, u8 type)
 	}
 
 	/* Map the buffers for any cores already running */
-	down_read(&gxp->vd_semaphore);
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		vd = gxp->core_to_vd[core];
 		if (vd != NULL) {
@@ -440,8 +445,9 @@ int gxp_telemetry_enable(struct gxp_dev *gxp, u8 type)
 	}
 
 	refcount_inc(&data->ref_count);
+	data->is_enabled = true;
 
-	goto up_sem;
+	goto out;
 err:
 	while (core--) {
 		vd = gxp->core_to_vd[core];
@@ -451,10 +457,9 @@ err:
 				data->buffer_daddrs[core]);
 	}
 
-up_sem:
-	up_read(&gxp->vd_semaphore);
 out:
 	mutex_unlock(&gxp->telemetry_mgr->lock);
+	up_read(&gxp->vd_semaphore);
 
 	return ret;
 }
@@ -505,7 +510,14 @@ static int notify_core_and_wait_for_disable(struct gxp_dev *gxp, uint core,
 				   msecs_to_jiffies(10));
 		retries_left--;
 
+		/*
+		 * No function may attempt to acquire the `vd_semaphore` while
+		 * holding the telemetry lock, so it must be released, then
+		 * re-acquired once the `vd_semaphore` is held.
+		 */
+		mutex_unlock(&gxp->telemetry_mgr->lock);
 		down_read(&gxp->vd_semaphore);
+		mutex_lock(&gxp->telemetry_mgr->lock);
 	}
 
 	/*
@@ -567,6 +579,8 @@ static int telemetry_disable_locked(struct gxp_dev *gxp, u8 type)
 	if (!(data->host_status & GXP_TELEMETRY_HOST_STATUS_ENABLED))
 		return 0;
 
+	data->is_enabled = false;
+
 	/* Clear the log buffer fields in firmware-data */
 	data->host_status &= ~GXP_TELEMETRY_HOST_STATUS_ENABLED;
 	gxp_fw_data_set_telemetry_descriptors(gxp, type, data->host_status,
@@ -611,13 +625,17 @@ int gxp_telemetry_disable(struct gxp_dev *gxp, u8 type)
 {
 	int ret;
 
-	mutex_lock(&gxp->telemetry_mgr->lock);
+	/*
+	 * `vd_semaphore` cannot be acquired while holding the telemetry lock,
+	 * so acquire it here before locking the telemetry lock.
+	 */
 	down_read(&gxp->vd_semaphore);
+	mutex_lock(&gxp->telemetry_mgr->lock);
 
 	ret = telemetry_disable_locked(gxp, type);
 
-	up_read(&gxp->vd_semaphore);
 	mutex_unlock(&gxp->telemetry_mgr->lock);
+	up_read(&gxp->vd_semaphore);
 
 	return ret;
 }

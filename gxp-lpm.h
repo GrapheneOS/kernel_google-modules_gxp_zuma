@@ -38,7 +38,6 @@ enum lpm_state {
 
 #define CORE_WAKEUP_DOORBELL(__core__) (0 + (__core__))
 
-#define AUR_DVFS_DOMAIN 17
 #define AUR_DVFS_DEBUG_REQ (1 << 31)
 #define AUR_DEBUG_CORE_FREQ (AUR_DVFS_DEBUG_REQ | (3 << 27))
 

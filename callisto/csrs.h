@@ -87,7 +87,7 @@ enum gxp_csrs {
 #define SYNC_BARRIER_SHADOW_OFFSET 0x800
 
 #define CORE_PD_BASE(_x_)	((_x_) << 2)
-#define CORE_PD_COUNT		4
+#define CORE_PD_COUNT		GXP_NUM_CORES
 
 #define TIMER_BASE(_x_)		((_x_) << 12)
 #define TIMER_COMPARATOR_OFFSET	0x0

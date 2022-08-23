@@ -7,6 +7,7 @@
 #ifndef __GXP_CLIENT_H__
 #define __GXP_CLIENT_H__
 
+#include <linux/file.h>
 #include <linux/rwsem.h>
 #include <linux/sched.h>
 #include <linux/types.h>
@@ -36,7 +37,7 @@ struct gxp_client {
 	bool requested_low_clkmux;
 
 	struct gxp_virtual_device *vd;
-	bool tpu_mbx_allocated;
+	struct file *tpu_file;
 	struct gxp_tpu_mbx_desc mbx_desc;
 
 	struct gxp_eventfd *mb_eventfds[GXP_NUM_CORES];
@@ -64,5 +65,66 @@ struct gxp_client *gxp_client_create(struct gxp_dev *gxp);
  * TPU mailboxes it holds.
  */
 void gxp_client_destroy(struct gxp_client *client);
+/**
+ * gxp_client_allocate_virtual_device() - Allocates a virtual device for the
+ * client.
+ *
+ * @client: The client to allocate a virtual device
+ * @core_count: The requested core count of the virtual device.
+ *
+ * The caller must have locked client->semaphore.
+ *
+ * Return:
+ * * 0          - Success
+ * * -EINVAL    - A virtual device of the client has been allocated
+ * * Otherwise  - Errno returned by virtual device allocation
+ */
+int gxp_client_allocate_virtual_device(struct gxp_client *client, uint core_count);
+/**
+ * gxp_client_acquire_block_wakelock() - Acquires a block wakelock and requests
+ * power votes.
+ *
+ * @client: The client to acquire wakelock and request power votes.
+ * @acquired_wakelock: True if block wakelock has been acquired by this client.
+ * @power_state: The requested power state.
+ * @memory_power_state: The requested memory power state.
+ * @low_clkmux: Specify whether the vote is requested with low frequency CLKMUX
+ *              flag. Will take no effect if the @power_state is AUR_OFF.
+ *
+ * The caller must have locked client->semaphore.
+ *
+ * Return:
+ * * 0          - Success
+ * * Otherwise  - Errno returned by block wakelock acquisition
+ */
+int gxp_client_acquire_block_wakelock(struct gxp_client *client,
+				      bool *acquired_wakelock, uint power_state,
+				      uint memory_power_state, bool low_clkmux);
+/**
+ * gxp_client_release_block_wakelock() - Releases the holded block wakelock and
+ * revokes the power votes.
+ *
+ * The caller must have locked client->semaphore.
+ */
+void gxp_client_release_block_wakelock(struct gxp_client *client);
+/**
+ * gxp_client_acquire_vd_wakelock() - Acquires a VD wakelock for the current
+ * virtual device to start the virtual device or resume it if it's suspended.
+ *
+ * The caller must have locked client->semaphore.
+ *
+ * Return:
+ * * 0          - Success
+ * * -EINVAL    - No holded block wakelock
+ * * -ENODEV    - VD state is unavailable
+ */
+int gxp_client_acquire_vd_wakelock(struct gxp_client *client);
+/**
+ * gxp_client_release_vd_wakelock() - Releases the holded VD wakelock to suspend
+ * the current virtual device.
+ *
+ * The caller must have locked client->semaphore.
+ */
+void gxp_client_release_vd_wakelock(struct gxp_client *client);
 
 #endif /* __GXP_CLIENT_H__ */

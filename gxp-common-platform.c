@@ -13,6 +13,7 @@
 #include <linux/cred.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
+#include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/genalloc.h>
 #include <linux/kthread.h>
@@ -49,6 +50,10 @@
 #include "gxp-vd.h"
 #include "gxp-wakelock.h"
 #include "gxp.h"
+
+#ifdef GXP_HAS_DCI
+#include "gxp-dci.h"
+#endif
 
 /* Caller needs to hold client->semaphore */
 static bool check_client_has_available_vd(struct gxp_client *client,
@@ -245,7 +250,8 @@ static int gxp_map_buffer(struct gxp_client *client,
 		goto out;
 	}
 
-	map = gxp_mapping_create(gxp, client->vd, ibuf.host_address, ibuf.size,
+	map = gxp_mapping_create(gxp, client->vd->domain, ibuf.host_address,
+				 ibuf.size,
 				 /*gxp_dma_flags=*/0,
 				 mapping_flags_to_dma_dir(ibuf.flags));
 	if (IS_ERR(map)) {
@@ -471,11 +477,6 @@ static int gxp_mailbox_command(struct gxp_client *client,
 			"Unable to copy ioctl data from user-space\n");
 		return -EFAULT;
 	}
-	if (ibuf.gxp_power_state == GXP_POWER_STATE_OFF) {
-		dev_err(gxp->dev,
-			"GXP_POWER_STATE_OFF is not a valid value when executing a mailbox command\n");
-		return -EINVAL;
-	}
 	if (ibuf.gxp_power_state < GXP_POWER_STATE_OFF ||
 	    ibuf.gxp_power_state >= GXP_NUM_POWER_STATES) {
 		dev_err(gxp->dev, "Requested power state is invalid\n");
@@ -627,7 +628,6 @@ static int gxp_allocate_vd(struct gxp_client *client,
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_virtual_device_ioctl ibuf;
-	struct gxp_virtual_device *vd;
 	int ret = 0;
 
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
@@ -645,33 +645,7 @@ static int gxp_allocate_vd(struct gxp_client *client,
 	}
 
 	down_write(&client->semaphore);
-
-	if (client->vd) {
-		dev_err(gxp->dev, "Virtual device was already allocated for client\n");
-		ret = -EINVAL;
-		goto out;
-	}
-
-	vd = gxp_vd_allocate(gxp, ibuf.core_count);
-	if (IS_ERR(vd)) {
-		ret = PTR_ERR(vd);
-		dev_err(gxp->dev,
-			"Failed to allocate virtual device for client (%d)\n",
-			ret);
-		goto out;
-	}
-
-	if (gxp->after_allocate_vd) {
-		ret = gxp->after_allocate_vd(gxp, vd);
-		if (ret) {
-			gxp_vd_release(vd);
-			goto out;
-		}
-	}
-
-	client->vd = vd;
-
-out:
+	ret = gxp_client_allocate_virtual_device(client, ibuf.core_count);
 	up_write(&client->semaphore);
 
 	return ret;
@@ -1000,9 +974,8 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 		goto out;
 	}
 
-	if (client->tpu_mbx_allocated) {
-		dev_err(gxp->dev, "%s: Mappings already exist for TPU mailboxes\n",
-			__func__);
+	if (client->tpu_file) {
+		dev_err(gxp->dev, "Mappings already exist for TPU mailboxes");
 		ret = -EBUSY;
 		goto out_free;
 	}
@@ -1015,8 +988,28 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 				     ALLOCATE_EXTERNAL_MAILBOX, &gxp_tpu_info,
 				     mbx_info);
 	if (ret) {
-		dev_err(gxp->dev, "%s: Failed to allocate ext tpu mailboxes %d\n",
-			__func__, ret);
+		dev_err(gxp->dev, "Failed to allocate ext TPU mailboxes %d",
+			ret);
+		goto out_free;
+	}
+	/*
+	 * If someone is attacking us through this interface -
+	 * it's possible that ibuf.tpu_fd here is already a different file from
+	 * the one passed to edgetpu_ext_driver_cmd() (if the runtime closes the
+	 * FD and opens another file exactly between the TPU driver call above
+	 * and the fget below).
+	 * But the worst consequence of this attack is we fget() ourselves (GXP
+	 * FD), which only leads to memory leak (because the file object has a
+	 * reference to itself). The race is also hard to hit so we don't insist
+	 * on preventing it.
+	 */
+	client->tpu_file = fget(ibuf.tpu_fd);
+	if (!client->tpu_file) {
+		edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
+				       EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
+				       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info,
+				       NULL);
+		ret = -EINVAL;
 		goto out_free;
 	}
 	/* Align queue size to page size for iommu map. */
@@ -1026,8 +1019,9 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 	ret = gxp_dma_map_tpu_buffer(gxp, client->vd->domain,
 				     phys_core_list, mbx_info);
 	if (ret) {
-		dev_err(gxp->dev, "%s: failed to map TPU mailbox buffer %d\n",
-			__func__, ret);
+		dev_err(gxp->dev, "Failed to map TPU mailbox buffer %d", ret);
+		fput(client->tpu_file);
+		client->tpu_file = NULL;
 		edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
 				       EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
 				       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info,
@@ -1037,7 +1031,6 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 	client->mbx_desc.phys_core_list = phys_core_list;
 	client->mbx_desc.cmdq_size = mbx_info->cmdq_size;
 	client->mbx_desc.respq_size = mbx_info->respq_size;
-	client->tpu_mbx_allocated = true;
 
 out_free:
 	kfree(mbx_info);
@@ -1074,9 +1067,8 @@ static int gxp_unmap_tpu_mbx_queue(struct gxp_client *client,
 		goto out;
 	}
 
-	if (!client->tpu_mbx_allocated) {
-		dev_err(gxp->dev, "%s: No mappings exist for TPU mailboxes\n",
-			__func__);
+	if (!client->tpu_file) {
+		dev_err(gxp->dev, "No mappings exist for TPU mailboxes");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -1084,16 +1076,11 @@ static int gxp_unmap_tpu_mbx_queue(struct gxp_client *client,
 	gxp_dma_unmap_tpu_buffer(gxp, client->vd->domain, client->mbx_desc);
 
 	gxp_tpu_info.tpu_fd = ibuf.tpu_fd;
-	ret = edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
-				     EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
-				     FREE_EXTERNAL_MAILBOX, &gxp_tpu_info,
-				     NULL);
-	if (ret) {
-		dev_err(gxp->dev, "%s: Failed to free ext tpu mailboxes %d\n",
-			__func__, ret);
-		goto out;
-	}
-	client->tpu_mbx_allocated = false;
+	edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
+			       EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
+			       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info, NULL);
+	fput(client->tpu_file);
+	client->tpu_file = NULL;
 
 out:
 	up_write(&client->semaphore);
@@ -1220,73 +1207,29 @@ static int gxp_acquire_wake_lock_compat(
 
 	/* Acquire a BLOCK wakelock if requested */
 	if (ibuf.components_to_wake & WAKELOCK_BLOCK) {
-		if (!client->has_block_wakelock) {
-			ret = gxp_wakelock_acquire(gxp);
-			acquired_block_wakelock = true;
-		}
-
+		ret = gxp_client_acquire_block_wakelock(
+			client, &acquired_block_wakelock,
+			aur_state_array[ibuf.gxp_power_state],
+			aur_memory_state_array[ibuf.memory_power_state],
+			false);
 		if (ret) {
 			dev_err(gxp->dev,
 				"Failed to acquire BLOCK wakelock for client (ret=%d)\n",
 				ret);
 			goto out;
 		}
-
-		client->has_block_wakelock = true;
-
-		/*
-		 * Update client's TGID+PID in case the process that opened
-		 * /dev/gxp is not the one that called this IOCTL.
-		 */
-		client->tgid = current->tgid;
-		client->pid = current->pid;
 	}
 
 	/* Acquire a VIRTUAL_DEVICE wakelock if requested */
 	if (ibuf.components_to_wake & WAKELOCK_VIRTUAL_DEVICE) {
-		if (!client->has_block_wakelock) {
-			dev_err(gxp->dev,
-				"Must hold BLOCK wakelock to acquire VIRTUAL_DEVICE wakelock\n");
-			ret = -EINVAL;
-			goto out;
-
-		}
-
-		if (client->vd->state == GXP_VD_UNAVAILABLE) {
-			dev_err(gxp->dev,
-				"Cannot acquire VIRTUAL_DEVICE wakelock on a broken virtual device\n");
-			ret = -ENODEV;
-			goto out;
-		}
-
-		if (!client->has_vd_wakelock) {
-			down_write(&gxp->vd_semaphore);
-			if (client->vd->state == GXP_VD_OFF)
-				ret = gxp_vd_start(client->vd);
-			else
-				ret = gxp_vd_resume(client->vd);
-			up_write(&gxp->vd_semaphore);
-		}
-
+		ret = gxp_client_acquire_vd_wakelock(client);
 		if (ret) {
 			dev_err(gxp->dev,
 				"Failed to acquire VIRTUAL_DEVICE wakelock for client (ret=%d)\n",
 				ret);
 			goto err_acquiring_vd_wl;
 		}
-
-		client->has_vd_wakelock = true;
 	}
-
-	gxp_pm_update_requested_power_states(
-		gxp, client->requested_power_state, client->requested_low_clkmux,
-		aur_state_array[ibuf.gxp_power_state], false,
-		client->requested_memory_power_state,
-		aur_memory_state_array[ibuf.memory_power_state]);
-	client->requested_power_state = aur_state_array[ibuf.gxp_power_state];
-	client->requested_low_clkmux = false;
-	client->requested_memory_power_state =
-		aur_memory_state_array[ibuf.memory_power_state];
 out:
 	up_write(&client->semaphore);
 
@@ -1299,10 +1242,8 @@ err_acquiring_vd_wl:
 	 * VIRTUAL_DEVICE wakelock after successfully acquiring the BLOCK
 	 * wakelock, then release it before returning the error code.
 	 */
-	if (acquired_block_wakelock) {
-		gxp_wakelock_release(gxp);
-		client->has_block_wakelock = false;
-	}
+	if (acquired_block_wakelock)
+		gxp_client_release_block_wakelock(client);
 
 	up_write(&client->semaphore);
 
@@ -1361,69 +1302,34 @@ static int gxp_acquire_wake_lock(struct gxp_client *client,
 		goto out;
 	}
 
+	requested_low_clkmux = (ibuf.flags & GXP_POWER_LOW_FREQ_CLKMUX) != 0;
+
 	/* Acquire a BLOCK wakelock if requested */
 	if (ibuf.components_to_wake & WAKELOCK_BLOCK) {
-		if (!client->has_block_wakelock) {
-			ret = gxp_wakelock_acquire(gxp);
-			acquired_block_wakelock = true;
-		}
-
+		ret = gxp_client_acquire_block_wakelock(
+			client, &acquired_block_wakelock,
+			aur_state_array[ibuf.gxp_power_state],
+			aur_memory_state_array[ibuf.memory_power_state],
+			requested_low_clkmux);
 		if (ret) {
 			dev_err(gxp->dev,
 				"Failed to acquire BLOCK wakelock for client (ret=%d)\n",
 				ret);
 			goto out;
 		}
-
-		client->has_block_wakelock = true;
 	}
 
 	/* Acquire a VIRTUAL_DEVICE wakelock if requested */
 	if (ibuf.components_to_wake & WAKELOCK_VIRTUAL_DEVICE) {
-		if (!client->has_block_wakelock) {
-			dev_err(gxp->dev,
-				"Must hold BLOCK wakelock to acquire VIRTUAL_DEVICE wakelock\n");
-			ret = -EINVAL;
-			goto out;
-
-		}
-
-		if (client->vd->state == GXP_VD_UNAVAILABLE) {
-			dev_err(gxp->dev,
-				"Cannot acquire VIRTUAL_DEVICE wakelock on a broken virtual device\n");
-			ret = -ENODEV;
-			goto err_acquiring_vd_wl;
-		}
-
-		if (!client->has_vd_wakelock) {
-			down_write(&gxp->vd_semaphore);
-			if (client->vd->state == GXP_VD_OFF)
-				ret = gxp_vd_start(client->vd);
-			else
-				ret = gxp_vd_resume(client->vd);
-			up_write(&gxp->vd_semaphore);
-		}
-
+		ret = gxp_client_acquire_vd_wakelock(client);
 		if (ret) {
 			dev_err(gxp->dev,
 				"Failed to acquire VIRTUAL_DEVICE wakelock for client (ret=%d)\n",
 				ret);
 			goto err_acquiring_vd_wl;
 		}
-
-		client->has_vd_wakelock = true;
 	}
-	requested_low_clkmux = (ibuf.flags & GXP_POWER_LOW_FREQ_CLKMUX) != 0;
 
-	gxp_pm_update_requested_power_states(
-		gxp, client->requested_power_state, client->requested_low_clkmux,
-		aur_state_array[ibuf.gxp_power_state], requested_low_clkmux,
-		client->requested_memory_power_state,
-		aur_memory_state_array[ibuf.memory_power_state]);
-	client->requested_power_state = aur_state_array[ibuf.gxp_power_state];
-	client->requested_low_clkmux = requested_low_clkmux;
-	client->requested_memory_power_state =
-		aur_memory_state_array[ibuf.memory_power_state];
 out:
 	up_write(&client->semaphore);
 
@@ -1436,10 +1342,8 @@ err_acquiring_vd_wl:
 	 * VIRTUAL_DEVICE wakelock after successfully acquiring the BLOCK
 	 * wakelock, then release it before returning the error code.
 	 */
-	if (acquired_block_wakelock) {
-		gxp_wakelock_release(gxp);
-		client->has_block_wakelock = false;
-	}
+	if (acquired_block_wakelock)
+		gxp_client_release_block_wakelock(client);
 
 	up_write(&client->semaphore);
 
@@ -1448,7 +1352,6 @@ err_acquiring_vd_wl:
 
 static int gxp_release_wake_lock(struct gxp_client *client, __u32 __user *argp)
 {
-	struct gxp_dev *gxp = client->gxp;
 	u32 wakelock_components;
 	int ret = 0;
 
@@ -1458,61 +1361,12 @@ static int gxp_release_wake_lock(struct gxp_client *client, __u32 __user *argp)
 
 	down_write(&client->semaphore);
 
-	if (wakelock_components & WAKELOCK_VIRTUAL_DEVICE) {
-		if (!client->has_vd_wakelock) {
-			dev_err(gxp->dev,
-				"Client must hold a VIRTUAL_DEVICE wakelock to release one\n");
-			ret = -ENODEV;
-			goto out;
-		}
+	if (wakelock_components & WAKELOCK_VIRTUAL_DEVICE)
+		gxp_client_release_vd_wakelock(client);
 
-		/*
-		 * Currently VD state will not be GXP_VD_UNAVAILABLE if
-		 * has_vd_wakelock is true. Add this check just in case
-		 * GXP_VD_UNAVAILABLE will occur in more scenarios in the
-		 * future.
-		 */
-		if (client->vd->state != GXP_VD_UNAVAILABLE) {
-			down_write(&gxp->vd_semaphore);
-			gxp_vd_suspend(client->vd);
-			up_write(&gxp->vd_semaphore);
-		}
+	if (wakelock_components & WAKELOCK_BLOCK)
+		gxp_client_release_block_wakelock(client);
 
-		client->has_vd_wakelock = false;
-	}
-
-	if (wakelock_components & WAKELOCK_BLOCK) {
-		if (client->has_vd_wakelock) {
-			dev_err(gxp->dev,
-				"Client cannot release BLOCK wakelock while holding a VD wakelock\n");
-			ret = -EBUSY;
-			goto out;
-		}
-
-		if (!client->has_block_wakelock) {
-			dev_err(gxp->dev,
-				"Client must hold a BLOCK wakelock to release one\n");
-			ret = -ENODEV;
-			goto out;
-		}
-
-		gxp_wakelock_release(gxp);
-		/*
-		 * Other clients may still be using the BLK_AUR, check if we need
-		 * to change the power state.
-		 */
-		gxp_pm_update_requested_power_states(
-			gxp, client->requested_power_state,
-			client->requested_low_clkmux, AUR_OFF, false,
-			client->requested_memory_power_state,
-			AUR_MEM_UNDEFINED);
-		client->requested_power_state = AUR_OFF;
-		client->requested_memory_power_state = AUR_MEM_UNDEFINED;
-		client->requested_low_clkmux = false;
-		client->has_block_wakelock = false;
-	}
-
-out:
 	up_write(&client->semaphore);
 
 	return ret;
@@ -1536,7 +1390,7 @@ static int gxp_map_dmabuf(struct gxp_client *client,
 		goto out_unlock;
 	}
 
-	mapping = gxp_dmabuf_map(gxp, client->vd, ibuf.dmabuf_fd,
+	mapping = gxp_dmabuf_map(gxp, client->vd->domain, ibuf.dmabuf_fd,
 				 /*gxp_dma_flags=*/0,
 				 mapping_flags_to_dma_dir(ibuf.flags));
 	if (IS_ERR(mapping)) {
@@ -2048,6 +1902,14 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		goto err_dma_exit;
 	}
 
+	if (gxp_is_direct_mode(gxp)) {
+#ifdef GXP_HAS_DCI
+		gxp_dci_init(gxp->mailbox_mgr);
+#else
+		gxp_mailbox_init(gxp->mailbox_mgr);
+#endif
+	}
+
 #if IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
 	ret = gxp_debug_dump_init(gxp, &gxp_sscd_dev, &gxp_sscd_pdata);
 #else
@@ -2073,13 +1935,14 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 			ret);
 		goto err_free_domain_pool;
 	}
-	ret = gxp_vd_init(gxp);
+	ret = gxp_fw_init(gxp);
 	if (ret) {
 		dev_err(dev,
-			"Failed to initialize virtual device manager (ret=%d)\n",
+			"Failed to initialize firmware manager (ret=%d)\n",
 			ret);
 		goto err_domain_pool_destroy;
 	}
+	gxp_vd_init(gxp);
 	gxp_dma_init_default_resources(gxp);
 
 	/* Get GSA device from device tree */
@@ -2143,7 +2006,11 @@ err_before_remove:
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);
 err_vd_destroy:
+	gxp_remove_debugfs(gxp);
+	gxp_fw_data_destroy(gxp);
+	put_device(gxp->gsa_dev);
 	gxp_vd_destroy(gxp);
+	gxp_fw_destroy(gxp);
 err_domain_pool_destroy:
 	gxp_domain_pool_destroy(gxp->domain_pool);
 err_free_domain_pool:
@@ -2171,6 +2038,7 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 	if (gxp->gsa_dev)
 		put_device(gxp->gsa_dev);
 	gxp_vd_destroy(gxp);
+	gxp_fw_destroy(gxp);
 	gxp_domain_pool_destroy(gxp->domain_pool);
 	kfree(gxp->domain_pool);
 	gxp_debug_dump_exit(gxp);

@@ -12,6 +12,12 @@
 #define DSP_FIRMWARE_DEFAULT_PREFIX "gxp_callisto_fw_core"
 #define GXP_DEFAULT_MCU_FIRMWARE "google/gxp-callisto.fw"
 
+/*
+ * From soc/gs/include/dt-bindings/clock/zuma.h
+ *   #define ACPM_DVFS_AUR 0x0B040013
+ */
+#define AUR_DVFS_DOMAIN 19
+
 #define GXP_NUM_CORES 3
 /* three for cores, one for KCI, and one for UCI */
 #define GXP_NUM_MAILBOXES (GXP_NUM_CORES + 2)
@@ -24,6 +30,9 @@
 
 /* TODO(b/234098135): remove this when FW supports suspend / resume */
 #define DISABLE_VD_SUSPEND_RESUME_SUPPORT
+
+/* Uses DCI from the direct mode */
+#define GXP_HAS_DCI
 
 #include "context.h"
 #include "csrs.h"

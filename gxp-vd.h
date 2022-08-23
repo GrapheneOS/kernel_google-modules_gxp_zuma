@@ -29,15 +29,16 @@ struct mailbox_resp_queue {
 };
 
 enum gxp_virtual_device_state {
-	GXP_VD_OFF = 0,
-	GXP_VD_RUNNING = 1,
-	GXP_VD_SUSPENDED = 2,
+	GXP_VD_OFF,
+	GXP_VD_READY,
+	GXP_VD_RUNNING,
+	GXP_VD_SUSPENDED,
 	/*
 	 * If the virtual device is in the unavailable state, it won't be changed
 	 * back no matter what we do.
 	 * Note: this state will only be set on suspend/resume failure.
 	 */
-	GXP_VD_UNAVAILABLE = 3,
+	GXP_VD_UNAVAILABLE,
 };
 
 struct gxp_virtual_device {
@@ -61,6 +62,7 @@ struct gxp_virtual_device {
 	 * of slice is used by this VD.
 	 */
 	int slice_index;
+	uint core_list;
 };
 
 /*
@@ -72,7 +74,7 @@ struct gxp_virtual_device {
  * Initializes the device management subsystem and allocates resources for it.
  * This is expected to be called once per driver lifecycle.
  */
-int gxp_vd_init(struct gxp_dev *gxp);
+void gxp_vd_init(struct gxp_dev *gxp);
 
 /*
  * Tears down the device management subsystem.
@@ -85,10 +87,15 @@ void gxp_vd_destroy(struct gxp_dev *gxp);
  * @gxp: The GXP device the virtual device will belong to
  * @requested_cores: The number of cores the virtual device will have
  *
+ * The state of VD is initialized to GXP_VD_OFF.
+ *
+ * The caller must have locked gxp->vd_semaphore for writing.
+ *
  * Return: The virtual address of the virtual device or an ERR_PTR on failure
  * * -EINVAL - The number of requested cores was invalid
  * * -ENOMEM - Unable to allocate the virtual device
- * * -EBUSY  - Not enough iommu domains available
+ * * -EBUSY  - Not enough iommu domains available or insufficient physical
+ *	       cores to be assigned to @vd
  * * -ENOSPC - There is no more available shared slices
  */
 struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp, u16 requested_cores);
@@ -97,27 +104,36 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp, u16 requested_co
  * gxp_vd_release() - Cleanup and free a struct gxp_virtual_device
  * @vd: The virtual device to be released
  *
+ * The caller must have locked gxp->vd_semaphore for writing.
+ *
  * A virtual device must be stopped before it can be released.
  */
 void gxp_vd_release(struct gxp_virtual_device *vd);
 
 /**
- * gxp_vd_start() - Run a virtual device on physical cores
- * @vd: The virtual device to start
+ * gxp_vd_run() - Run a virtual device on physical cores
+ * @vd: The virtual device to run
  *
- * The caller must have locked gxp->vd_semaphore for writing.
+ * The state of @vd should be GXP_VD_OFF or GXP_VD_READY before calling this
+ * function. If this function runs successfully, the state becomes
+ * GXP_VD_RUNNING. Otherwise, it would be GXP_VD_UNAVAILABLE.
+ *
+ * The caller must have locked gxp->vd_semaphore.
  *
  * Return:
- * * 0      - Success
- * * -EBUSY - Insufficient physical cores were free to start @vd
+ * * 0         - Success
+ * * -EINVAL   - The VD is not in GXP_VD_READY state
+ * * Otherwise - Errno returned by firmware running
  */
-int gxp_vd_start(struct gxp_virtual_device *vd);
+int gxp_vd_run(struct gxp_virtual_device *vd);
 
 /**
- * gxp_vd_stop() - Stop a running virtual device and free up physical cores
+ * gxp_vd_stop() - Stop a running virtual device
  * @vd: The virtual device to stop
  *
- * The caller must have locked gxp->vd_semaphore for writing.
+ * The state of @vd will be GXP_VD_OFF.
+ *
+ * The caller must have locked gxp->vd_semaphore.
  */
 void gxp_vd_stop(struct gxp_virtual_device *vd);
 
@@ -206,6 +222,10 @@ struct gxp_mapping *gxp_vd_mapping_search_host(struct gxp_virtual_device *vd,
  * gxp_vd_suspend() - Suspend a running virtual device
  * @vd: The virtual device to suspend
  *
+ * The state of @vd should be GXP_VD_RUNNING before calling this function.
+ * If the suspension runs successfully on all cores, the state becomes
+ * GXP_VD_SUSPENDED. Otherwise, it would be GXP_VD_UNAVAILABLE.
+ *
  * The caller must have locked gxp->vd_semaphore for writing.
  */
 void gxp_vd_suspend(struct gxp_virtual_device *vd);
@@ -214,6 +234,10 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd);
  * gxp_vd_resume() - Resume a suspended virtual device
  * @vd: The virtual device to resume
  *
+ * The state of @vd should be GXP_VD_SUSPENDED before calling this function.
+ * If the resumption runs successfully on all cores, the state becomes
+ * GXP_VD_RUNNING. Otherwise, it would be GXP_VD_UNAVAILABLE.
+ *
  * The caller must have locked gxp->vd_semaphore for writing.
  *
  * Return:
@@ -221,5 +245,20 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd);
  * * -ETIMEDOUT - Fail to power on physical cores
  */
 int gxp_vd_resume(struct gxp_virtual_device *vd);
+/**
+ * gxp_vd_block_ready() - This is called after the block wakelock is acquired.
+ * Does required setup for serving VD such as attaching its IOMMU domain.
+ *
+ * @vd: The virtual device to prepare the resources
+ *
+ * The state of @vd should be GXP_VD_OFF before calling this function.
+ * If this function runs successfully, the state becomes GXP_VD_READY.
+ *
+ * Return:
+ * * 0          - Success
+ * * -EINVAL    - The VD is not in GXP_VD_OFF state
+ * * Otherwise  - Errno returned by IOMMU domain attachment
+ */
+int gxp_vd_block_ready(struct gxp_virtual_device *vd);
 
 #endif /* __GXP_VD_H__ */

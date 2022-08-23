@@ -2,7 +2,7 @@
 /*
  * GXP mailbox interface.
  *
- * Copyright (C) 2020 Google LLC
+ * Copyright (C) 2020-2022 Google LLC
  */
 #ifndef __GXP_MAILBOX_H__
 #define __GXP_MAILBOX_H__
@@ -11,6 +11,7 @@
 
 #include "gxp-client.h"
 #include "gxp-internal.h"
+#include "gxp-mailbox-manager.h"
 
 /*
  * Offset from the host mailbox interface to the device interface that needs to
@@ -243,7 +244,7 @@ struct gxp_mailbox_args {
 	void *data;
 };
 
-#if IS_ENABLED(CONFIG_AMALTHEA)
+#ifndef GXP_HAS_DCI
 extern const struct gxp_mailbox_args gxp_mailbox_default_args;
 #endif
 
@@ -303,104 +304,10 @@ struct gxp_mailbox {
 	void *data; /* private data */
 };
 
-typedef void __iomem *(*get_mailbox_base_t)(struct gxp_dev *gxp, uint index);
-
-/*
- * Following callbacks will be used for manipulating the mailbox to communicating with the
- * firmware. By using this callbacks instead of calling the functions at the bottom of this header
- * directly, we can abstract the mailbox and reduce effort of updating the codes outside of the
- * mailbox when we refactor the mailbox in the future.
- */
-
-/*
- * Called when allocates a mailbox. The mailbox will be release by the `release_mailbox_t`.
- *
- * Return a pointer of allocated mailbox or an error pointer if error occurred.
- */
-typedef struct gxp_mailbox *(*allocate_mailbox_t)(
-	struct gxp_mailbox_manager *mgr, struct gxp_virtual_device *vd,
-	uint virt_core, u8 core_id);
-
-/* Called when releases the @mailbox which is allocated by the `allocate_mailbox_t`. */
-typedef void (*release_mailbox_t)(struct gxp_mailbox_manager *mgr,
-				  struct gxp_virtual_device *vd, uint virt_core,
-				  struct gxp_mailbox *mailbox);
-
-/* Called when resets the @mailbox. */
-typedef void (*reset_mailbox_t)(struct gxp_mailbox *mailbox);
-
-/*
- * Called when requests synchronous commands. This callback will be called from the
- * `gxp_debugfs_mailbox` function. The response will be returned to the @resp_seq, @resp_status
- * and `retval` of `struct gxp_response` will be returned as the return value of this function.
- * You can pass NULL to @resp_seq and @resp_status if you don't need the result. See the
- * `struct gxp_response` for the details.
- *
- * Returns the value `retval` of `struct gxp_response` when the request succeeds. Otherwise,
- * returns a negative value as an error.
- */
-typedef int (*execute_cmd_t)(struct gxp_mailbox *mailbox, u16 cmd_code,
-			     u8 cmd_priority, u64 cmd_daddr, u32 cmd_size,
-			     u32 cmd_flags, u64 *resp_seq, u16 *resp_status);
-
-/*
- * Called when requests asynchronous commands. This callback will be called when
- * `GXP_MAILBOX_COMMAND_COMPAT` or `GXP_MAILBOX_COMMAND` ioctls are fired. The sequence number of
- * the command will be returned to the @cmd_seq. @eventfd will be signalled when the response
- * arrives.
- *
- * Returns a non-zero value when error occurs while putting the command to the cmd_queue of
- * mailbox.
- */
-typedef int (*execute_cmd_async_t)(struct gxp_client *client,
-				   struct gxp_mailbox *mailbox, int virt_core,
-				   u16 cmd_code, u8 cmd_priority, u64 cmd_daddr,
-				   u32 cmd_size, u32 cmd_flags,
-				   uint gxp_power_state,
-				   uint memory_power_state,
-				   bool requested_low_clkmux, u64 *cmd_seq);
-
-/*
- * Called when waiting for an asynchronous response which is requested by `execute_cmd_async`.
- * This callback will be called when `GXP_MAILBOX_RESPONSE` ioctl is fired. The response will be
- * returned to the @resp_seq, @resp_status and @resp_retval. You can pass NULL to them if you don't
- * need the result. See the `struct gxp_response` for the details. The corresponding error code of
- * the response status will be set to the @error_code.
- *
- * Returns 0 if it succeed to get the response. Otherwise, returns a non-zero value as an error.
- */
-typedef int (*wait_async_resp_t)(struct gxp_client *client, int virt_core,
-				 u64 *resp_seq, u16 *resp_status,
-				 u32 *resp_retval, u16 *error_code);
-
-/*
- * Called when cleans up unconsumed async responses in the queue which arrived or timed out.
- * This callback will be called when the @vd is released.
- */
-typedef void (*release_unconsumed_async_resps_t)(struct gxp_virtual_device *vd);
-
-struct gxp_mailbox_manager {
-	struct gxp_dev *gxp;
-	u8 num_cores;
-	struct gxp_mailbox **mailboxes;
-	get_mailbox_base_t get_mailbox_csr_base;
-	get_mailbox_base_t get_mailbox_data_base;
-	allocate_mailbox_t allocate_mailbox;
-	release_mailbox_t release_mailbox;
-	reset_mailbox_t reset_mailbox;
-	execute_cmd_t execute_cmd;
-	execute_cmd_async_t execute_cmd_async;
-	wait_async_resp_t wait_async_resp;
-	release_unconsumed_async_resps_t release_unconsumed_async_resps;
-};
-
 /* Mailbox APIs */
 
 extern int gxp_mbx_timeout;
 #define MAILBOX_TIMEOUT (gxp_mbx_timeout * GXP_TIME_DELAY_FACTOR)
-
-struct gxp_mailbox_manager *gxp_mailbox_create_manager(struct gxp_dev *gxp,
-						       uint num_cores);
 
 /*
  * The following functions all require their caller have locked gxp->vd_semaphore for reading. To
@@ -421,7 +328,9 @@ void gxp_mailbox_release(struct gxp_mailbox_manager *mgr,
 
 void gxp_mailbox_reset(struct gxp_mailbox *mailbox);
 
-#if IS_ENABLED(CONFIG_AMALTHEA)
+#ifndef GXP_HAS_DCI
+void gxp_mailbox_init(struct gxp_mailbox_manager *mgr);
+
 int gxp_mailbox_execute_cmd(struct gxp_mailbox *mailbox,
 			    struct gxp_command *cmd, struct gxp_response *resp);
 

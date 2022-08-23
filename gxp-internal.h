@@ -178,6 +178,15 @@ struct gxp_dev {
 	 */
 	void (*before_release_vd)(struct gxp_dev *gxp,
 				  struct gxp_virtual_device *vd);
+	/*
+	 * Called for sending power states request.
+	 *
+	 * Return a non-zero value can fail the block wakelock acquisition.
+	 *
+	 * This callback is optional.
+	 */
+	int (*request_power_states)(struct gxp_client *client, uint power_state,
+				    uint memory_power_state, bool low_clkmux);
 };
 
 /* GXP device IO functions */
