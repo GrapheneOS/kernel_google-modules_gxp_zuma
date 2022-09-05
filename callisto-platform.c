@@ -13,10 +13,16 @@
 #include "callisto-platform.h"
 
 #include "gxp-common-platform.c"
+#include "gxp-kci.h"
 #include "gxp-uci.h"
 #include "gxp-usage-stats.h"
 
+#if IS_ENABLED(CONFIG_GXP_TEST)
 char *callisto_work_mode_name = "direct";
+#else
+static char *callisto_work_mode_name = "direct";
+#endif
+
 module_param_named(work_mode, callisto_work_mode_name, charp, 0660);
 
 static int callisto_platform_parse_dt(struct platform_device *pdev,
@@ -241,8 +247,8 @@ static long callisto_platform_ioctl(struct file *file, uint cmd, ulong arg)
 	return ret;
 }
 
-static int callisto_request_power_states(struct gxp_client *client, uint power_state,
-				  uint memory_power_state, bool low_clkmux)
+static int callisto_request_power_states(struct gxp_client *client,
+					 struct gxp_power_states power_states)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct callisto_dev *callisto = to_callisto_dev(gxp);
@@ -253,8 +259,8 @@ static int callisto_request_power_states(struct gxp_client *client, uint power_s
 		return -EOPNOTSUPP;
 
 	/* Plus 1 to align with power states in MCU firmware. */
-	cmd.wakelock_command_params.dsp_operating_point = power_state + 1;
-	cmd.wakelock_command_params.memory_operating_point = memory_power_state;
+	cmd.wakelock_command_params.dsp_operating_point = power_states.power + 1;
+	cmd.wakelock_command_params.memory_operating_point = power_states.memory;
 	cmd.type = WAKELOCK_COMMAND;
 	cmd.priority = 0; /* currently unused */
 	cmd.client_id = iommu_aux_get_pasid(client->vd->domain, gxp->dev);
@@ -266,6 +272,82 @@ static int callisto_request_power_states(struct gxp_client *client, uint power_s
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
 		client->mb_eventfds[UCI_RESOURCE_ID]);
 	return ret;
+}
+
+static int callisto_platform_after_vd_block_ready(struct gxp_dev *gxp,
+						  struct gxp_virtual_device *vd)
+{
+	struct gxp_kci *kci = &(to_callisto_dev(gxp)->mcu.kci);
+	int pasid, ret;
+
+	if (gxp_is_direct_mode(gxp))
+		return 0;
+
+	pasid = iommu_aux_get_pasid(vd->domain, gxp->dev);
+	ret = gxp_kci_allocate_vmbox(kci, vd->num_cores, pasid,
+				     vd->slice_index);
+	if (ret) {
+		/*
+		 * TODO(241057541): Remove this conditional branch after the firmware side
+		 * implements handling allocate_vmbox command.
+		 */
+		if (ret == GCIP_KCI_ERROR_UNIMPLEMENTED) {
+			dev_info(
+				gxp->dev,
+				"Allocating vmbox is not implemented from the firmware side");
+			return 0;
+		}
+		dev_err(gxp->dev, "Failed to allocate virtual mailbox: ret=%d",
+			ret);
+	}
+
+	return ret;
+}
+
+static void
+callisto_platform_before_vd_block_unready(struct gxp_dev *gxp,
+					  struct gxp_virtual_device *vd)
+{
+	struct gxp_kci *kci = &(to_callisto_dev(gxp)->mcu.kci);
+	int pasid, ret;
+
+	if (gxp_is_direct_mode(gxp))
+		return;
+
+	pasid = iommu_aux_get_pasid(vd->domain, gxp->dev);
+	ret = gxp_kci_release_vmbox(kci, pasid);
+	if (ret) {
+		/*
+		 * TODO(241057541): Remove this conditional branch after the firmware side
+		 * implements handling allocate_vmbox command.
+		 */
+		if (ret == GCIP_KCI_ERROR_UNIMPLEMENTED) {
+			dev_info(
+				gxp->dev,
+				"Releasing vmbox is not implemented from the firmware side");
+			return;
+		}
+		dev_err(gxp->dev, "Failed to release virtual mailbox: ret=%d",
+			ret);
+	}
+}
+
+static int callisto_wakelock_after_blk_on(struct gxp_dev *gxp)
+{
+	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
+
+	if (gxp_is_direct_mode(gxp))
+		return 0;
+	return gxp_mcu_firmware_run(mcu_fw);
+}
+
+static void callisto_wakelock_before_blk_off(struct gxp_dev *gxp)
+{
+	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
+
+	if (gxp_is_direct_mode(gxp))
+		return;
+	gxp_mcu_firmware_stop(mcu_fw);
 }
 
 static int gxp_platform_probe(struct platform_device *pdev)
@@ -282,7 +364,14 @@ static int gxp_platform_probe(struct platform_device *pdev)
 	callisto->gxp.after_probe = callisto_platform_after_probe;
 	callisto->gxp.before_remove = callisto_platform_before_remove;
 	callisto->gxp.handle_ioctl = callisto_platform_ioctl;
+	callisto->gxp.after_vd_block_ready =
+		callisto_platform_after_vd_block_ready;
+	callisto->gxp.before_vd_block_unready =
+		callisto_platform_before_vd_block_unready;
 	callisto->gxp.request_power_states = callisto_request_power_states;
+	callisto->gxp.wakelock_after_blk_on = callisto_wakelock_after_blk_on;
+	callisto->gxp.wakelock_before_blk_off =
+		callisto_wakelock_before_blk_off;
 
 	return gxp_common_platform_probe(pdev, &callisto->gxp);
 }
@@ -322,6 +411,11 @@ static void __exit gxp_platform_exit(void)
 {
 	platform_driver_unregister(&gxp_platform_driver);
 	gxp_common_platform_unreg_sscd();
+}
+
+struct gxp_mcu *gxp_mcu_of(struct gxp_dev *gxp)
+{
+	return &(to_callisto_dev(gxp)->mcu);
 }
 
 struct gxp_mcu_firmware *gxp_mcu_firmware_of(struct gxp_dev *gxp)

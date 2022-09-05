@@ -637,25 +637,23 @@ static int gxp_pm_update_requested_memory_power_state(
 }
 
 int gxp_pm_update_requested_power_states(
-	struct gxp_dev *gxp, enum aur_power_state origin_state,
-	bool origin_requested_low_clkmux, enum aur_power_state requested_state,
-	bool requested_low_clkmux, enum aur_memory_power_state origin_mem_state,
-	enum aur_memory_power_state requested_mem_state)
+	struct gxp_dev *gxp, struct gxp_power_states origin_vote,
+	struct gxp_power_states requested_states)
 {
 	int ret = 0;
 
 	mutex_lock(&gxp->power_mgr->pm_lock);
-	if (origin_state != requested_state ||
-	    origin_requested_low_clkmux != requested_low_clkmux) {
+	if (origin_vote.power != requested_states.power ||
+	    origin_vote.low_clkmux != requested_states.low_clkmux) {
 		ret = gxp_pm_update_requested_power_state(
-			gxp, origin_state, origin_requested_low_clkmux,
-			requested_state, requested_low_clkmux);
+			gxp, origin_vote.power, origin_vote.low_clkmux,
+			requested_states.power, requested_states.low_clkmux);
 		if (ret)
 			goto out;
 	}
-	if (origin_mem_state != requested_mem_state)
+	if (origin_vote.memory != requested_states.memory)
 		ret = gxp_pm_update_requested_memory_power_state(
-			gxp, origin_mem_state, requested_mem_state);
+			gxp, origin_vote.memory, requested_states.memory);
 out:
 	mutex_unlock(&gxp->power_mgr->pm_lock);
 	return ret;

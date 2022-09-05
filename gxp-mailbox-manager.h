@@ -75,9 +75,7 @@ typedef int (*execute_cmd_async_t)(struct gxp_client *client,
 				   struct gxp_mailbox *mailbox, int virt_core,
 				   u16 cmd_code, u8 cmd_priority, u64 cmd_daddr,
 				   u32 cmd_size, u32 cmd_flags,
-				   uint gxp_power_state,
-				   uint memory_power_state,
-				   bool requested_low_clkmux, u64 *cmd_seq);
+				   struct gxp_power_states power_states, u64 *cmd_seq);
 
 /*
  * Called when waiting for an asynchronous response which is requested by `execute_cmd_async`.

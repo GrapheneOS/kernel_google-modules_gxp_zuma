@@ -34,6 +34,29 @@ struct gxp_kci {
 	struct gxp_mapped_resource descriptor_mem;
 };
 
+/* Used when sending the details about allocate_vmbox KCI command. */
+struct gxp_kci_allocate_vmbox_detail {
+	/* Client ID. */
+	u8 client_id;
+	/* The number of required cores. */
+	u8 num_cores;
+	/*
+	 * Slice index of client_id used for identifying the 12KB slice buffer of memory to be
+	 * used for MCU<->core mailbox.
+	 */
+	u8 slice_index;
+	/* Reserved */
+	u8 reserved[61];
+} __packed;
+
+/* Used when sending the details about release_vmbox KCI command. */
+struct gxp_kci_release_vmbox_detail {
+	/* Client ID. */
+	u8 client_id;
+	/* Reserved */
+	u8 reserved[63];
+} __packed;
+
 /*
  * Initializes a KCI object.
  *
@@ -118,8 +141,8 @@ int gxp_kci_shutdown(struct gxp_kci *gkci);
  *
  * Returns the code of response, or a negative errno on error.
  */
-int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, struct gxp_virtual_device *vd,
-			   u8 num_cores, u32 ssid);
+int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u8 num_cores, u8 client_id,
+			   u8 slice_index);
 
 /*
  * Releases a virtual mailbox which is allocated by `gxp_kci_allocate_vmbox`.
@@ -127,8 +150,7 @@ int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, struct gxp_virtual_device *vd,
  *
  * Returns the code of response, or a negative errno on error.
  */
-int gxp_kci_release_vmbox(struct gxp_kci *gkci, struct gxp_virtual_device *vd,
-			  u32 ssid);
+int gxp_kci_release_vmbox(struct gxp_kci *gkci, u8 client_id);
 
 /*
  * Send an ack to the FW after handling a reverse KCI request.

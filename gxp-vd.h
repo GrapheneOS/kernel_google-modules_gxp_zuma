@@ -245,6 +245,7 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd);
  * * -ETIMEDOUT - Fail to power on physical cores
  */
 int gxp_vd_resume(struct gxp_virtual_device *vd);
+
 /**
  * gxp_vd_block_ready() - This is called after the block wakelock is acquired.
  * Does required setup for serving VD such as attaching its IOMMU domain.
@@ -260,5 +261,17 @@ int gxp_vd_resume(struct gxp_virtual_device *vd);
  * * Otherwise  - Errno returned by IOMMU domain attachment
  */
 int gxp_vd_block_ready(struct gxp_virtual_device *vd);
+
+/**
+ * gxp_vd_block_unready() - This is called before one or both of the virtual device and block
+ * wakelock is going to be released.
+ *
+ * @vd: The virtual device to release the resources
+ *
+ * This function must be called only when the client holds the block wakelock and allocated a
+ * virtual device. It doesn't have a dependency on the state of @vd, but also doesn't change the
+ * state.
+ */
+void gxp_vd_block_unready(struct gxp_virtual_device *vd);
 
 #endif /* __GXP_VD_H__ */

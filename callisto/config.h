@@ -30,6 +30,14 @@
 
 /* TODO(b/234098135): remove this when FW supports suspend / resume */
 #define DISABLE_VD_SUSPEND_RESUME_SUPPORT
+/*
+ * Can be coherent with AP
+ *
+ * Linux IOMMU-DMA APIs optimise cache operations based on "dma-coherent"
+ * property in DT. Handle "dma-coherent" property in driver itself instead of
+ * specifying in DT so as to support both coherent and non-coherent buffers.
+ */
+#define GXP_IS_DMA_COHERENT
 
 /* Uses DCI from the direct mode */
 #define GXP_HAS_DCI

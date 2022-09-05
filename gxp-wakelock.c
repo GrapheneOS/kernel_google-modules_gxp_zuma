@@ -51,6 +51,13 @@ int gxp_wakelock_acquire(struct gxp_dev *gxp)
 				ret, mgr->count);
 			goto err_blk_on;
 		}
+		if (gxp->wakelock_after_blk_on) {
+			ret = gxp->wakelock_after_blk_on(gxp);
+			if (ret) {
+				gxp_pm_blk_off(gxp);
+				goto err_blk_on;
+			}
+		}
 	}
 
 out:
@@ -78,6 +85,8 @@ void gxp_wakelock_release(struct gxp_dev *gxp)
 	}
 
 	if (!--mgr->count) {
+		if (gxp->wakelock_before_blk_off)
+			gxp->wakelock_before_blk_off(gxp);
 		ret = gxp_pm_blk_off(gxp);
 		if (ret)
 			dev_err(gxp->dev,

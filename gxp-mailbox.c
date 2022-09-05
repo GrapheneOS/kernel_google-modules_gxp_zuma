@@ -94,8 +94,7 @@ static int gxp_mailbox_manager_execute_cmd(struct gxp_mailbox *mailbox,
 static int gxp_mailbox_manager_execute_cmd_async(
 	struct gxp_client *client, struct gxp_mailbox *mailbox, int virt_core,
 	u16 cmd_code, u8 cmd_priority, u64 cmd_daddr, u32 cmd_size,
-	u32 cmd_flags, uint gxp_power_state, uint memory_power_state,
-	bool requested_low_clkmux, u64 *cmd_seq)
+	u32 cmd_flags, struct gxp_power_states power_states, u64 *cmd_seq)
 {
 	struct gxp_command cmd;
 	struct buffer_descriptor buffer;
@@ -115,9 +114,8 @@ static int gxp_mailbox_manager_execute_cmd_async(
 
 	ret = gxp_mailbox_execute_cmd_async(mailbox, &cmd, &resp_queue->queue,
 					    &resp_queue->lock,
-					    &resp_queue->waitq, gxp_power_state,
-					    memory_power_state,
-					    requested_low_clkmux, eventfd);
+					    &resp_queue->waitq, power_states,
+					    eventfd);
 
 	if (cmd_seq)
 		*cmd_seq = cmd.seq;
@@ -710,11 +708,8 @@ static void gxp_mailbox_handle_response(struct gxp_mailbox *mailbox,
 				cancel_delayed_work(&async_resp->timeout_work);
 				gxp_pm_update_requested_power_states(
 					async_resp->mailbox->gxp,
-					async_resp->gxp_power_state,
-					async_resp->requested_low_clkmux,
-					AUR_OFF, false,
-					async_resp->memory_power_state,
-					AUR_MEM_UNDEFINED);
+					async_resp->requested_states,
+					off_states);
 
 				spin_lock_irqsave(async_resp->dest_queue_lock,
 						  flags);
@@ -1056,9 +1051,8 @@ static void async_cmd_timeout_work(struct work_struct *work)
 		spin_unlock_irqrestore(async_resp->dest_queue_lock, flags);
 
 		gxp_pm_update_requested_power_states(
-			async_resp->mailbox->gxp, async_resp->gxp_power_state,
-			async_resp->requested_low_clkmux, AUR_OFF, false,
-			async_resp->memory_power_state, AUR_MEM_UNDEFINED);
+			async_resp->mailbox->gxp, async_resp->requested_states,
+			off_states);
 
 		if (async_resp->eventfd) {
 			gxp_eventfd_signal(async_resp->eventfd);
@@ -1076,8 +1070,7 @@ int gxp_mailbox_execute_cmd_async(struct gxp_mailbox *mailbox,
 				  struct list_head *resp_queue,
 				  spinlock_t *queue_lock,
 				  wait_queue_head_t *queue_waitq,
-				  uint gxp_power_state, uint memory_power_state,
-				  bool requested_low_clkmux,
+				  struct gxp_power_states power_states,
 				  struct gxp_eventfd *eventfd)
 {
 	struct gxp_async_response *async_resp;
@@ -1091,9 +1084,7 @@ int gxp_mailbox_execute_cmd_async(struct gxp_mailbox *mailbox,
 	async_resp->dest_queue = resp_queue;
 	async_resp->dest_queue_lock = queue_lock;
 	async_resp->dest_queue_waitq = queue_waitq;
-	async_resp->gxp_power_state = gxp_power_state;
-	async_resp->memory_power_state = memory_power_state;
-	async_resp->requested_low_clkmux = requested_low_clkmux;
+	async_resp->requested_states = power_states;
 	if (eventfd && gxp_eventfd_get(eventfd))
 		async_resp->eventfd = eventfd;
 	else
@@ -1103,9 +1094,8 @@ int gxp_mailbox_execute_cmd_async(struct gxp_mailbox *mailbox,
 	schedule_delayed_work(&async_resp->timeout_work,
 			      msecs_to_jiffies(MAILBOX_TIMEOUT));
 
-	gxp_pm_update_requested_power_states(
-		mailbox->gxp, AUR_OFF, false, gxp_power_state,
-		requested_low_clkmux, AUR_MEM_UNDEFINED, memory_power_state);
+	gxp_pm_update_requested_power_states(mailbox->gxp, off_states,
+					     power_states);
 	ret = gxp_mailbox_enqueue_cmd(mailbox, cmd, &async_resp->resp,
 				      /* resp_is_async = */ true);
 	if (ret)
@@ -1114,10 +1104,8 @@ int gxp_mailbox_execute_cmd_async(struct gxp_mailbox *mailbox,
 	return 0;
 
 err_free_resp:
-	gxp_pm_update_requested_power_states(mailbox->gxp, gxp_power_state,
-					     requested_low_clkmux, AUR_OFF,
-					     false, memory_power_state,
-					     AUR_MEM_UNDEFINED);
+	gxp_pm_update_requested_power_states(mailbox->gxp, power_states,
+					     off_states);
 	cancel_delayed_work_sync(&async_resp->timeout_work);
 	kfree(async_resp);
 	return ret;

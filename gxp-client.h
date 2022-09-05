@@ -12,8 +12,9 @@
 #include <linux/sched.h>
 #include <linux/types.h>
 
-#include "gxp-internal.h"
 #include "gxp-eventfd.h"
+#include "gxp-internal.h"
+#include "gxp-pm.h"
 #include "gxp-vd.h"
 
 /* Holds state belonging to a client */
@@ -30,11 +31,8 @@ struct gxp_client {
 
 	bool has_block_wakelock;
 	bool has_vd_wakelock;
-	/* Value is one of the GXP_POWER_STATE_* values from gxp.h. */
-	uint requested_power_state;
-	/* Value is one of the MEMORY_POWER_STATE_* values from gxp.h. */
-	uint requested_memory_power_state;
-	bool requested_low_clkmux;
+
+	struct gxp_power_states requested_states;
 
 	struct gxp_virtual_device *vd;
 	struct file *tpu_file;
@@ -86,10 +84,7 @@ int gxp_client_allocate_virtual_device(struct gxp_client *client, uint core_coun
  *
  * @client: The client to acquire wakelock and request power votes.
  * @acquired_wakelock: True if block wakelock has been acquired by this client.
- * @power_state: The requested power state.
- * @memory_power_state: The requested memory power state.
- * @low_clkmux: Specify whether the vote is requested with low frequency CLKMUX
- *              flag. Will take no effect if the @power_state is AUR_OFF.
+ * @requested_states: The requested power states.
  *
  * The caller must have locked client->semaphore.
  *
@@ -98,8 +93,8 @@ int gxp_client_allocate_virtual_device(struct gxp_client *client, uint core_coun
  * * Otherwise  - Errno returned by block wakelock acquisition
  */
 int gxp_client_acquire_block_wakelock(struct gxp_client *client,
-				      bool *acquired_wakelock, uint power_state,
-				      uint memory_power_state, bool low_clkmux);
+				      bool *acquired_wakelock,
+				      struct gxp_power_states requested_states);
 /**
  * gxp_client_release_block_wakelock() - Releases the holded block wakelock and
  * revokes the power votes.

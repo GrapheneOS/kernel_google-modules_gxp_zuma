@@ -11,8 +11,14 @@
 #include <linux/mutex.h>
 
 #include <gcip/gcip-firmware.h>
+#include <gcip/gcip-image-config.h>
 
 #include "gxp-internal.h"
+
+#define MCU_SIGNATURE_SIZE 0x1000
+#define MCU_SIGNATURE_HEADER_OFFSET 0x400
+/* The offset from top of the signed MCU firmware to the image config data. */
+#define MCU_IMAGE_CONFIG_OFFSET 0x560
 
 struct gxp_mcu_firmware {
 	struct gxp_dev *gxp;
@@ -22,7 +28,9 @@ struct gxp_mcu_firmware {
 	struct mutex lock; /* lock to protect fields below */
 	enum gcip_fw_status status;
 	struct gcip_fw_info fw_info;
+	struct gcip_image_config_parser cfg_parser;
 	const char *name; /* the firmware name last loaded */
+	bool is_signed;
 };
 
 /*
@@ -41,6 +49,11 @@ void gxp_mcu_firmware_exit(struct gxp_mcu_firmware *mcu_fw);
  * Returns 0 on success, a negative errno on failure.
  */
 int gxp_mcu_firmware_run(struct gxp_mcu_firmware *mcu_fw);
+
+/*
+ * Stops the running MCU firmware.
+ */
+void gxp_mcu_firmware_stop(struct gxp_mcu_firmware *mcu_fw);
 
 /*
  * Returns the pointer of MCU firmware associated with the GXP device object.

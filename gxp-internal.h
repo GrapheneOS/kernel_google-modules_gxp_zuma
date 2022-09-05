@@ -56,6 +56,7 @@ struct gxp_telemetry_manager;
 struct gxp_thermal_manager;
 struct gxp_wakelock_manager;
 struct gxp_usage_stats;
+struct gxp_power_states;
 
 struct gxp_dev {
 	struct device *dev;		 /* platform bus device */
@@ -163,30 +164,48 @@ struct gxp_dev {
 	 */
 	long (*handle_ioctl)(struct file *file, uint cmd, ulong arg);
 	/*
-	 * Called when allocating a virtual device is done.
-	 *
-	 * Return a non-zero value can fail the vd allocation.
-	 *
-	 * This callback is optional.
-	 */
-	int (*after_allocate_vd)(struct gxp_dev *gxp,
-				 struct gxp_virtual_device *vd);
-	/*
-	 * Called before releasing the virtual device.
-	 *
-	 * This callback is optional.
-	 */
-	void (*before_release_vd)(struct gxp_dev *gxp,
-				  struct gxp_virtual_device *vd);
-	/*
 	 * Called for sending power states request.
 	 *
 	 * Return a non-zero value can fail the block wakelock acquisition.
 	 *
 	 * This callback is optional.
 	 */
-	int (*request_power_states)(struct gxp_client *client, uint power_state,
-				    uint memory_power_state, bool low_clkmux);
+	int (*request_power_states)(struct gxp_client *client,
+				    struct gxp_power_states power_states);
+	/*
+	 * Called when the client acquired the BLOCK wakelock and allocated a virtual device.
+	 *
+	 * Return a non-zero value can fail the block acquiring.
+	 *
+	 * This callback is optional.
+	 */
+	int (*after_vd_block_ready)(struct gxp_dev *gxp,
+				    struct gxp_virtual_device *vd);
+	/*
+	 * Called before releasing the BLOCK wakelock or the virtual device.
+	 *
+	 * This callback is optional
+	 */
+	void (*before_vd_block_unready)(struct gxp_dev *gxp,
+					struct gxp_virtual_device *vd);
+	/*
+	 * Called in gxp_wakelock_acquire(), after the block is powered.
+	 *
+	 * This function is called with holding gxp_wakelock_manager.lock.
+	 *
+	 * Return a non-zero value can fail gxp_wakelock_acquire().
+	 *
+	 * This callback is optional.
+	 */
+	int (*wakelock_after_blk_on)(struct gxp_dev *gxp);
+	/*
+	 * Called in gxp_wakelock_release(), before the block is shutdown.
+	 *
+	 * This function is called with holding gxp_wakelock_manager.lock.
+	 *
+	 * This callback is optional.
+	 */
+	void (*wakelock_before_blk_off)(struct gxp_dev *gxp);
 };
 
 /* GXP device IO functions */

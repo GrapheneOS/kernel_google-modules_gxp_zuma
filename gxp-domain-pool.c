@@ -17,6 +17,7 @@ int gxp_domain_pool_init(struct gxp_dev *gxp, struct gxp_domain_pool *pool,
 {
 	unsigned int i;
 	struct iommu_domain *domain;
+	int __maybe_unused ret;
 
 	pool->size = size;
 	pool->gxp = gxp;
@@ -41,6 +42,26 @@ int gxp_domain_pool_init(struct gxp_dev *gxp, struct gxp_domain_pool *pool,
 			gxp_domain_pool_destroy(pool);
 			return -ENOMEM;
 		}
+
+#if IS_ENABLED(CONFIG_GXP_GEM5)
+		/*
+		 * Gem5 uses arm-smmu-v3 which requires domain finalization to do iommu map. Calling
+		 * iommu_aux_attach_device to finalize the allocated domain and detach the device
+		 * right after that.
+		 */
+		ret = iommu_aux_attach_device(domain, pool->gxp->dev);
+		if (ret) {
+			dev_err(pool->gxp->dev,
+				"Failed to attach device to iommu domain %d of %u, ret=%d\n",
+				i + 1, size, ret);
+			iommu_domain_free(domain);
+			gxp_domain_pool_destroy(pool);
+			return ret;
+		}
+
+		iommu_aux_detach_device(domain, pool->gxp->dev);
+#endif /* CONFIG_GXP_GEM5 */
+
 		pool->array[i] = domain;
 	}
 	return 0;

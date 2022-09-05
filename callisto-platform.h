@@ -13,7 +13,10 @@
 
 #define to_callisto_dev(gxp) container_of(gxp, struct callisto_dev, gxp)
 
+#if IS_ENABLED(CONFIG_GXP_TEST)
+/* expose this variable to have unit tests set it dynamically */
 extern char *callisto_work_mode_name;
+#endif
 
 enum callisto_work_mode {
 	MCU = 0,

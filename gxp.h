@@ -12,7 +12,7 @@
 
 /* Interface Version */
 #define GXP_INTERFACE_VERSION_MAJOR	1
-#define GXP_INTERFACE_VERSION_MINOR	3
+#define GXP_INTERFACE_VERSION_MINOR	4
 #define GXP_INTERFACE_VERSION_BUILD	0
 
 /*
@@ -283,6 +283,8 @@ struct gxp_acquire_wakelock_compat_ioctl {
 #define GXP_MAP_DMA_BIDIRECTIONAL	0
 #define GXP_MAP_DMA_TO_DEVICE		1
 #define GXP_MAP_DMA_FROM_DEVICE		2
+/* Create coherent mappings of the buffer. */
+#define GXP_MAP_COHERENT		(1 << 2)
 
 struct gxp_map_ioctl {
 	/*
@@ -308,7 +310,12 @@ struct gxp_map_ioctl {
 	 *               10 = DMA_FROM_DEVICE   (device can write buffer)
 	 *             Note: DMA_DIRECTION is the direction in which data moves
 	 *             from the host's perspective.
-	 *   [31:2]  - RESERVED
+	 *   [2:2]   - Coherent Mapping:
+	 *              0 = Create non-coherent mappings of the buffer.
+	 *              1 = Create coherent mappings of the buffer.
+	 *              Note: this attribute may be ignored on platforms where
+	 *              gxp is not I/O coherent.
+	 *   [31:3]  - RESERVED
 	 */
 	__u32 flags;
 	__u64 device_address;	/* returned device address */

@@ -324,7 +324,7 @@ out_firmware_unload:
 static int gxp_firmware_handshake(struct gxp_dev *gxp, uint core)
 {
 	u32 offset;
-	u32 expected_top_value;
+	u32 __maybe_unused expected_top_value;
 	void __iomem *core_scratchpad_base;
 	int ctr;
 

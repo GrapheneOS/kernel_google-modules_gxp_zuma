@@ -276,9 +276,7 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 			"Failed to acquire wakelock for getting common dump\n");
 		return ret;
 	}
-	gxp_pm_update_requested_power_states(gxp, AUR_OFF, true, AUR_UUD, false,
-					     AUR_MEM_UNDEFINED,
-					     AUR_MEM_UNDEFINED);
+	gxp_pm_update_requested_power_states(gxp, off_states, uud_states);
 
 	gxp_get_common_registers(gxp,
 				 &common_seg_header[GXP_COMMON_REGISTERS_IDX],
@@ -287,9 +285,7 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 			      &common_dump_data->lpm_regs);
 
 	gxp_wakelock_release(gxp);
-	gxp_pm_update_requested_power_states(gxp, AUR_UUD, false, AUR_OFF, true,
-					     AUR_MEM_UNDEFINED,
-					     AUR_MEM_UNDEFINED);
+	gxp_pm_update_requested_power_states(gxp, uud_states, off_states);
 
 	dev_dbg(gxp->dev, "Segment Header for Common Segment\n");
 	dev_dbg(gxp->dev, "Name: %s, Size: 0x%0x bytes, Valid :%0x\n",

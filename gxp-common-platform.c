@@ -252,7 +252,7 @@ static int gxp_map_buffer(struct gxp_client *client,
 
 	map = gxp_mapping_create(gxp, client->vd->domain, ibuf.host_address,
 				 ibuf.size,
-				 /*gxp_dma_flags=*/0,
+				 ibuf.flags,
 				 mapping_flags_to_dma_dir(ibuf.flags));
 	if (IS_ERR(map)) {
 		ret = PTR_ERR(map);
@@ -390,7 +390,6 @@ gxp_mailbox_command_compat(struct gxp_client *client,
 	struct gxp_mailbox_command_compat_ioctl ibuf;
 	int virt_core, phys_core;
 	int ret = 0;
-	uint gxp_power_state, memory_power_state;
 
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf))) {
 		dev_err(gxp->dev,
@@ -434,14 +433,10 @@ gxp_mailbox_command_compat(struct gxp_client *client,
 		goto out;
 	}
 
-	gxp_power_state = AUR_OFF;
-	memory_power_state = AUR_MEM_UNDEFINED;
-
 	ret = gxp->mailbox_mgr->execute_cmd_async(
 		client, gxp->mailbox_mgr->mailboxes[phys_core], virt_core,
 		GXP_MBOX_CODE_DISPATCH, 0, ibuf.device_address, ibuf.size,
-		ibuf.flags, gxp_power_state, memory_power_state, false,
-		&ibuf.sequence_number);
+		ibuf.flags, off_states, &ibuf.sequence_number);
 	if (ret) {
 		dev_err(gxp->dev, "Failed to enqueue mailbox command (ret=%d)\n",
 			ret);
@@ -469,13 +464,17 @@ static int gxp_mailbox_command(struct gxp_client *client,
 	struct gxp_mailbox_command_ioctl ibuf;
 	int virt_core, phys_core;
 	int ret = 0;
-	uint gxp_power_state, memory_power_state;
-	bool requested_low_clkmux = false;
+	struct gxp_power_states power_states;
 
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf))) {
 		dev_err(gxp->dev,
 			"Unable to copy ioctl data from user-space\n");
 		return -EFAULT;
+	}
+	if (ibuf.gxp_power_state == GXP_POWER_STATE_OFF) {
+		dev_err(gxp->dev,
+			"GXP_POWER_STATE_OFF is not a valid value when executing a mailbox command\n");
+		return -EINVAL;
 	}
 	if (ibuf.gxp_power_state < GXP_POWER_STATE_OFF ||
 	    ibuf.gxp_power_state >= GXP_NUM_POWER_STATES) {
@@ -536,15 +535,14 @@ static int gxp_mailbox_command(struct gxp_client *client,
 		goto out;
 	}
 
-	gxp_power_state = aur_state_array[ibuf.gxp_power_state];
-	memory_power_state = aur_memory_state_array[ibuf.memory_power_state];
-	requested_low_clkmux = (ibuf.power_flags & GXP_POWER_LOW_FREQ_CLKMUX) != 0;
+	power_states.power = aur_state_array[ibuf.gxp_power_state];
+	power_states.memory = aur_memory_state_array[ibuf.memory_power_state];
+	power_states.low_clkmux = (ibuf.power_flags & GXP_POWER_LOW_FREQ_CLKMUX) != 0;
 
 	ret = gxp->mailbox_mgr->execute_cmd_async(
 		client, gxp->mailbox_mgr->mailboxes[phys_core], virt_core,
 		GXP_MBOX_CODE_DISPATCH, 0, ibuf.device_address, ibuf.size,
-		ibuf.flags, gxp_power_state, memory_power_state,
-		requested_low_clkmux, &ibuf.sequence_number);
+		ibuf.flags, power_states, &ibuf.sequence_number);
 	if (ret) {
 		dev_err(gxp->dev, "Failed to enqueue mailbox command (ret=%d)\n",
 			ret);
@@ -1165,6 +1163,7 @@ static int gxp_acquire_wake_lock_compat(
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_acquire_wakelock_compat_ioctl ibuf;
 	bool acquired_block_wakelock = false;
+	struct gxp_power_states power_states;
 	int ret = 0;
 
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
@@ -1207,11 +1206,11 @@ static int gxp_acquire_wake_lock_compat(
 
 	/* Acquire a BLOCK wakelock if requested */
 	if (ibuf.components_to_wake & WAKELOCK_BLOCK) {
+		power_states.power = aur_state_array[ibuf.gxp_power_state];
+		power_states.memory = aur_memory_state_array[ibuf.memory_power_state];
+		power_states.low_clkmux = false;
 		ret = gxp_client_acquire_block_wakelock(
-			client, &acquired_block_wakelock,
-			aur_state_array[ibuf.gxp_power_state],
-			aur_memory_state_array[ibuf.memory_power_state],
-			false);
+			client, &acquired_block_wakelock, power_states);
 		if (ret) {
 			dev_err(gxp->dev,
 				"Failed to acquire BLOCK wakelock for client (ret=%d)\n",
@@ -1257,6 +1256,7 @@ static int gxp_acquire_wake_lock(struct gxp_client *client,
 	struct gxp_acquire_wakelock_ioctl ibuf;
 	bool acquired_block_wakelock = false;
 	bool requested_low_clkmux = false;
+	struct gxp_power_states power_states;
 	int ret = 0;
 
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
@@ -1306,11 +1306,11 @@ static int gxp_acquire_wake_lock(struct gxp_client *client,
 
 	/* Acquire a BLOCK wakelock if requested */
 	if (ibuf.components_to_wake & WAKELOCK_BLOCK) {
+		power_states.power = aur_state_array[ibuf.gxp_power_state];
+		power_states.memory = aur_memory_state_array[ibuf.memory_power_state];
+		power_states.low_clkmux = requested_low_clkmux;
 		ret = gxp_client_acquire_block_wakelock(
-			client, &acquired_block_wakelock,
-			aur_state_array[ibuf.gxp_power_state],
-			aur_memory_state_array[ibuf.memory_power_state],
-			requested_low_clkmux);
+			client, &acquired_block_wakelock, power_states);
 		if (ret) {
 			dev_err(gxp->dev,
 				"Failed to acquire BLOCK wakelock for client (ret=%d)\n",

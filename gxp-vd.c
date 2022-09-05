@@ -327,13 +327,30 @@ int gxp_vd_block_ready(struct gxp_virtual_device *vd)
 	struct gxp_dev *gxp = vd->gxp;
 	int ret;
 
+	if (vd->state == GXP_VD_SUSPENDED)
+		return 0;
 	if (vd->state != GXP_VD_OFF)
 		return -EINVAL;
 	ret = gxp_dma_domain_attach_device(gxp, vd->domain, vd->core_list);
 	if (ret)
 		return ret;
 	vd->state = GXP_VD_READY;
+	if (gxp->after_vd_block_ready) {
+		ret = gxp->after_vd_block_ready(gxp, vd);
+		if (ret) {
+			gxp_dma_domain_detach_device(gxp, vd->domain);
+			return ret;
+		}
+	}
 	return 0;
+}
+
+void gxp_vd_block_unready(struct gxp_virtual_device *vd)
+{
+	struct gxp_dev *gxp = vd->gxp;
+
+	if (gxp->before_vd_block_unready)
+		gxp->before_vd_block_unready(gxp, vd);
 }
 
 int gxp_vd_run(struct gxp_virtual_device *vd)
@@ -362,7 +379,8 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 	uint lpm_state;
 
 	lockdep_assert_held(&gxp->vd_semaphore);
-	if ((vd->state == GXP_VD_OFF || vd->state == GXP_VD_RUNNING) &&
+	if ((vd->state == GXP_VD_OFF || vd->state == GXP_VD_READY ||
+	     vd->state == GXP_VD_RUNNING) &&
 	    gxp_pm_get_blk_state(gxp) != AUR_OFF) {
 		/*
 		 * Put all cores in the VD into reset so they can not wake each other up
@@ -377,7 +395,7 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 	}
 
 	gxp_firmware_stop(gxp, vd, vd->core_list);
-	if (vd->state == GXP_VD_RUNNING)
+	if (vd->state == GXP_VD_READY || vd->state == GXP_VD_RUNNING)
 		gxp_dma_domain_detach_device(gxp, vd->domain);
 	vd->state = GXP_VD_OFF;
 }
@@ -387,15 +405,16 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
  */
 void gxp_vd_suspend(struct gxp_virtual_device *vd)
 {
-#ifdef DISABLE_VD_SUSPEND_RESUME_SUPPORT
-	return gxp_vd_stop(vd);
-#else
 	uint core;
 	struct gxp_dev *gxp = vd->gxp;
 	u32 boot_state;
 	uint failed_cores = 0;
 	uint virt_core;
 
+#ifdef DISABLE_VD_SUSPEND_RESUME_SUPPORT
+	if (!gxp_is_direct_mode(gxp))
+		return gxp_vd_stop(vd);
+#endif
 	lockdep_assert_held_write(&gxp->vd_semaphore);
 	dev_info(gxp->dev, "Suspending VD ...\n");
 	if (vd->state == GXP_VD_SUSPENDED) {
@@ -467,7 +486,6 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 		vd->state = GXP_VD_SUSPENDED;
 	}
 	gxp_pm_resume_clkmux(gxp);
-#endif /* DISABLE_VD_SUSPEND_RESUME_SUPPORT */
 }
 
 /*

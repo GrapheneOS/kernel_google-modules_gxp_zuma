@@ -213,7 +213,7 @@ void gxp_dma_free_coherent(struct gxp_dev *gxp, struct iommu_domain *domain,
  * @nents: The number of entries in @sg
  * @direction: DMA direction
  * @attrs: The same set of flags used by the base DMA API
- * @gxp_dma_flags: The type of mapping to create; Currently unused
+ * @gxp_dma_flags: The type of mapping to create
  *
  * Return: The number of scatter-gather entries mapped to
  */

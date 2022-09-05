@@ -133,10 +133,7 @@ static int gxp_firmware_run_set(void *data, u64 val)
 			goto err_wakelock;
 		}
 		gxp->debugfs_client->has_block_wakelock = true;
-		gxp_pm_update_requested_power_states(gxp, AUR_OFF, true,
-						     AUR_UUD, true,
-						     AUR_MEM_UNDEFINED,
-						     AUR_MEM_UNDEFINED);
+		gxp_pm_update_requested_power_states(gxp, off_states, uud_states);
 
 		ret = gxp_vd_run(gxp->debugfs_client->vd);
 		up_write(&gxp->vd_semaphore);
@@ -158,10 +155,7 @@ static int gxp_firmware_run_set(void *data, u64 val)
 		 */
 		gxp_client_destroy(gxp->debugfs_client);
 		gxp->debugfs_client = NULL;
-		gxp_pm_update_requested_power_states(gxp, AUR_UUD, true,
-						     AUR_OFF, true,
-						     AUR_MEM_UNDEFINED,
-						     AUR_MEM_UNDEFINED);
+		gxp_pm_update_requested_power_states(gxp, uud_states, off_states);
 	}
 
 out:
@@ -171,9 +165,7 @@ out:
 
 err_start:
 	gxp_wakelock_release(gxp);
-	gxp_pm_update_requested_power_states(gxp, AUR_UUD, true, AUR_OFF, true,
-					     AUR_MEM_UNDEFINED,
-					     AUR_MEM_UNDEFINED);
+	gxp_pm_update_requested_power_states(gxp, uud_states, off_states);
 err_wakelock:
 	/* Destroying a client cleans up any VDss or wakelocks it held. */
 	gxp_client_destroy(gxp->debugfs_client);
@@ -220,10 +212,7 @@ static int gxp_wakelock_set(void *data, u64 val)
 			goto out;
 		}
 		gxp->debugfs_wakelock_held = true;
-		gxp_pm_update_requested_power_states(gxp, AUR_OFF, true,
-						     AUR_UUD, true,
-						     AUR_MEM_UNDEFINED,
-						     AUR_MEM_UNDEFINED);
+		gxp_pm_update_requested_power_states(gxp, off_states, uud_states);
 	} else {
 		/* Wakelock Release */
 		if (!gxp->debugfs_wakelock_held) {
@@ -234,10 +223,7 @@ static int gxp_wakelock_set(void *data, u64 val)
 
 		gxp_wakelock_release(gxp);
 		gxp->debugfs_wakelock_held = false;
-		gxp_pm_update_requested_power_states(gxp, AUR_UUD, true,
-						     AUR_OFF, true,
-						     AUR_MEM_UNDEFINED,
-						     AUR_MEM_UNDEFINED);
+		gxp_pm_update_requested_power_states(gxp, uud_states, off_states);
 	}
 
 out:
@@ -334,10 +320,6 @@ static int gxp_log_buff_set(void *data, u64 val)
 		ptr = buffers[i];
 		*ptr = val;
 	}
-	dev_dbg(gxp->dev,
-		"%s: log buff first bytes: [0] = %llu, [1] = %llu, [2] = %llu, [3] = %llu (val=%llu)\n",
-		__func__, *buffers[0], *buffers[1], *buffers[2], *buffers[3],
-		val);
 
 	mutex_unlock(&gxp->telemetry_mgr->lock);
 
@@ -359,9 +341,6 @@ static int gxp_log_buff_get(void *data, u64 *val)
 	}
 
 	buffers = (u64 **)gxp->telemetry_mgr->logging_buff_data->buffers;
-	dev_dbg(gxp->dev,
-		"%s: log buff first bytes: [0] = %llu, [1] = %llu, [2] = %llu, [3] = %llu\n",
-		__func__, *buffers[0], *buffers[1], *buffers[2], *buffers[3]);
 
 	*val = *buffers[0];
 

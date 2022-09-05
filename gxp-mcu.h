@@ -47,4 +47,12 @@ int gxp_mcu_mem_alloc_data(struct gxp_mcu *mcu, struct gxp_mapped_resource *mem,
  */
 void gxp_mcu_mem_free_data(struct gxp_mcu *mcu, struct gxp_mapped_resource *mem);
 
+/*
+ * Returns the pointer of `struct gxp_mcu` associated with the GXP device object.
+ *
+ * This function is NOT implemented in gxp-mcu.c. Instead, it shall be implemented in
+ * *-platform.c as a chip-dependent implementation.
+ */
+struct gxp_mcu *gxp_mcu_of(struct gxp_dev *gxp);
+
 #endif /* __GXP_MCU_H__ */

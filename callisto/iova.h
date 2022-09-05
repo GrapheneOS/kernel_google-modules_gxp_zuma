@@ -11,7 +11,7 @@
 /* IOVAs from system firmware's view */
 #define GXP_IOVA_SYNC_BARRIERS          (0x100000)
 #define GXP_IOVA_MAILBOX(_x_)           (0x18390000 + (_x_) * 0x00020000)
-#define GXP_IOVA_EXT_TPU_MBX            (0x1CEC0000)
+#define GXP_IOVA_EXT_TPU_MBX            (0x1A050000)
 #define GXP_IOVA_AURORA_TOP             (0x25C00000)
 #define GXP_IOVA_FIRMWARE(_x_)          (0xFA000000 + (_x_) * 0x00100000)
 #define GXP_IOVA_SHARED_BUFFER          (0xFA3A8000)

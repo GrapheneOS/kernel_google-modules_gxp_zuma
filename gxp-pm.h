@@ -91,6 +91,17 @@ struct gxp_req_pm_qos_work {
 	bool using;
 };
 
+struct gxp_power_states {
+	enum aur_power_state power;
+	enum aur_memory_power_state memory;
+	bool low_clkmux;
+};
+
+static const struct gxp_power_states off_states = { AUR_OFF, AUR_MEM_UNDEFINED,
+						    false };
+static const struct gxp_power_states uud_states = { AUR_UUD, AUR_MEM_UNDEFINED,
+						    false };
+
 struct gxp_power_manager {
 	struct gxp_dev *gxp;
 	struct mutex pm_lock;
@@ -132,9 +143,12 @@ struct gxp_power_manager {
  * gxp_pm_blk_on() - Turn on the power for BLK_AUR
  * @gxp: The GXP device to turn on
  *
+ * Note: For most cases you should use gxp_acquire_wakelock() to ensure the
+ * device is ready to use, unless you really want to power on the block without
+ * setting up the device state.
+ *
  * Return:
  * * 0       - BLK ON successfully
- * * -ENODEV - Cannot find PM interface
  */
 int gxp_pm_blk_on(struct gxp_dev *gxp);
 
@@ -144,8 +158,6 @@ int gxp_pm_blk_on(struct gxp_dev *gxp);
  *
  * Return:
  * * 0       - BLK OFF successfully
- * * -ENODEV - Cannot find PM interface
- * * -EBUSY  - Wakelock is held, blk is still busy
  */
 int gxp_pm_blk_off(struct gxp_dev *gxp);
 
@@ -236,28 +248,20 @@ int gxp_pm_blk_get_state_acpm(struct gxp_dev *gxp);
  * gxp_pm_update_requested_power_states() - API for a GXP client to vote for a
  * requested power state and a requested memory power state.
  * @gxp: The GXP device to operate.
- * @origin_state: An existing old requested state, will be cleared. If this is
- *                the first vote, pass AUR_OFF.
- * @origin_requested_low_clkmux: Specify whether the existing vote was requested with
- *                               low frequency CLKMUX flag.
- * @requested_state: The new requested state.
- * @requested_low_clkmux: Specify whether the new vote is requested with low frequency
- *			  CLKMUX flag. Will take no effect if the @requested state is
- *			  AUR_OFF.
- * @origin_mem_state: An existing old requested state, will be cleared. If this is
- *                the first vote, pass AUR_MEM_UNDEFINED.
- * @requested_mem_state: The new requested state.
+ * @origin_states: An existing old requested states, will be cleared. If this is
+ *                the first vote, pass AUR_OFF and AUR_MEM_UNDEFINED for field
+ *                power_state and memory_state. The low_clkmux field will take no
+ *                effect if requested state is AUR_OFF.
+ * @requested_states: The new requested states.
  *
  * Return:
  * * 0       - Voting registered
  * * -EINVAL - Invalid original state or requested state
  */
 
-int gxp_pm_update_requested_power_states(
-	struct gxp_dev *gxp, enum aur_power_state origin_state,
-	bool origin_requested_low_clkmux, enum aur_power_state requested_state,
-	bool requested_low_clkmux, enum aur_memory_power_state origin_mem_state,
-	enum aur_memory_power_state requested_mem_state);
+int gxp_pm_update_requested_power_states(struct gxp_dev *gxp,
+					 struct gxp_power_states origin_states,
+					 struct gxp_power_states requested_states);
 
 /*
  * gxp_pm_force_clkmux_normal() - Force PLL_CON0_NOC_USER and PLL_CON0_PLL_AUR MUX

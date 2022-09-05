@@ -122,10 +122,16 @@ static void gxp_uci_handle_async_resp_arrived(
 	struct gxp_async_response *async_resp = &async_uci_resp->async_response;
 	unsigned long flags;
 
+	/*
+	 * If dest_queue is a null pointer, it means we don't care the response
+	 * of the command. Skip it.
+	 */
+	if (!async_resp->dest_queue)
+		return;
+
 	spin_lock_irqsave(async_resp->dest_queue_lock, flags);
 
-	if (async_resp->dest_queue)
-		list_add_tail(&async_resp->list_entry, async_resp->dest_queue);
+	list_add_tail(&async_resp->list_entry, async_resp->dest_queue);
 	/*
 	 * Marking the dest_queue as NULL indicates the
 	 * response was handled in case its timeout

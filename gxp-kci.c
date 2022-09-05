@@ -290,8 +290,6 @@ int gxp_kci_init(struct gxp_mcu *mcu)
 	if (IS_ERR(gkci->mailbox))
 		return PTR_ERR(gkci->mailbox);
 
-	gxp_mailbox_generate_device_interrupt(gkci->mailbox, BIT(0));
-
 	return 0;
 }
 
@@ -496,32 +494,63 @@ int gxp_kci_shutdown(struct gxp_kci *gkci)
 	return gcip_kci_send_cmd(gkci->kci, &cmd);
 }
 
-/* TODO(b/237955391): Implement the dma data part after the format is decided. */
-int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, struct gxp_virtual_device *vd,
-			   u8 num_cores, u32 ssid)
+int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u8 num_cores, u8 client_id,
+			   u8 slice_index)
 {
 	struct gcip_kci_command_element cmd = {
 		.code = GCIP_KCI_CODE_ALLOCATE_VMBOX,
 	};
+	struct gxp_kci_allocate_vmbox_detail *detail;
+	struct gxp_mapped_resource buf;
+	int ret;
 
 	if (!gkci || !gkci->kci)
 		return -ENODEV;
 
-	return gcip_kci_send_cmd(gkci->kci, &cmd);
+	ret = gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(*detail));
+	if (ret)
+		return -ENOMEM;
+
+	detail = buf.vaddr;
+	detail->num_cores = num_cores;
+	detail->client_id = client_id;
+	detail->slice_index = slice_index;
+
+	cmd.dma.address = buf.daddr;
+	cmd.dma.size = sizeof(*detail);
+
+	ret = gcip_kci_send_cmd(gkci->kci, &cmd);
+	gxp_mcu_mem_free_data(gkci->mcu, &buf);
+
+	return ret;
 }
 
-/* TODO(b/237955391): Implement the dma data part after the format is decided. */
-int gxp_kci_release_vmbox(struct gxp_kci *gkci, struct gxp_virtual_device *vd,
-			  u32 ssid)
+int gxp_kci_release_vmbox(struct gxp_kci *gkci, u8 client_id)
 {
 	struct gcip_kci_command_element cmd = {
 		.code = GCIP_KCI_CODE_RELEASE_VMBOX,
 	};
+	struct gxp_kci_release_vmbox_detail *detail;
+	struct gxp_mapped_resource buf;
+	int ret;
 
 	if (!gkci || !gkci->kci)
 		return -ENODEV;
 
-	return gcip_kci_send_cmd(gkci->kci, &cmd);
+	ret = gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(*detail));
+	if (ret)
+		return -ENOMEM;
+
+	detail = buf.vaddr;
+	detail->client_id = client_id;
+
+	cmd.dma.address = buf.daddr;
+	cmd.dma.size = sizeof(*detail);
+
+	ret = gcip_kci_send_cmd(gkci->kci, &cmd);
+	gxp_mcu_mem_free_data(gkci->mcu, &buf);
+
+	return ret;
 }
 
 int gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,

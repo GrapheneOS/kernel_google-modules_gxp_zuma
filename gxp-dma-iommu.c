@@ -18,6 +18,7 @@
 #include "gxp-mapping.h"
 #include "gxp-pm.h"
 #include "gxp-ssmt.h"
+#include "gxp.h"
 
 struct gxp_dma_iommu_manager {
 	struct gxp_dma_manager dma_mgr;
@@ -39,7 +40,13 @@ struct gxp_dma_iommu_manager {
 static int dma_info_to_prot(enum dma_data_direction dir, bool coherent,
 			    unsigned long attrs)
 {
-	int prot = coherent ? IOMMU_CACHE : 0;
+	int prot = 0;
+
+	if (coherent) {
+#ifdef GXP_IS_DMA_COHERENT
+		prot = IOMMU_CACHE;
+#endif
+	}
 
 	if (attrs & DMA_ATTR_PRIVILEGED)
 		prot |= IOMMU_PRIV;
@@ -53,6 +60,14 @@ static int dma_info_to_prot(enum dma_data_direction dir, bool coherent,
 	default:
 		return 0;
 	}
+}
+
+static int map_flags_to_iommu_prot(enum dma_data_direction dir,
+				   unsigned long attrs, u32 gxp_dma_flags)
+{
+	bool coherent = gxp_dma_flags & GXP_MAP_COHERENT ? 1 : 0;
+
+	return dma_info_to_prot(dir, coherent, attrs);
 }
 
 static int gxp_dma_ssmt_program(struct gxp_dev *gxp,
@@ -560,7 +575,7 @@ int gxp_dma_map_sg(struct gxp_dev *gxp, struct iommu_domain *domain,
 {
 	int nents_mapped;
 	dma_addr_t daddr;
-	int prot = dma_info_to_prot(direction, 0, attrs);
+	int prot = map_flags_to_iommu_prot(direction, attrs, gxp_dma_flags);
 	ssize_t size_mapped;
 
 	nents_mapped = dma_map_sg_attrs(gxp->dev, sg, nents, direction, attrs);

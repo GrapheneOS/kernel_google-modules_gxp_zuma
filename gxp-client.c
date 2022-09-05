@@ -28,10 +28,8 @@ struct gxp_client *gxp_client_create(struct gxp_dev *gxp)
 	init_rwsem(&client->semaphore);
 	client->has_block_wakelock = false;
 	client->has_vd_wakelock = false;
-	client->requested_power_state = AUR_OFF;
-	client->requested_memory_power_state = 0;
+	client->requested_states = off_states;
 	client->vd = NULL;
-	client->requested_low_clkmux = false;
 	return client;
 }
 
@@ -39,6 +37,9 @@ void gxp_client_destroy(struct gxp_client *client)
 {
 	struct gxp_dev *gxp = client->gxp;
 	int core;
+
+	if (client->vd && client->has_block_wakelock)
+		gxp_vd_block_unready(client->vd);
 
 	if (client->vd && client->vd->state != GXP_VD_OFF) {
 		down_read(&gxp->vd_semaphore);
@@ -64,15 +65,10 @@ void gxp_client_destroy(struct gxp_client *client)
 	if (client->has_block_wakelock) {
 		gxp_wakelock_release(client->gxp);
 		gxp_pm_update_requested_power_states(
-			gxp, client->requested_power_state,
-			client->requested_low_clkmux, AUR_OFF, false,
-			client->requested_memory_power_state,
-			AUR_MEM_UNDEFINED);
+			gxp, client->requested_states, off_states);
 	}
 
 	if (client->vd) {
-		if (gxp->before_release_vd)
-			gxp->before_release_vd(gxp, client->vd);
 		down_write(&gxp->vd_semaphore);
 		gxp_vd_release(client->vd);
 		up_write(&gxp->vd_semaphore);
@@ -104,18 +100,15 @@ int gxp_client_allocate_virtual_device(struct gxp_client *client,
 			ret);
 		goto error;
 	}
+	up_write(&gxp->vd_semaphore);
 
-	if (gxp->after_allocate_vd) {
-		ret = gxp->after_allocate_vd(gxp, vd);
+	if (client->has_block_wakelock) {
+		ret = gxp_vd_block_ready(client->vd);
 		if (ret) {
 			gxp_vd_release(vd);
 			goto error;
 		}
 	}
-	up_write(&gxp->vd_semaphore);
-
-	if (client->has_block_wakelock)
-		gxp_vd_block_ready(client->vd);
 
 	client->vd = vd;
 	return 0;
@@ -125,33 +118,25 @@ error:
 }
 
 static int gxp_client_request_power_states(struct gxp_client *client,
-					   uint power_state,
-					   uint memory_power_state,
-					   bool low_clkmux)
+					   struct gxp_power_states requested_states)
 {
 	struct gxp_dev *gxp = client->gxp;
 	int ret;
 
 	if (gxp->request_power_states) {
-		ret = gxp->request_power_states(client, power_state,
-						memory_power_state, low_clkmux);
+		ret = gxp->request_power_states(client, requested_states);
 		if (ret != -EOPNOTSUPP)
 			return ret;
 	}
-	gxp_pm_update_requested_power_states(
-		gxp, client->requested_power_state,
-		client->requested_low_clkmux, power_state, low_clkmux,
-		client->requested_memory_power_state,
-		memory_power_state);
-	client->requested_power_state = power_state;
-	client->requested_low_clkmux = low_clkmux;
-	client->requested_memory_power_state = memory_power_state;
+	gxp_pm_update_requested_power_states(gxp, client->requested_states,
+					     requested_states);
+	client->requested_states = requested_states;
 	return 0;
 }
 
 int gxp_client_acquire_block_wakelock(struct gxp_client *client,
-				      bool *acquired_wakelock, uint power_state,
-				      uint memory_power_state, bool low_clkmux)
+				      bool *acquired_wakelock,
+				      struct gxp_power_states requested_states)
 {
 	struct gxp_dev *gxp = client->gxp;
 	int ret;
@@ -162,8 +147,11 @@ int gxp_client_acquire_block_wakelock(struct gxp_client *client,
 		if (ret)
 			return ret;
 		*acquired_wakelock = true;
-		if (client->vd)
-			gxp_vd_block_ready(client->vd);
+		if (client->vd) {
+			ret = gxp_vd_block_ready(client->vd);
+			if (ret)
+				goto err_wakelock_release;
+		}
 	} else {
 		*acquired_wakelock = false;
 	}
@@ -176,9 +164,20 @@ int gxp_client_acquire_block_wakelock(struct gxp_client *client,
 	client->tgid = current->tgid;
 	client->pid = current->pid;
 
-	ret = gxp_client_request_power_states(client, power_state,
-					      memory_power_state, low_clkmux);
+	ret = gxp_client_request_power_states(client, requested_states);
+	if (ret)
+		goto err_vd_block_unready;
 
+	return 0;
+
+err_vd_block_unready:
+	if (client->vd && *acquired_wakelock)
+		gxp_vd_block_unready(client->vd);
+err_wakelock_release:
+	if (*acquired_wakelock) {
+		gxp_wakelock_release(gxp);
+		*acquired_wakelock = false;
+	}
 	return ret;
 }
 
@@ -190,11 +189,13 @@ void gxp_client_release_block_wakelock(struct gxp_client *client)
 	if (!client->has_block_wakelock)
 		return;
 
+	if (client->vd)
+		gxp_vd_block_unready(client->vd);
+
 	if (client->has_vd_wakelock)
 		gxp_client_release_vd_wakelock(client);
 
-	gxp_client_request_power_states(client, AUR_OFF, AUR_MEM_UNDEFINED,
-					false);
+	gxp_client_request_power_states(client, off_states);
 	gxp_wakelock_release(gxp);
 	client->has_block_wakelock = false;
 }
