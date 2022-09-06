@@ -25,6 +25,13 @@ static char *callisto_work_mode_name = "direct";
 
 module_param_named(work_mode, callisto_work_mode_name, charp, 0660);
 
+/*
+ * TODO(b/245238253):
+ * Set default to false once we have most folks move to use B0 samples.
+ */
+static bool zuma_a0 = true;
+module_param_named(a0, zuma_a0, bool, 0660);
+
 static int callisto_platform_parse_dt(struct platform_device *pdev,
 				      struct gxp_dev *gxp)
 {
@@ -428,6 +435,11 @@ bool gxp_is_direct_mode(struct gxp_dev *gxp)
 	struct callisto_dev *callisto = to_callisto_dev(gxp);
 
 	return callisto->mode == DIRECT;
+}
+
+bool gxp_is_a0(struct gxp_dev *gxp)
+{
+	return zuma_a0;
 }
 
 enum callisto_work_mode callisto_dev_parse_work_mode(const char *work_mode)

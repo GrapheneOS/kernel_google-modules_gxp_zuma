@@ -30,6 +30,10 @@
 #include "gxp-telemetry.h"
 #include "gxp-vd.h"
 
+#if IS_ENABLED(CONFIG_GXP_TEST)
+#include "unittests/factory/fake-gxp-firmware.h"
+#endif
+
 #define FW_HEADER_SIZE		(0x1000)
 #define FW_IMAGE_TYPE_OFFSET	(0x400)
 
@@ -357,6 +361,15 @@ static int gxp_firmware_handshake(struct gxp_dev *gxp, uint core)
 	 */
 	ctr = 5000;
 	offset = SCRATCHPAD_MSG_OFFSET(MSG_CORE_ALIVE);
+#if IS_ENABLED(CONFIG_GXP_TEST)
+	fake_gxp_firmware_flush_work_all();
+	/*
+	 * As the fake firmware works are flushed, we don't have to busy-wait the response of
+	 * the firmware. By setting @ctr to 1, just run the while loop below once for the code
+	 * coverage.
+	 */
+	ctr = 1;
+#endif
 	usleep_range(50 * GXP_TIME_DELAY_FACTOR, 60 * GXP_TIME_DELAY_FACTOR);
 	while (ctr--) {
 		if (readl(core_scratchpad_base + offset) == Q7_ALIVE_MAGIC)
@@ -469,7 +482,7 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 	if (mgr->firmware_running) {
 		dev_warn(dev, "Cannot update firmware when any core is running\n");
 		ret = -EBUSY;
-		goto out;
+		goto err_out;
 	}
 
 	name_buf = fw_name_from_attr_buf(buf);
@@ -477,7 +490,7 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 		dev_err(gxp->dev, "Invalid firmware prefix requested: %s\n",
 			buf);
 		ret = PTR_ERR(name_buf);
-		goto out;
+		goto err_out;
 	}
 
 	mutex_lock(&mgr->dsp_firmware_lock);
@@ -506,7 +519,6 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 	mgr->firmware_name = name_buf;
 
 	mutex_unlock(&mgr->dsp_firmware_lock);
-out:
 	up_read(&gxp->vd_semaphore);
 	return count;
 
@@ -516,6 +528,7 @@ err_authenticate_firmware:
 err_request_firmware:
 	kfree(name_buf);
 	mutex_unlock(&mgr->dsp_firmware_lock);
+err_out:
 	up_read(&gxp->vd_semaphore);
 	return ret;
 }

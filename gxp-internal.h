@@ -245,4 +245,9 @@ static inline int gxp_acquire_rmem_resource(struct gxp_dev *gxp,
  */
 bool gxp_is_direct_mode(struct gxp_dev *gxp);
 
+/*
+ * Whether the target chip is A0.
+ */
+bool gxp_is_a0(struct gxp_dev *gxp);
+
 #endif /* __GXP_INTERNAL_H__ */

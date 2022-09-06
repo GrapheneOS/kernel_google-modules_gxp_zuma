@@ -498,6 +498,12 @@ static void gxp_dci_consume_responses_work(struct gxp_mailbox *gxp_mbx)
 {
 	struct gxp_dci *dci = gxp_mbx->data;
 
+	if (gxp_is_a0(gxp_mbx->gxp))
+		dma_sync_single_for_cpu(gxp_mbx->gxp->dev,
+					gxp_mbx->resp_queue_device_addr,
+					gxp_mbx->resp_queue_size *
+						sizeof(struct gxp_dci_response),
+					DMA_BIDIRECTIONAL);
 	gcip_mailbox_consume_responses_work(dci->gcip_mbx);
 }
 
