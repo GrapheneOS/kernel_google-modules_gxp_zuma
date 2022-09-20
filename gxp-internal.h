@@ -24,6 +24,15 @@
 
 #include "gxp-config.h"
 
+#define IS_GXP_TEST IS_ENABLED(CONFIG_GXP_TEST)
+
+enum gxp_chip_revision {
+	GXP_CHIP_A0,
+	GXP_CHIP_B0,
+	/* used when the revision is not explicitly specified */
+	GXP_CHIP_ANY,
+};
+
 /* Holds Client's TPU mailboxes info used during mapping */
 struct gxp_tpu_mbx_desc {
 	uint phys_core_list;
@@ -246,8 +255,8 @@ static inline int gxp_acquire_rmem_resource(struct gxp_dev *gxp,
 bool gxp_is_direct_mode(struct gxp_dev *gxp);
 
 /*
- * Whether the target chip is A0.
+ * Returns the chip revision.
  */
-bool gxp_is_a0(struct gxp_dev *gxp);
+enum gxp_chip_revision gxp_get_chip_revision(struct gxp_dev *gxp);
 
 #endif /* __GXP_INTERNAL_H__ */

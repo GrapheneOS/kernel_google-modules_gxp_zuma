@@ -311,6 +311,7 @@ static int gxp_uci_init_consume_responses_work(struct gxp_mailbox *mailbox)
 		.timeout = MAILBOX_TIMEOUT,
 		.ops = &gxp_uci_gcip_mbx_ops,
 		.data = mailbox,
+		.ignore_seq_order = true,
 	};
 	int ret;
 
@@ -375,6 +376,8 @@ int gxp_uci_init(struct gxp_mcu *mcu)
 
 void gxp_uci_exit(struct gxp_uci *uci)
 {
+	if (IS_GXP_TEST && (!uci || !uci->gxp_mbx))
+		return;
 	gxp_mailbox_release(uci->gxp->mailbox_mgr, NULL, 0, uci->gxp_mbx);
 	uci->gxp_mbx = NULL;
 }

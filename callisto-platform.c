@@ -27,10 +27,10 @@ module_param_named(work_mode, callisto_work_mode_name, charp, 0660);
 
 /*
  * TODO(b/245238253):
- * Set default to false once we have most folks move to use B0 samples.
+ * Set default to "B0/any" once we have most folks move to use B0 samples.
  */
-static bool zuma_a0 = true;
-module_param_named(a0, zuma_a0, bool, 0660);
+static char *zuma_revision = "a0";
+module_param_named(chip_rev, zuma_revision, charp, 0660);
 
 static int callisto_platform_parse_dt(struct platform_device *pdev,
 				      struct gxp_dev *gxp)
@@ -117,15 +117,32 @@ static int gxp_ioctl_uci_command_helper(struct gxp_client *client,
 	cmd.core_command_params.memory_operating_point = ibuf->memory_power_state;
 	/* cmd.seq is assigned by mailbox implementation */
 	cmd.type = CORE_COMMAND;
-	cmd.priority = 0; /* currently unused */
+
+	/* TODO(b/248179414): Remove core assignment when MCU fw re-enable sticky core scheduler. */
+	down_read(&gxp->vd_semaphore);
+	cmd.priority = gxp_vd_virt_core_to_phys_core(client->vd, ibuf->virtual_core_id);
+	if (cmd.priority < 0) {
+		dev_err(gxp->dev,
+			"Mailbox command failed: Invalid virtual core id (%u)\n",
+			ibuf->virtual_core_id);
+		ret = -EINVAL;
+		up_read(&gxp->vd_semaphore);
+		goto out;
+	}
+	up_read(&gxp->vd_semaphore);
+
 	cmd.client_id = iommu_aux_get_pasid(client->vd->domain, gxp->dev);
 
+	/*
+	 * TODO(b/248196344): Use the only one permitted eventfd for the virtual device
+	 * when MCU fw re-enable sticky core scheduler.
+	 */
 	ret = gxp_uci_send_command(
 		&callisto->mcu.uci, &cmd,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].queue,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
-		client->mb_eventfds[UCI_RESOURCE_ID]);
+		client->mb_eventfds[ibuf->virtual_core_id]);
 	if (ret) {
 		dev_err(gxp->dev, "Failed to enqueue mailbox command (ret=%d)\n",
 			ret);
@@ -150,38 +167,6 @@ static int gxp_ioctl_uci_command(struct gxp_client *client,
 	ret = gxp_ioctl_uci_command_helper(client, &ibuf);
 	if (ret)
 		return ret;
-
-	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
-		return -EFAULT;
-
-	return 0;
-}
-
-static int gxp_ioctl_uci_command_compat(
-	struct gxp_client *client,
-	struct gxp_mailbox_command_compat_ioctl __user *argp)
-{
-	struct gxp_mailbox_command_compat_ioctl ibuf;
-	struct gxp_mailbox_command_ioctl mailbox_command_buf;
-	int ret;
-
-	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
-		return -EFAULT;
-
-	mailbox_command_buf.num_cores = ibuf.num_cores;
-	mailbox_command_buf.sequence_number = ibuf.sequence_number;
-	mailbox_command_buf.device_address = ibuf.device_address;
-	mailbox_command_buf.size = ibuf.size;
-	mailbox_command_buf.flags = ibuf.flags;
-	mailbox_command_buf.gxp_power_state = GXP_POWER_STATE_OFF;
-	mailbox_command_buf.memory_power_state = MEMORY_POWER_STATE_UNDEFINED;
-	mailbox_command_buf.power_flags = 0;
-
-	ret = gxp_ioctl_uci_command_helper(client, &mailbox_command_buf);
-	if (ret)
-		return ret;
-
-	ibuf.sequence_number = mailbox_command_buf.sequence_number;
 
 	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
 		return -EFAULT;
@@ -240,9 +225,6 @@ static long callisto_platform_ioctl(struct file *file, uint cmd, ulong arg)
 	switch (cmd) {
 	case GXP_MAILBOX_COMMAND:
 		ret = gxp_ioctl_uci_command(client, argp);
-		break;
-	case GXP_MAILBOX_COMMAND_COMPAT:
-		ret = gxp_ioctl_uci_command_compat(client, argp);
 		break;
 	case GXP_MAILBOX_RESPONSE:
 		ret = gxp_ioctl_uci_response(client, argp);
@@ -437,9 +419,13 @@ bool gxp_is_direct_mode(struct gxp_dev *gxp)
 	return callisto->mode == DIRECT;
 }
 
-bool gxp_is_a0(struct gxp_dev *gxp)
+enum gxp_chip_revision gxp_get_chip_revision(struct gxp_dev *gxp)
 {
-	return zuma_a0;
+	if (!strcmp(zuma_revision, "a0"))
+		return GXP_CHIP_A0;
+	if (!strcmp(zuma_revision, "b0"))
+		return GXP_CHIP_B0;
+	return GXP_CHIP_ANY;
 }
 
 enum callisto_work_mode callisto_dev_parse_work_mode(const char *work_mode)

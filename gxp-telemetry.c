@@ -32,7 +32,7 @@ static void telemetry_status_notification_work(struct work_struct *work)
 		container_of(work, struct gxp_telemetry_work, work);
 	struct gxp_dev *gxp = telem_work->gxp;
 	uint core = telem_work->core;
-	struct gxp_telemetry_manager *mgr = telem_work->gxp->telemetry_mgr;
+	struct gxp_telemetry_manager *mgr = gxp->telemetry_mgr;
 
 	/* Wake any threads waiting on an telemetry disable ACK */
 	wake_up(&mgr->waitq);

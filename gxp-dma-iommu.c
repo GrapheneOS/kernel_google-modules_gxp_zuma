@@ -6,6 +6,7 @@
  */
 
 #include <linux/bits.h>
+#include <linux/dma-iommu.h>
 #include <linux/dma-mapping.h>
 #include <linux/iommu.h>
 #include <linux/platform_device.h>
@@ -191,6 +192,15 @@ int gxp_dma_init(struct gxp_dev *gxp)
 		dev_err(gxp->dev, "Failed to enable aux support in SysMMU\n");
 		goto err_unreg_fault_handler;
 	}
+
+#if IS_ENABLED(CONFIG_ANDROID)
+	/* Enable best fit algorithm to minimize fragmentation */
+	ret = iommu_dma_enable_best_fit_algo(gxp->dev);
+	if (ret)
+		dev_warn(gxp->dev,
+			 "Failed to enable best-fit IOVA allocator (%d)\n",
+			 ret);
+#endif
 
 	gxp->dma_mgr = &(mgr->dma_mgr);
 

@@ -382,81 +382,6 @@ out:
 	return ret;
 }
 
-static int
-gxp_mailbox_command_compat(struct gxp_client *client,
-			   struct gxp_mailbox_command_compat_ioctl __user *argp)
-{
-	struct gxp_dev *gxp = client->gxp;
-	struct gxp_mailbox_command_compat_ioctl ibuf;
-	int virt_core, phys_core;
-	int ret = 0;
-
-	if (copy_from_user(&ibuf, argp, sizeof(ibuf))) {
-		dev_err(gxp->dev,
-			"Unable to copy ioctl data from user-space\n");
-		return -EFAULT;
-	}
-
-	/* Caller must hold VIRTUAL_DEVICE wakelock */
-	down_read(&client->semaphore);
-
-	if (!check_client_has_available_vd_wakelock(client,
-						   "GXP_MAILBOX_COMMAND")) {
-		ret = -ENODEV;
-		goto out_unlock_client_semaphore;
-	}
-
-	down_read(&gxp->vd_semaphore);
-
-	virt_core = ibuf.virtual_core_id;
-	phys_core = gxp_vd_virt_core_to_phys_core(client->vd, virt_core);
-	if (phys_core < 0) {
-		dev_err(gxp->dev,
-			"Mailbox command failed: Invalid virtual core id (%u)\n",
-			virt_core);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	if (!gxp_is_fw_running(gxp, phys_core)) {
-		dev_err(gxp->dev,
-			"Cannot process mailbox command for core %d when firmware isn't running\n",
-			phys_core);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	if (gxp->mailbox_mgr->mailboxes[phys_core] == NULL) {
-		dev_err(gxp->dev, "Mailbox not initialized for core %d\n",
-			phys_core);
-		ret = -EIO;
-		goto out;
-	}
-
-	ret = gxp->mailbox_mgr->execute_cmd_async(
-		client, gxp->mailbox_mgr->mailboxes[phys_core], virt_core,
-		GXP_MBOX_CODE_DISPATCH, 0, ibuf.device_address, ibuf.size,
-		ibuf.flags, off_states, &ibuf.sequence_number);
-	if (ret) {
-		dev_err(gxp->dev, "Failed to enqueue mailbox command (ret=%d)\n",
-			ret);
-		goto out;
-	}
-
-	if (copy_to_user(argp, &ibuf, sizeof(ibuf))) {
-		dev_err(gxp->dev, "Failed to copy back sequence number!\n");
-		ret = -EFAULT;
-		goto out;
-	}
-
-out:
-	up_read(&gxp->vd_semaphore);
-out_unlock_client_semaphore:
-	up_read(&client->semaphore);
-
-	return ret;
-}
-
 static int gxp_mailbox_command(struct gxp_client *client,
 			       struct gxp_mailbox_command_ioctl __user *argp)
 {
@@ -1156,99 +1081,6 @@ out:
 	return ret;
 }
 
-static int gxp_acquire_wake_lock_compat(
-	struct gxp_client *client,
-	struct gxp_acquire_wakelock_compat_ioctl __user *argp)
-{
-	struct gxp_dev *gxp = client->gxp;
-	struct gxp_acquire_wakelock_compat_ioctl ibuf;
-	bool acquired_block_wakelock = false;
-	struct gxp_power_states power_states;
-	int ret = 0;
-
-	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
-		return -EFAULT;
-
-	if (ibuf.gxp_power_state == GXP_POWER_STATE_OFF) {
-		dev_err(gxp->dev,
-			"GXP_POWER_STATE_OFF is not a valid value when acquiring a wakelock\n");
-		return -EINVAL;
-	}
-	if (ibuf.gxp_power_state < GXP_POWER_STATE_OFF ||
-	    ibuf.gxp_power_state >= GXP_NUM_POWER_STATES) {
-		dev_err(gxp->dev, "Requested power state is invalid\n");
-		return -EINVAL;
-	}
-	if ((ibuf.memory_power_state < MEMORY_POWER_STATE_MIN ||
-	     ibuf.memory_power_state > MEMORY_POWER_STATE_MAX) &&
-	    ibuf.memory_power_state != MEMORY_POWER_STATE_UNDEFINED) {
-		dev_err(gxp->dev,
-			"Requested memory power state %d is invalid\n",
-			ibuf.memory_power_state);
-		return -EINVAL;
-	}
-
-	if (ibuf.gxp_power_state == GXP_POWER_STATE_READY) {
-		dev_warn_once(
-			gxp->dev,
-			"GXP_POWER_STATE_READY is deprecated, please set GXP_POWER_LOW_FREQ_CLKMUX with GXP_POWER_STATE_UUD state");
-		ibuf.gxp_power_state = GXP_POWER_STATE_UUD;
-	}
-
-	down_write(&client->semaphore);
-	if ((ibuf.components_to_wake & WAKELOCK_VIRTUAL_DEVICE) &&
-	    (!client->vd)) {
-		dev_err(gxp->dev,
-			"Must allocate a virtual device to acquire VIRTUAL_DEVICE wakelock\n");
-		ret = -EINVAL;
-		goto out;
-	}
-
-	/* Acquire a BLOCK wakelock if requested */
-	if (ibuf.components_to_wake & WAKELOCK_BLOCK) {
-		power_states.power = aur_state_array[ibuf.gxp_power_state];
-		power_states.memory = aur_memory_state_array[ibuf.memory_power_state];
-		power_states.low_clkmux = false;
-		ret = gxp_client_acquire_block_wakelock(
-			client, &acquired_block_wakelock, power_states);
-		if (ret) {
-			dev_err(gxp->dev,
-				"Failed to acquire BLOCK wakelock for client (ret=%d)\n",
-				ret);
-			goto out;
-		}
-	}
-
-	/* Acquire a VIRTUAL_DEVICE wakelock if requested */
-	if (ibuf.components_to_wake & WAKELOCK_VIRTUAL_DEVICE) {
-		ret = gxp_client_acquire_vd_wakelock(client);
-		if (ret) {
-			dev_err(gxp->dev,
-				"Failed to acquire VIRTUAL_DEVICE wakelock for client (ret=%d)\n",
-				ret);
-			goto err_acquiring_vd_wl;
-		}
-	}
-out:
-	up_write(&client->semaphore);
-
-	return ret;
-
-err_acquiring_vd_wl:
-	/*
-	 * In a single call, if any wakelock acquisition fails, all of them do.
-	 * If the client was acquiring both wakelocks and failed to acquire the
-	 * VIRTUAL_DEVICE wakelock after successfully acquiring the BLOCK
-	 * wakelock, then release it before returning the error code.
-	 */
-	if (acquired_block_wakelock)
-		gxp_client_release_block_wakelock(client);
-
-	up_write(&client->semaphore);
-
-	return ret;
-}
-
 static int gxp_acquire_wake_lock(struct gxp_client *client,
 				 struct gxp_acquire_wakelock_ioctl __user *argp)
 {
@@ -1659,9 +1491,6 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 	case GXP_SYNC_BUFFER:
 		ret = gxp_sync_buffer(client, argp);
 		break;
-	case GXP_MAILBOX_COMMAND_COMPAT:
-		ret = gxp_mailbox_command_compat(client, argp);
-		break;
 	case GXP_MAILBOX_RESPONSE:
 		ret = gxp_mailbox_response(client, argp);
 		break;
@@ -1703,9 +1532,6 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 		break;
 	case GXP_READ_GLOBAL_COUNTER:
 		ret = gxp_read_global_counter(client, argp);
-		break;
-	case GXP_ACQUIRE_WAKE_LOCK_COMPAT:
-		ret = gxp_acquire_wake_lock_compat(client, argp);
 		break;
 	case GXP_RELEASE_WAKE_LOCK:
 		ret = gxp_release_wake_lock(client, argp);

@@ -306,6 +306,8 @@ void gxp_kci_cancel_work_queues(struct gxp_kci *gkci)
 
 void gxp_kci_exit(struct gxp_kci *gkci)
 {
+	if (IS_GXP_TEST && (!gkci || !gkci->mailbox))
+		return;
 	gxp_mailbox_release(gkci->gxp->mailbox_mgr, NULL, 0, gkci->mailbox);
 	gkci->mailbox = NULL;
 }

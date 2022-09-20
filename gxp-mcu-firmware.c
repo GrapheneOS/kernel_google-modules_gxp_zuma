@@ -400,6 +400,8 @@ int gxp_mcu_firmware_init(struct gxp_dev *gxp, struct gxp_mcu_firmware *mcu_fw)
 
 void gxp_mcu_firmware_exit(struct gxp_mcu_firmware *mcu_fw)
 {
+	if (IS_GXP_TEST && (!mcu_fw || !mcu_fw->gxp))
+		return;
 	device_remove_group(mcu_fw->gxp->dev, &firmware_attr_group);
 }
 

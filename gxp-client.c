@@ -103,7 +103,7 @@ int gxp_client_allocate_virtual_device(struct gxp_client *client,
 	up_write(&gxp->vd_semaphore);
 
 	if (client->has_block_wakelock) {
-		ret = gxp_vd_block_ready(client->vd);
+		ret = gxp_vd_block_ready(vd);
 		if (ret) {
 			gxp_vd_release(vd);
 			goto error;

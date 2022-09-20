@@ -471,6 +471,8 @@ void gxp_create_debugfs(struct gxp_dev *gxp)
 
 void gxp_remove_debugfs(struct gxp_dev *gxp)
 {
+	if (IS_GXP_TEST && !gxp->d_entry)
+		return;
 	debugfs_remove_recursive(gxp->d_entry);
 
 	/*

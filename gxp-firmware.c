@@ -642,6 +642,9 @@ void gxp_fw_destroy(struct gxp_dev *gxp)
 	uint core;
 	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
 
+	if (IS_GXP_TEST && !mgr)
+		return;
+
 	device_remove_group(gxp->dev, &gxp_firmware_attr_group);
 
 	for (core = 0; core < GXP_NUM_CORES; core++) {

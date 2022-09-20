@@ -378,6 +378,8 @@ err_args:
 static void release_mailbox(struct gxp_mailbox *mailbox,
 			    struct gxp_virtual_device *vd, uint virt_core)
 {
+	if (IS_GXP_TEST && !mailbox)
+		return;
 	mailbox->ops->release_resources(mailbox, vd, virt_core);
 	kthread_flush_worker(&mailbox->response_worker);
 	if (mailbox->response_thread)

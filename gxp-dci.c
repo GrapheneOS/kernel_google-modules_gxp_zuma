@@ -498,7 +498,11 @@ static void gxp_dci_consume_responses_work(struct gxp_mailbox *gxp_mbx)
 {
 	struct gxp_dci *dci = gxp_mbx->data;
 
-	if (gxp_is_a0(gxp_mbx->gxp))
+	/*
+	 * TODO(b/245238253): remove this workaround when the workaround in
+	 * kernel side launches, otherwise remove this TODO if it never does.
+	 */
+	if (gxp_get_chip_revision(gxp_mbx->gxp) == GXP_CHIP_A0)
 		dma_sync_single_for_cpu(gxp_mbx->gxp->dev,
 					gxp_mbx->resp_queue_device_addr,
 					gxp_mbx->resp_queue_size *
