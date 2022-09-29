@@ -92,15 +92,11 @@ struct gxp_mailbox;
 
 /*
  * Defines the callback functions which are used by the mailbox.
- *
- * These callbacks will be called in this order:
- * `gxp_mailbox_alloc` -> `allocate_resources` -> `init_consume_responses_work`
- * -> ... -> `consume_responses_work` -> ...
- * `gxp_mailbox_release` -> `release_consume_responses_work` -> `release_resources`
  */
 struct gxp_mailbox_ops {
 	/*
 	 * Allocates resources such as cmd_queue and resp_queue which are used by the mailbox.
+	 * This callback will be called by the `gxp_mailbox_alloc` internally.
 	 * Following variables should be set in this callback.
 	 * - @mailbox->cmd_queue	: the pointer of the command queue.
 	 * - @mailbox->cmd_queue_size	: the size of @mailbox->cmd_queue. (the maximum number of
@@ -129,36 +125,12 @@ struct gxp_mailbox_ops {
 				  uint virt_core);
 	/*
 	 * Releases resources which are allocated by `allocate_resources`.
+	 * This callback will be called by the `gxp_mailbox_release` internally.
 	 * Context: normal.
 	 */
 	void (*release_resources)(struct gxp_mailbox *mailbox,
 				  struct gxp_virtual_device *vd,
 				  uint virt_core);
-	/*
-	 * Initializes consuming the resp_queue of the mailbox. This prepares the data which is
-	 * needed in the `consume_responses_work` callback before starting consuming. That data
-	 * should be released in the `release_consume_responses_work` callback. This function will
-	 * be called when the `gxp_mailbox_alloc` is called. (After the information of cmd_queue,
-	 * resp_queue and descriptor are written to the CSRs and before the mailbox registers to
-	 * the IRQ.)
-	 * Returns 0 if succeed.
-	 * Context: normal.
-	 */
-	int (*init_consume_responses_work)(struct gxp_mailbox *mailbox);
-	/*
-	 * Cleans up consuming the resp_queue of the mailbox. This releases the data which is
-	 * allocated by the `init_consume_responses_work` callback. This function will be called
-	 * when the `gxp_mailbox_release` is called. (After the mailbox unregisters from the IRQ
-	 * and before reset the mailbox hw.)
-	 * Context: normal.
-	 */
-	void (*release_consume_responses_work)(struct gxp_mailbox *mailbox);
-	/*
-	 * Consumes the resp_queue of the mailbox. This function will be called when the mailbox
-	 * IRQ is fired.
-	 * Context: in_interrupt().
-	 */
-	void (*consume_responses_work)(struct gxp_mailbox *mailbox);
 #if !GXP_USE_LEGACY_MAILBOX
 	/*
 	 * Operators which has dependency on the GCIP according to the type of mailbox.
@@ -252,18 +224,20 @@ extern int gxp_mbx_timeout;
 #define MAILBOX_TIMEOUT (gxp_mbx_timeout * GXP_TIME_DELAY_FACTOR)
 
 /*
- * The following functions all require their caller have locked gxp->vd_semaphore for reading. To
- * communicate with the firmware, the platform device should use the callbacks of the mailbox
- * manager instead of calling these functions directly. The purpose of it is to abstract the usage
- * of the mailbox and avoid effort of fixing the codes outside of the mailbox when the interface of
- * these functions are updated. (Except `gxp_mailbox_{register,unregister}_interrupt_handler`
- * functions.)
+ * The following functions are low-level interfaces of the mailbox. The actual work of it will be
+ * implemented from the high-level interfaces such as DCI, UCI and KCI via the callbacks defined
+ * above. Therefore, you may not call these functions directly.
+ * (Except `gxp_mailbox_{register,unregister}_interrupt_handler` functions.)
+ *
+ * If the mailbox interacts with virtual cores according to the implementation, the caller must
+ * have locked gxp->vd_semaphore for reading.
  */
 
 struct gxp_mailbox *gxp_mailbox_alloc(struct gxp_mailbox_manager *mgr,
 				      struct gxp_virtual_device *vd,
 				      uint virt_core, u8 core_id,
 				      const struct gxp_mailbox_args *args);
+
 void gxp_mailbox_release(struct gxp_mailbox_manager *mgr,
 			 struct gxp_virtual_device *vd, uint virt_core,
 			 struct gxp_mailbox *mailbox);
@@ -276,5 +250,24 @@ int gxp_mailbox_register_interrupt_handler(struct gxp_mailbox *mailbox,
 
 int gxp_mailbox_unregister_interrupt_handler(struct gxp_mailbox *mailbox,
 					     u32 int_bit);
+
+#if !GXP_USE_LEGACY_MAILBOX
+/*
+ * Executes command synchronously. If @resp is not NULL, the response will be returned to it.
+ * See the `gcip_mailbox_send_cmd` of `gcip-mailbox.h` or `gcip_kci_send_cmd` of `gcip-kci.h`
+ * for detail.
+ */
+int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp);
+
+/*
+ * Executes command asynchronously. The response will be written to @resp.
+ * See the `gcip_mailbox_put_cmd` function of `gcip-mailbox.h` for detail.
+ *
+ * Note: KCI doesn't support asynchronous requests.
+ */
+struct gcip_mailbox_async_response *
+gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp,
+		    void *data);
+#endif /* !GXP_USE_LEGACY_MAILBOX */
 
 #endif /* __GXP_MAILBOX_H__ */

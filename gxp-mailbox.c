@@ -25,6 +25,9 @@
 #if GXP_USE_LEGACY_MAILBOX
 #include "gxp-mailbox-impl.h"
 #else
+#include <gcip/gcip-mailbox.h>
+#include <gcip/gcip-kci.h>
+
 #include "gxp-kci.h"
 #include "gxp-mcu-telemetry.h"
 #endif
@@ -45,9 +48,6 @@ static void gxp_mailbox_consume_responses_work(struct kthread_work *work)
 {
 	struct gxp_mailbox *mailbox =
 		container_of(work, struct gxp_mailbox, response_work);
-
-	if (mailbox->ops->consume_responses_work)
-		mailbox->ops->consume_responses_work(mailbox);
 
 #if GXP_USE_LEGACY_MAILBOX
 	gxp_mailbox_consume_responses(mailbox);
@@ -318,12 +318,6 @@ static int init_mailbox_impl(struct gxp_mailbox *mailbox)
 	}
 #endif /* GXP_USE_LEGACY_MAILBOX */
 
-	if (mailbox->ops->init_consume_responses_work) {
-		ret = mailbox->ops->init_consume_responses_work(mailbox);
-		if (ret)
-			return ret;
-	}
-
 	return 0;
 }
 
@@ -387,9 +381,6 @@ struct gxp_mailbox *gxp_mailbox_alloc(struct gxp_mailbox_manager *mgr,
  */
 static void release_mailbox_impl(struct gxp_mailbox *mailbox)
 {
-	if (mailbox->ops->release_consume_responses_work)
-		mailbox->ops->release_consume_responses_work(mailbox);
-
 #if GXP_USE_LEGACY_MAILBOX
 	gxp_mailbox_release_consume_responses(mailbox);
 #else
@@ -480,3 +471,31 @@ int gxp_mailbox_unregister_interrupt_handler(struct gxp_mailbox *mailbox,
 
 	return 0;
 }
+
+#if !GXP_USE_LEGACY_MAILBOX
+int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp)
+{
+	switch (mailbox->type) {
+	case GXP_MBOX_TYPE_GENERAL:
+		return gcip_mailbox_send_cmd(mailbox->mbx_impl.gcip_mbx, cmd,
+					     resp);
+	case GXP_MBOX_TYPE_KCI:
+		return gcip_kci_send_cmd(mailbox->mbx_impl.gcip_kci, cmd);
+	}
+	return -EOPNOTSUPP;
+}
+
+struct gcip_mailbox_async_response *
+gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp,
+		    void *data)
+{
+	switch (mailbox->type) {
+	case GXP_MBOX_TYPE_GENERAL:
+		return gcip_mailbox_put_cmd(mailbox->mbx_impl.gcip_mbx, cmd,
+					    resp, data);
+	default:
+		break;
+	}
+	return ERR_PTR(-EOPNOTSUPP);
+}
+#endif /* !GXP_USE_LEGACY_MAILBOX */

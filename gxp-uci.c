@@ -359,9 +359,8 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_uci_command *cmd,
 	else
 		async_resp->eventfd = NULL;
 
-	async_resp->awaiter =
-		gcip_mailbox_put_cmd(uci->mbx->mbx_impl.gcip_mbx, cmd,
-				     &async_resp->resp, async_resp);
+	async_resp->awaiter = gxp_mailbox_put_cmd(
+		uci->mbx, cmd, &async_resp->resp, async_resp);
 	if (IS_ERR(async_resp->awaiter)) {
 		ret = PTR_ERR(async_resp->awaiter);
 		goto err_free_resp;

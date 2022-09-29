@@ -497,7 +497,7 @@ int gxp_dci_execute_cmd(struct gxp_mailbox *mbx, struct gxp_dci_command *cmd,
 {
 	int ret;
 
-	ret = gcip_mailbox_send_cmd(mbx->mbx_impl.gcip_mbx, cmd, resp);
+	ret = gxp_mailbox_send_cmd(mbx, cmd, resp);
 	if (ret || !resp)
 		return ret;
 
@@ -530,8 +530,8 @@ int gxp_dci_execute_cmd_async(struct gxp_mailbox *mbx,
 
 	gxp_pm_update_requested_power_states(mbx->gxp, off_states,
 					     requested_states);
-	async_resp->async_resp = gcip_mailbox_put_cmd(
-		mbx->mbx_impl.gcip_mbx, cmd, &async_resp->resp, async_resp);
+	async_resp->async_resp =
+		gxp_mailbox_put_cmd(mbx, cmd, &async_resp->resp, async_resp);
 	if (IS_ERR(async_resp->async_resp)) {
 		ret = PTR_ERR(async_resp->async_resp);
 		goto err_free_resp;

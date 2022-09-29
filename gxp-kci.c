@@ -216,6 +216,31 @@ static struct gxp_mailbox_ops mbx_ops = {
 	.gcip_ops.kci = &kci_ops,
 };
 
+/*
+ * Wrapper function of the `gxp_mailbox_send_cmd` which passes @resp as NULL.
+ *
+ * KCI sends all commands as synchronous, but the caller will not utilize the responses by passing
+ * the pointer of `struct gcip_kci_response_element` to the @resp of the `gxp_mailbox_send_cmd`
+ * function which is the simple wrapper function of the `gcip_kci_send_cmd` function.
+ *
+ * Even though the caller passes the pointer of `struct gcip_kci_response_element`, it will be
+ * ignored. The `gcip_kci_send_cmd` function creates a temporary instance of that struct internally
+ * and returns @code of the instance as its return value.
+ *
+ * If the caller needs the `struct gcip_kci_response_element` as the response, it should use the
+ * `gcip_kci_send_cmd_return_resp` function directly.
+ * (See the implementation of `gcip-kci.c`.)
+ *
+ * In some commands, such as the `fw_info` KCI command, if the firmware should have to return
+ * a response which is not fit into the `struct gcip_kci_response_element`, the caller will
+ * allocate a buffer for it to @cmd->dma and the firmware will write the response to it.
+ */
+static inline int gxp_kci_send_cmd(struct gxp_mailbox *mailbox,
+				   struct gcip_kci_command_element *cmd)
+{
+	return gxp_mailbox_send_cmd(mailbox, cmd, NULL);
+}
+
 int gxp_kci_init(struct gxp_mcu *mcu)
 {
 	struct gxp_dev *gxp = mcu->gxp;
@@ -284,7 +309,7 @@ enum gcip_fw_flavor gxp_kci_fw_info(struct gxp_kci *gkci,
 		cmd.dma.size = sizeof(*fw_info);
 	}
 
-	ret = gcip_kci_send_cmd(gkci->mbx->mbx_impl.gcip_kci, &cmd);
+	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
 	if (buf.paddr) {
 		memcpy(fw_info, buf.vaddr, sizeof(*fw_info));
 		gxp_mcu_mem_free_data(gkci->mcu, &buf);
@@ -372,7 +397,7 @@ int gxp_kci_update_usage_locked(struct gxp_kci *gkci)
 	struct gxp_mapped_resource buf;
 	int ret;
 
-	if (!gkci || !gkci->mbx->mbx_impl.gcip_kci)
+	if (!gkci || !gkci->mbx)
 		return -ENODEV;
 
 	ret = gxp_mcu_mem_alloc_data(gkci->mcu, &buf,
@@ -386,7 +411,7 @@ int gxp_kci_update_usage_locked(struct gxp_kci *gkci)
 	cmd.dma.address = buf.daddr;
 	cmd.dma.size = GXP_MCU_USAGE_BUFFER_SIZE;
 	memset(buf.vaddr, 0, sizeof(struct gxp_usage_header));
-	ret = gcip_kci_send_cmd(gkci->mbx->mbx_impl.gcip_kci, &cmd);
+	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
 
 	if (ret == GCIP_KCI_ERROR_UNIMPLEMENTED ||
 	    ret == GCIP_KCI_ERROR_UNAVAILABLE)
@@ -433,10 +458,10 @@ int gxp_kci_shutdown(struct gxp_kci *gkci)
 		.code = GCIP_KCI_CODE_SHUTDOWN,
 	};
 
-	if (!gkci || !gkci->mbx->mbx_impl.gcip_kci)
+	if (!gkci || !gkci->mbx)
 		return -ENODEV;
 
-	return gcip_kci_send_cmd(gkci->mbx->mbx_impl.gcip_kci, &cmd);
+	return gxp_kci_send_cmd(gkci->mbx, &cmd);
 }
 
 int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u8 client_id, u8 num_cores,
@@ -449,7 +474,7 @@ int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u8 client_id, u8 num_cores,
 	struct gxp_mapped_resource buf;
 	int ret;
 
-	if (!gkci || !gkci->mbx->mbx_impl.gcip_kci)
+	if (!gkci || !gkci->mbx)
 		return -ENODEV;
 
 	ret = gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(*detail));
@@ -473,7 +498,7 @@ int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u8 client_id, u8 num_cores,
 	cmd.dma.address = buf.daddr;
 	cmd.dma.size = sizeof(*detail);
 
-	ret = gcip_kci_send_cmd(gkci->mbx->mbx_impl.gcip_kci, &cmd);
+	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
 	gxp_mcu_mem_free_data(gkci->mcu, &buf);
 
 	return ret;
@@ -488,7 +513,7 @@ int gxp_kci_release_vmbox(struct gxp_kci *gkci, u8 client_id)
 	struct gxp_mapped_resource buf;
 	int ret;
 
-	if (!gkci || !gkci->mbx->mbx_impl.gcip_kci)
+	if (!gkci || !gkci->mbx)
 		return -ENODEV;
 
 	ret = gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(*detail));
@@ -501,7 +526,7 @@ int gxp_kci_release_vmbox(struct gxp_kci *gkci, u8 client_id)
 	cmd.dma.address = buf.daddr;
 	cmd.dma.size = sizeof(*detail);
 
-	ret = gcip_kci_send_cmd(gkci->mbx->mbx_impl.gcip_kci, &cmd);
+	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
 	gxp_mcu_mem_free_data(gkci->mcu, &buf);
 
 	return ret;
@@ -515,8 +540,8 @@ int gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,
 		.code = GCIP_KCI_CODE_RKCI_ACK,
 	};
 
-	if (!gkci || !gkci->mbx->mbx_impl.gcip_kci)
+	if (!gkci || !gkci->mbx)
 		return -ENODEV;
 
-	return gcip_kci_send_cmd(gkci->mbx->mbx_impl.gcip_kci, &cmd);
+	return gxp_kci_send_cmd(gkci->mbx, &cmd);
 }
