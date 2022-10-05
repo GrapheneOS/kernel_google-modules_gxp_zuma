@@ -20,7 +20,7 @@
 #include "gxp-mapping.h"
 
 struct mailbox_resp_queue {
-	/* Queue of `struct gxp_async_response`s */
+	/* Queue of async responses */
 	struct list_head queue;
 	/* Lock protecting access to the `queue` */
 	spinlock_t lock;
@@ -45,7 +45,7 @@ struct gxp_virtual_device {
 	struct gxp_dev *gxp;
 	uint num_cores;
 	void *fw_app;
-	struct iommu_domain *domain;
+	struct gxp_iommu_domain *domain;
 	struct mailbox_resp_queue *mailbox_resp_queues;
 	struct rb_root mappings_root;
 	struct rw_semaphore mappings_semaphore;
@@ -63,6 +63,19 @@ struct gxp_virtual_device {
 	 */
 	int slice_index;
 	uint core_list;
+	/*
+	 * The ID of DSP client. -1 if it is not allocated.
+	 * This is allocated by the DSP kernel driver, but will be set to this variable only when
+	 * the client of this vd acquires the block wakelock successfully. (i.e, after the kernel
+	 * driver allocates a virtual mailbox with the firmware side successfully by sending the
+	 * `allocate_vmbox` KCI command.)
+	 */
+	int client_id;
+	/*
+	 * The ID of TPU client. -1 if it is not allocated.
+	 * This ID will be fetched from the TPU kernel driver.
+	 */
+	int tpu_client_id;
 };
 
 /*

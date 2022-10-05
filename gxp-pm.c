@@ -6,6 +6,7 @@
  */
 
 #include <linux/acpm_dvfs.h>
+#include <linux/bits.h>
 #include <linux/io.h>
 #include <linux/pm_runtime.h>
 #include <linux/types.h>
@@ -201,6 +202,9 @@ out:
 	set_acpm_state_work->using = false;
 	mutex_unlock(&set_acpm_state_work->gxp->power_mgr->pm_lock);
 }
+
+#define AUR_DVFS_DEBUG_REQ BIT(31)
+#define AUR_DEBUG_CORE_FREQ (AUR_DVFS_DEBUG_REQ | (3 << 27))
 
 int gxp_pm_blk_get_state_acpm(struct gxp_dev *gxp)
 {

@@ -245,8 +245,9 @@ static bool gcip_kci_before_handle_resp(struct gcip_mailbox *mailbox, const void
 		int ret = gcip_reverse_kci_add_resp(kci, elem);
 
 		if (ret)
-			dev_warn(kci->dev, "Failed to handle reverse KCI code %u (%d)\n",
-				 elem->code, ret);
+			dev_warn_ratelimited(kci->dev,
+					     "Failed to handle reverse KCI code %u (%d)\n",
+					     elem->code, ret);
 		return false;
 	}
 

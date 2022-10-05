@@ -16,6 +16,7 @@
 #include <linux/platform_data/sscoredump.h>
 #endif
 
+#include "gxp-dma.h"
 #include "gxp-internal.h"
 
 #define GXP_NUM_COMMON_SEGMENTS 2
@@ -173,15 +174,9 @@ struct gxp_debug_dump_work {
 	uint core_id;
 };
 
-struct gxp_debug_dump_buffer {
-	void *vaddr;
-	dma_addr_t daddr;
-	u32 size;
-};
-
 struct gxp_debug_dump_manager {
 	struct gxp_dev *gxp;
-	struct gxp_debug_dump_buffer buf;
+	struct gxp_coherent_buf buf; /* Buffer holding debug dump data */
 	struct gxp_debug_dump_work debug_dump_works[GXP_NUM_CORES];
 	struct gxp_core_dump *core_dump; /* start of the core dump */
 	struct gxp_common_dump *common_dump;

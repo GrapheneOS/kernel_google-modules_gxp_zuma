@@ -23,7 +23,7 @@
 
 struct gxp_dma_iommu_manager {
 	struct gxp_dma_manager dma_mgr;
-	struct iommu_domain *default_domain;
+	struct gxp_iommu_domain *default_domain;
 	struct gxp_ssmt ssmt;
 };
 
@@ -139,7 +139,6 @@ static int gxp_map_core_shared_buffer(struct gxp_dev *gxp,
 			 shared_size, IOMMU_READ | IOMMU_WRITE);
 }
 
-
 /* Reverts gxp_map_core_shared_buffer. */
 static void gxp_unmap_core_shared_buffer(struct gxp_dev *gxp,
 					 struct iommu_domain *domain)
@@ -152,6 +151,30 @@ static void gxp_unmap_core_shared_buffer(struct gxp_dev *gxp,
 }
 
 /* gxp-dma.h Interface */
+
+uint gxp_iommu_aux_get_pasid(struct gxp_dev *gxp,
+			     struct gxp_iommu_domain *gdomain)
+{
+	return iommu_aux_get_pasid(gdomain->domain, gxp->dev);
+}
+
+struct gxp_iommu_domain *gxp_iommu_get_domain_for_dev(struct gxp_dev *gxp)
+{
+	struct gxp_iommu_domain *gdomain = gxp->default_domain;
+
+	if (IS_ERR_OR_NULL(gdomain)) {
+		gdomain = devm_kzalloc(gxp->dev, sizeof(*gdomain), GFP_KERNEL);
+		if (!gdomain)
+			return ERR_PTR(-ENOMEM);
+		gdomain->domain = iommu_get_domain_for_dev(gxp->dev);
+		if (!gdomain->domain) {
+			devm_kfree(gxp->dev, gdomain);
+			return ERR_PTR(-ENOMEM);
+		}
+	}
+
+	return gdomain;
+}
 
 int gxp_dma_init(struct gxp_dev *gxp)
 {
@@ -175,10 +198,10 @@ int gxp_dma_init(struct gxp_dev *gxp)
 		return ret;
 	}
 
-	mgr->default_domain = iommu_get_domain_for_dev(gxp->dev);
-	if (!mgr->default_domain) {
+	mgr->default_domain = gxp_iommu_get_domain_for_dev(gxp);
+	if (IS_ERR(mgr->default_domain)) {
 		dev_err(gxp->dev, "Failed to find default IOMMU domain\n");
-		return -EIO;
+		return PTR_ERR(mgr->default_domain);
 	}
 
 	if (iommu_register_device_fault_handler(gxp->dev, sysmmu_fault_handler,
@@ -221,9 +244,9 @@ void gxp_dma_exit(struct gxp_dev *gxp)
 			"Failed to unregister SysMMU fault handler\n");
 }
 
-#define SYNC_BARRIERS_SIZE       0x100000
+#define SYNC_BARRIERS_SIZE 0x100000
 #define SYNC_BARRIERS_TOP_OFFSET 0x100000
-#define EXT_TPU_MBX_SIZE         0x2000
+#define EXT_TPU_MBX_SIZE 0x2000
 
 void gxp_dma_init_default_resources(struct gxp_dev *gxp)
 {
@@ -239,29 +262,32 @@ void gxp_dma_init_default_resources(struct gxp_dev *gxp)
 }
 
 int gxp_dma_domain_attach_device(struct gxp_dev *gxp,
-				 struct iommu_domain *domain, uint core_list)
+				 struct gxp_iommu_domain *gdomain,
+				 uint core_list)
 {
 	int ret;
 
-	ret = iommu_aux_attach_device(domain, gxp->dev);
+	ret = iommu_aux_attach_device(gdomain->domain, gxp->dev);
 	if (ret)
 		goto out;
-	gxp_dma_ssmt_program(gxp, domain, core_list);
+	gxp_dma_ssmt_program(gxp, gdomain->domain, core_list);
 out:
 	return ret;
 }
 
 void gxp_dma_domain_detach_device(struct gxp_dev *gxp,
-				  struct iommu_domain *domain)
+				  struct gxp_iommu_domain *gdomain)
 {
-	iommu_aux_detach_device(domain, gxp->dev);
+	iommu_aux_detach_device(gdomain->domain, gxp->dev);
 }
 
-int gxp_dma_map_core_resources(struct gxp_dev *gxp, struct iommu_domain *domain,
-			       uint core_list, u8 slice_index)
+int gxp_dma_map_core_resources(struct gxp_dev *gxp,
+			       struct gxp_iommu_domain *gdomain, uint core_list,
+			       u8 slice_index)
 {
 	int ret;
 	uint i;
+	struct iommu_domain *domain = gdomain->domain;
 
 	ret = iommu_map(domain, gxp->regs.daddr, gxp->regs.paddr,
 			gxp->regs.size, IOMMU_READ | IOMMU_WRITE);
@@ -324,14 +350,16 @@ err:
 	 * Any resource that hadn't been mapped yet will cause `iommu_unmap()`
 	 * to return immediately, so its safe to try to unmap everything.
 	 */
-	gxp_dma_unmap_core_resources(gxp, domain, core_list);
+	gxp_dma_unmap_core_resources(gxp, gdomain, core_list);
 	return ret;
 }
 
 void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
-				  struct iommu_domain *domain, uint core_list)
+				  struct gxp_iommu_domain *gdomain,
+				  uint core_list)
 {
 	uint i;
+	struct iommu_domain *domain = gdomain->domain;
 
 	/* Only unmap the TPU mailboxes if they were found on probe */
 	if (gxp->tpu_dev.mbx_paddr) {
@@ -361,10 +389,9 @@ void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
 	iommu_unmap(domain, gxp->regs.daddr, gxp->regs.size);
 }
 
-static inline struct sg_table *
-alloc_sgt_for_buffer(void *ptr, size_t size,
-		     struct iommu_domain *domain,
-		     dma_addr_t daddr)
+static inline struct sg_table *alloc_sgt_for_buffer(void *ptr, size_t size,
+						    struct iommu_domain *domain,
+						    dma_addr_t daddr)
 {
 	struct sg_table *sgt;
 	ulong offset;
@@ -402,7 +429,7 @@ alloc_sgt_for_buffer(void *ptr, size_t size,
 	 */
 	size_in_page = size > (PAGE_SIZE - offset_in_page(ptr)) ?
 			       PAGE_SIZE - offset_in_page(ptr) :
-				     size;
+			       size;
 	page = phys_to_page(iommu_iova_to_phys(domain, daddr));
 	sg_set_page(next, page, size_in_page, offset_in_page(ptr));
 	size -= size_in_page;
@@ -430,9 +457,10 @@ alloc_sgt_for_buffer(void *ptr, size_t size,
 	return sgt;
 }
 
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
-int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp, struct iommu_domain *domain,
-			   uint core_list,
+#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&             \
+	!IS_ENABLED(CONFIG_GXP_GEM5)
+int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp,
+			   struct gxp_iommu_domain *gdomain, uint core_list,
 			   struct edgetpu_ext_mailbox_info *mbx_info)
 {
 	uint orig_core_list = core_list;
@@ -440,6 +468,7 @@ int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp, struct iommu_domain *domain,
 	int core;
 	int ret;
 	int i = 0;
+	struct iommu_domain *domain = gdomain->domain;
 
 	while (core_list) {
 		phys_addr_t cmdq_pa = mbx_info->mailboxes[i].cmdq_pa;
@@ -475,12 +504,13 @@ error:
 }
 
 void gxp_dma_unmap_tpu_buffer(struct gxp_dev *gxp,
-			      struct iommu_domain *domain,
+			      struct gxp_iommu_domain *gdomain,
 			      struct gxp_tpu_mbx_desc mbx_desc)
 {
 	uint core_list = mbx_desc.phys_core_list;
 	u64 queue_iova;
 	int core;
+	struct iommu_domain *domain = gdomain->domain;
 
 	while (core_list) {
 		core = ffs(core_list) - 1;
@@ -491,11 +521,11 @@ void gxp_dma_unmap_tpu_buffer(struct gxp_dev *gxp,
 			    mbx_desc.respq_size);
 	}
 }
-#endif  // (CONFIG_GXP_TEST || CONFIG_ANDROID) && !CONFIG_GXP_GEM5
+#endif // (CONFIG_GXP_TEST || CONFIG_ANDROID) && !CONFIG_GXP_GEM5
 
-int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp, void *buf,
-					  struct iommu_domain *domain,
-					  size_t size, dma_addr_t dma_handle,
+int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp,
+					  struct gxp_coherent_buf *buf,
+					  struct gxp_iommu_domain *gdomain,
 					  uint gxp_dma_flags)
 {
 	struct gxp_dma_iommu_manager *mgr = container_of(
@@ -503,9 +533,12 @@ int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp, void *buf,
 	struct sg_table *sgt;
 	ssize_t size_mapped;
 	int ret = 0;
+	size_t size;
+	struct iommu_domain *domain = gdomain->domain;
 
-	size = size < PAGE_SIZE ? PAGE_SIZE : size;
-	sgt = alloc_sgt_for_buffer(buf, size, mgr->default_domain, dma_handle);
+	size = buf->size;
+	sgt = alloc_sgt_for_buffer(buf->vaddr, buf->size,
+				   mgr->default_domain->domain, buf->dma_addr);
 	if (IS_ERR(sgt)) {
 		dev_err(gxp->dev,
 			"Failed to allocate sgt for coherent buffer\n");
@@ -517,10 +550,9 @@ int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp, void *buf,
 	 * `ssize_t` to encode errors that earlier versions throw out.
 	 * Explicitly cast here for backwards compatibility.
 	 */
-	size_mapped =
-		(ssize_t)iommu_map_sg(domain, dma_handle,
-				      sgt->sgl, sgt->orig_nents,
-				      IOMMU_READ | IOMMU_WRITE);
+	size_mapped = (ssize_t)iommu_map_sg(domain, buf->dma_addr, sgt->sgl,
+					    sgt->orig_nents,
+					    IOMMU_READ | IOMMU_WRITE);
 	if (size_mapped != size)
 		ret = size_mapped < 0 ? -EINVAL : (int)size_mapped;
 
@@ -529,9 +561,10 @@ int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp, void *buf,
 	return ret;
 }
 
-void *gxp_dma_alloc_coherent(struct gxp_dev *gxp, struct iommu_domain *domain,
-			     size_t size, dma_addr_t *dma_handle, gfp_t flag,
-			     uint gxp_dma_flags)
+int gxp_dma_alloc_coherent_buf(struct gxp_dev *gxp,
+			       struct gxp_iommu_domain *gdomain, size_t size,
+			       gfp_t flag, uint gxp_dma_flags,
+			       struct gxp_coherent_buf *buffer)
 {
 	void *buf;
 	dma_addr_t daddr;
@@ -543,42 +576,47 @@ void *gxp_dma_alloc_coherent(struct gxp_dev *gxp, struct iommu_domain *domain,
 	buf = dma_alloc_coherent(gxp->dev, size, &daddr, flag);
 	if (!buf) {
 		dev_err(gxp->dev, "Failed to allocate coherent buffer\n");
-		return NULL;
+		return -ENOMEM;
 	}
-	if (domain != NULL) {
+
+	buffer->vaddr = buf;
+	buffer->size = size;
+	buffer->dma_addr = daddr;
+
+	if (gdomain != NULL) {
 		ret = gxp_dma_map_allocated_coherent_buffer(
-			gxp, buf, domain, size, daddr, gxp_dma_flags);
+			gxp, buffer, gdomain, gxp_dma_flags);
 		if (ret) {
+			buffer->vaddr = NULL;
+			buffer->size = 0;
 			dma_free_coherent(gxp->dev, size, buf, daddr);
-			return NULL;
+			return ret;
 		}
 	}
 
-	if (dma_handle)
-		*dma_handle = daddr;
+	buffer->dsp_addr = daddr;
 
-	return buf;
+	return 0;
 }
 
 void gxp_dma_unmap_allocated_coherent_buffer(struct gxp_dev *gxp,
-					     struct iommu_domain *domain,
-					     size_t size, dma_addr_t dma_handle)
+					     struct gxp_iommu_domain *gdomain,
+					     struct gxp_coherent_buf *buf)
 {
-	size = size < PAGE_SIZE ? PAGE_SIZE : size;
-	if (size != iommu_unmap(domain, dma_handle, size))
+	if (buf->size != iommu_unmap(gdomain->domain, buf->dma_addr, buf->size))
 		dev_warn(gxp->dev, "Failed to unmap coherent buffer\n");
 }
 
-void gxp_dma_free_coherent(struct gxp_dev *gxp, struct iommu_domain *domain,
-			   size_t size, void *cpu_addr, dma_addr_t dma_handle)
+void gxp_dma_free_coherent_buf(struct gxp_dev *gxp,
+			       struct gxp_iommu_domain *gdomain,
+			       struct gxp_coherent_buf *buf)
 {
-	if (domain != NULL)
-		gxp_dma_unmap_allocated_coherent_buffer(gxp, domain, size,
-							dma_handle);
-	dma_free_coherent(gxp->dev, size, cpu_addr, dma_handle);
+	if (gdomain != NULL)
+		gxp_dma_unmap_allocated_coherent_buffer(gxp, gdomain, buf);
+	dma_free_coherent(gxp->dev, buf->size, buf->vaddr, buf->dma_addr);
 }
 
-int gxp_dma_map_sg(struct gxp_dev *gxp, struct iommu_domain *domain,
+int gxp_dma_map_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
 		   struct scatterlist *sg, int nents,
 		   enum dma_data_direction direction, unsigned long attrs,
 		   uint gxp_dma_flags)
@@ -599,7 +637,8 @@ int gxp_dma_map_sg(struct gxp_dev *gxp, struct iommu_domain *domain,
 	 * `ssize_t` to encode errors that earlier versions throw out.
 	 * Explicitly cast here for backwards compatibility.
 	 */
-	size_mapped = (ssize_t)iommu_map_sg(domain, daddr, sg, nents, prot);
+	size_mapped =
+		(ssize_t)iommu_map_sg(gdomain->domain, daddr, sg, nents, prot);
 	if (size_mapped <= 0)
 		goto err;
 
@@ -610,7 +649,7 @@ err:
 	return 0;
 }
 
-void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct iommu_domain *domain,
+void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
 		      struct scatterlist *sg, int nents,
 		      enum dma_data_direction direction, unsigned long attrs)
 {
@@ -621,7 +660,7 @@ void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct iommu_domain *domain,
 	for_each_sg (sg, s, nents, i)
 		size += sg_dma_len(s);
 
-	if (!iommu_unmap(domain, sg_dma_address(sg), size))
+	if (!iommu_unmap(gdomain->domain, sg_dma_address(sg), size))
 		dev_warn(gxp->dev, "Failed to unmap sg\n");
 
 	dma_unmap_sg_attrs(gxp->dev, sg, nents, direction, attrs);
@@ -642,7 +681,8 @@ void gxp_dma_sync_sg_for_device(struct gxp_dev *gxp, struct scatterlist *sg,
 }
 
 struct sg_table *
-gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp, struct iommu_domain *domain,
+gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
+			      struct gxp_iommu_domain *gdomain,
 			      struct dma_buf_attachment *attachment,
 			      enum dma_data_direction direction)
 {
@@ -665,8 +705,9 @@ gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp, struct iommu_domain *domain,
 	 * `ssize_t` to encode errors that earlier versions throw out.
 	 * Explicitly cast here for backwards compatibility.
 	 */
-	size_mapped = (ssize_t)iommu_map_sg(domain, sg_dma_address(sgt->sgl),
-					    sgt->sgl, sgt->orig_nents, prot);
+	size_mapped =
+		(ssize_t)iommu_map_sg(gdomain->domain, sg_dma_address(sgt->sgl),
+				      sgt->sgl, sgt->orig_nents, prot);
 	if (size_mapped <= 0) {
 		dev_err(gxp->dev, "Failed to map dma-buf: %ld\n", size_mapped);
 		/*
@@ -686,7 +727,7 @@ err:
 }
 
 void gxp_dma_unmap_dmabuf_attachment(struct gxp_dev *gxp,
-				     struct iommu_domain *domain,
+				     struct gxp_iommu_domain *gdomain,
 				     struct dma_buf_attachment *attachment,
 				     struct sg_table *sgt,
 				     enum dma_data_direction direction)
@@ -699,7 +740,7 @@ void gxp_dma_unmap_dmabuf_attachment(struct gxp_dev *gxp,
 	for_each_sg (sgt->sgl, s, sgt->nents, i)
 		size += sg_dma_len(s);
 
-	if (!iommu_unmap(domain, sg_dma_address(sgt->sgl), size))
+	if (!iommu_unmap(gdomain->domain, sg_dma_address(sgt->sgl), size))
 		dev_warn(gxp->dev, "Failed to unmap dma-buf\n");
 
 	/* Unmap the attachment from the default domain */

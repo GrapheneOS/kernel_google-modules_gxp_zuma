@@ -2,8 +2,9 @@
 /*
  * GXP kernel-userspace interface definitions.
  *
- * Copyright (C) 2020 Google LLC
+ * Copyright (C) 2020-2022 Google LLC
  */
+
 #ifndef __GXP_H__
 #define __GXP_H__
 
@@ -11,30 +12,38 @@
 #include <linux/types.h>
 
 /* Interface Version */
-#define GXP_INTERFACE_VERSION_MAJOR	1
-#define GXP_INTERFACE_VERSION_MINOR	4
-#define GXP_INTERFACE_VERSION_BUILD	0
+#define GXP_INTERFACE_VERSION_MAJOR 1
+#define GXP_INTERFACE_VERSION_MINOR 4
+#define GXP_INTERFACE_VERSION_BUILD 0
 
 /*
- * mmap offsets for logging and tracing buffers
+ * mmap offsets for core logging and tracing buffers
  * Requested size will be divided evenly among all cores. The whole buffer
  * must be page-aligned, and the size of each core's buffer must be a multiple
  * of PAGE_SIZE.
  */
-#define GXP_MMAP_LOG_BUFFER_OFFSET	0x10000
-#define GXP_MMAP_TRACE_BUFFER_OFFSET	0x20000
+#define GXP_MMAP_CORE_LOG_BUFFER_OFFSET 0x10000
+#define GXP_MMAP_CORE_TRACE_BUFFER_OFFSET 0x20000
+
+/* mmap offsets for MCU logging and tracing buffers */
+#define GXP_MMAP_MCU_LOG_BUFFER_OFFSET 0x30000
+#define GXP_MMAP_MCU_TRACE_BUFFER_OFFSET 0x40000
+
+/* For backward compatibility. */
+#define GXP_MMAP_LOG_BUFFER_OFFSET GXP_MMAP_CORE_LOG_BUFFER_OFFSET
+#define GXP_MMAP_TRACE_BUFFER_OFFSET GXP_MMAP_CORE_TRACE_BUFFER_OFFSET
 
 #define GXP_IOCTL_BASE 0xEE
 
 /* GXP map flag macros */
 /* The mask for specifying DMA direction in GXP map flag */
-#define GXP_MAP_DIR_MASK		3
+#define GXP_MAP_DIR_MASK 3
 /* The targeted DMA direction for the buffer */
-#define GXP_MAP_DMA_BIDIRECTIONAL	0
-#define GXP_MAP_DMA_TO_DEVICE		1
-#define GXP_MAP_DMA_FROM_DEVICE		2
+#define GXP_MAP_DMA_BIDIRECTIONAL 0
+#define GXP_MAP_DMA_TO_DEVICE 1
+#define GXP_MAP_DMA_FROM_DEVICE 2
 /* Create coherent mappings of the buffer. */
-#define GXP_MAP_COHERENT		(1 << 2)
+#define GXP_MAP_COHERENT (1 << 2)
 
 struct gxp_map_ioctl {
 	/*
@@ -47,8 +56,8 @@ struct gxp_map_ioctl {
 	 * buffer for all cores it had been mapped for.
 	 */
 	__u16 virtual_core_list;
-	__u64 host_address;	/* virtual address in the process space */
-	__u32 size;		/* size of mapping in bytes */
+	__u64 host_address; /* virtual address in the process space */
+	__u32 size; /* size of mapping in bytes */
 	/*
 	 * Flags indicating mapping attribute requests from the runtime.
 	 * Set RESERVED bits to 0 to ensure backwards compatibility.
@@ -68,7 +77,7 @@ struct gxp_map_ioctl {
 	 *   [31:3]  - RESERVED
 	 */
 	__u32 flags;
-	__u64 device_address;	/* returned device address */
+	__u64 device_address; /* returned device address */
 };
 
 /*
@@ -76,8 +85,7 @@ struct gxp_map_ioctl {
  *
  * The client must have allocated a virtual device.
  */
-#define GXP_MAP_BUFFER \
-	_IOWR(GXP_IOCTL_BASE, 0, struct gxp_map_ioctl)
+#define GXP_MAP_BUFFER _IOWR(GXP_IOCTL_BASE, 0, struct gxp_map_ioctl)
 
 /*
  * Un-map host buffer previously mapped by GXP_MAP_BUFFER.
@@ -88,12 +96,11 @@ struct gxp_map_ioctl {
  *
  * The client must have allocated a virtual device.
  */
-#define GXP_UNMAP_BUFFER \
-	_IOW(GXP_IOCTL_BASE, 1, struct gxp_map_ioctl)
+#define GXP_UNMAP_BUFFER _IOW(GXP_IOCTL_BASE, 1, struct gxp_map_ioctl)
 
 /* GXP sync flag macros */
-#define GXP_SYNC_FOR_DEVICE		(0)
-#define GXP_SYNC_FOR_CPU		(1)
+#define GXP_SYNC_FOR_DEVICE (0)
+#define GXP_SYNC_FOR_CPU (1)
 
 struct gxp_sync_ioctl {
 	/*
@@ -130,13 +137,12 @@ struct gxp_sync_ioctl {
  * EINVAL: If @size equals 0.
  * EINVAL: If @offset plus @size exceeds the mapping size.
  */
-#define GXP_SYNC_BUFFER \
-	_IOW(GXP_IOCTL_BASE, 2, struct gxp_sync_ioctl)
+#define GXP_SYNC_BUFFER _IOW(GXP_IOCTL_BASE, 2, struct gxp_sync_ioctl)
 
 /* GXP mailbox response error code values */
-#define GXP_RESPONSE_ERROR_NONE         (0)
-#define GXP_RESPONSE_ERROR_INTERNAL     (1)
-#define GXP_RESPONSE_ERROR_TIMEOUT      (2)
+#define GXP_RESPONSE_ERROR_NONE (0)
+#define GXP_RESPONSE_ERROR_INTERNAL (1)
+#define GXP_RESPONSE_ERROR_TIMEOUT (2)
 
 struct gxp_mailbox_response_ioctl {
 	/*
@@ -172,7 +178,7 @@ struct gxp_mailbox_response_ioctl {
  *
  * The client must hold a VIRTUAL_DEVICE wakelock.
  */
-#define GXP_MAILBOX_RESPONSE \
+#define GXP_MAILBOX_RESPONSE                                                   \
 	_IOWR(GXP_IOCTL_BASE, 4, struct gxp_mailbox_response_ioctl)
 
 struct gxp_specs_ioctl {
@@ -192,8 +198,7 @@ struct gxp_specs_ioctl {
 };
 
 /* Query system specs. */
-#define GXP_GET_SPECS \
-	_IOR(GXP_IOCTL_BASE, 5, struct gxp_specs_ioctl)
+#define GXP_GET_SPECS _IOR(GXP_IOCTL_BASE, 5, struct gxp_specs_ioctl)
 
 struct gxp_virtual_device_ioctl {
 	/*
@@ -219,7 +224,7 @@ struct gxp_virtual_device_ioctl {
 };
 
 /* Allocate virtual device. */
-#define GXP_ALLOCATE_VIRTUAL_DEVICE \
+#define GXP_ALLOCATE_VIRTUAL_DEVICE                                            \
 	_IOWR(GXP_IOCTL_BASE, 6, struct gxp_virtual_device_ioctl)
 
 #define ETM_TRACE_LSB_MASK 0x1
@@ -273,7 +278,7 @@ struct gxp_etm_trace_start_ioctl {
  *
  * The client must hold a VIRTUAL_DEVICE wakelock.
  */
-#define GXP_ETM_TRACE_START_COMMAND \
+#define GXP_ETM_TRACE_START_COMMAND                                            \
 	_IOW(GXP_IOCTL_BASE, 7, struct gxp_etm_trace_start_ioctl)
 
 /*
@@ -282,8 +287,7 @@ struct gxp_etm_trace_start_ioctl {
  *
  * The client must hold a VIRTUAL_DEVICE wakelock.
  */
-#define GXP_ETM_TRACE_SW_STOP_COMMAND \
-	_IOW(GXP_IOCTL_BASE, 8, __u16)
+#define GXP_ETM_TRACE_SW_STOP_COMMAND _IOW(GXP_IOCTL_BASE, 8, __u16)
 
 /*
  * Users should call this IOCTL after tracing has been stopped for the last
@@ -294,8 +298,7 @@ struct gxp_etm_trace_start_ioctl {
  *
  * The client must hold a VIRTUAL_DEVICE wakelock.
  */
-#define GXP_ETM_TRACE_CLEANUP_COMMAND \
-	_IOW(GXP_IOCTL_BASE, 9, __u16)
+#define GXP_ETM_TRACE_CLEANUP_COMMAND _IOW(GXP_IOCTL_BASE, 9, __u16)
 
 #define GXP_TRACE_HEADER_SIZE 256
 #define GXP_TRACE_RAM_SIZE 4096
@@ -331,11 +334,11 @@ struct gxp_etm_get_trace_info_ioctl {
  *
  * The client must hold a VIRTUAL_DEVICE wakelock.
  */
-#define GXP_ETM_GET_TRACE_INFO_COMMAND \
+#define GXP_ETM_GET_TRACE_INFO_COMMAND                                         \
 	_IOWR(GXP_IOCTL_BASE, 10, struct gxp_etm_get_trace_info_ioctl)
 
-#define GXP_TELEMETRY_TYPE_LOGGING	(0)
-#define GXP_TELEMETRY_TYPE_TRACING	(1)
+#define GXP_TELEMETRY_TYPE_LOGGING (0)
+#define GXP_TELEMETRY_TYPE_TRACING (1)
 
 /*
  * Enable either logging or software tracing for all cores.
@@ -350,7 +353,7 @@ struct gxp_etm_get_trace_info_ioctl {
  * logging/tracing to their buffers. Any cores booting after this call will
  * begin logging/tracing as soon as their firmware is able to.
  */
-#define GXP_ENABLE_TELEMETRY _IOWR(GXP_IOCTL_BASE, 11, __u8)
+#define GXP_ENABLE_CORE_TELEMETRY _IOWR(GXP_IOCTL_BASE, 11, __u8)
 
 /*
  * Disable either logging or software tracing for all cores.
@@ -360,7 +363,11 @@ struct gxp_etm_get_trace_info_ioctl {
  * This call will block until any running cores have been notified and ACKed
  * that they have disabled the specified telemetry type.
  */
-#define GXP_DISABLE_TELEMETRY _IOWR(GXP_IOCTL_BASE, 12, __u8)
+#define GXP_DISABLE_CORE_TELEMETRY _IOWR(GXP_IOCTL_BASE, 12, __u8)
+
+/* For backward compatibility. */
+#define GXP_ENABLE_TELEMETRY GXP_ENABLE_CORE_TELEMETRY
+#define GXP_DISABLE_TELEMETRY GXP_DISABLE_CORE_TELEMETRY
 
 struct gxp_tpu_mbx_queue_ioctl {
 	__u32 tpu_fd; /* TPU virtual device group fd */
@@ -388,7 +395,7 @@ struct gxp_tpu_mbx_queue_ioctl {
  *
  * The client must have allocated a virtual device.
  */
-#define GXP_MAP_TPU_MBX_QUEUE \
+#define GXP_MAP_TPU_MBX_QUEUE                                                  \
 	_IOW(GXP_IOCTL_BASE, 13, struct gxp_tpu_mbx_queue_ioctl)
 
 /*
@@ -401,7 +408,7 @@ struct gxp_tpu_mbx_queue_ioctl {
  *
  * The client must have allocated a virtual device.
  */
-#define GXP_UNMAP_TPU_MBX_QUEUE \
+#define GXP_UNMAP_TPU_MBX_QUEUE                                                \
 	_IOW(GXP_IOCTL_BASE, 14, struct gxp_tpu_mbx_queue_ioctl)
 
 struct gxp_register_telemetry_eventfd_ioctl {
@@ -420,11 +427,15 @@ struct gxp_register_telemetry_eventfd_ioctl {
 	__u8 type;
 };
 
-#define GXP_REGISTER_TELEMETRY_EVENTFD                                         \
+#define GXP_REGISTER_CORE_TELEMETRY_EVENTFD                                    \
 	_IOW(GXP_IOCTL_BASE, 15, struct gxp_register_telemetry_eventfd_ioctl)
 
-#define GXP_UNREGISTER_TELEMETRY_EVENTFD                                       \
+#define GXP_UNREGISTER_CORE_TELEMETRY_EVENTFD                                  \
 	_IOW(GXP_IOCTL_BASE, 16, struct gxp_register_telemetry_eventfd_ioctl)
+
+/* For backward compatibility. */
+#define GXP_REGISTER_TELEMETRY_EVENTFD GXP_REGISTER_CORE_TELEMETRY_EVENTFD
+#define GXP_UNREGISTER_TELEMETRY_EVENTFD GXP_UNREGISTER_CORE_TELEMETRY_EVENTFD
 
 /*
  * Reads the 2 global counter registers in AURORA_TOP and combines them to
@@ -464,7 +475,7 @@ struct gxp_map_dmabuf_ioctl {
 	 * unmaps a dma-buf for all cores it had been mapped for.
 	 */
 	__u16 virtual_core_list;
-	__s32 dmabuf_fd;	/* File descriptor of the dma-buf to map. */
+	__s32 dmabuf_fd; /* File descriptor of the dma-buf to map. */
 	/*
 	 * Flags indicating mapping attribute requests from the runtime.
 	 * Set RESERVED bits to 0 to ensure backwards compatibility.
@@ -620,7 +631,7 @@ struct gxp_mailbox_command_ioctl {
  *
  * The client must hold a VIRTUAL_DEVICE wakelock.
  */
-#define GXP_MAILBOX_COMMAND \
+#define GXP_MAILBOX_COMMAND                                                    \
 	_IOWR(GXP_IOCTL_BASE, 23, struct gxp_mailbox_command_ioctl)
 
 /*
@@ -640,8 +651,8 @@ struct gxp_mailbox_command_ioctl {
  * Multiple wakelocks can be acquired or released at once by passing multiple
  * components, ORed together.
  */
-#define WAKELOCK_BLOCK		(1 << 0)
-#define WAKELOCK_VIRTUAL_DEVICE	(1 << 1)
+#define WAKELOCK_BLOCK (1 << 0)
+#define WAKELOCK_VIRTUAL_DEVICE (1 << 1)
 
 /*
  * DSP subsystem Power state values for use as `gxp_power_state` in
@@ -651,12 +662,12 @@ struct gxp_mailbox_command_ioctl {
  * GXP_POWER_LOW_FREQ_CLKMUX flag. Requesting GXP_POWER_STATE_READY is treated
  * as identical to GXP_POWER_STATE_UUD.
  */
-#define GXP_POWER_STATE_OFF	0
-#define GXP_POWER_STATE_UUD	1
-#define GXP_POWER_STATE_SUD	2
-#define GXP_POWER_STATE_UD	3
-#define GXP_POWER_STATE_NOM	4
-#define GXP_POWER_STATE_READY	5
+#define GXP_POWER_STATE_OFF 0
+#define GXP_POWER_STATE_UUD 1
+#define GXP_POWER_STATE_SUD 2
+#define GXP_POWER_STATE_UD 3
+#define GXP_POWER_STATE_NOM 4
+#define GXP_POWER_STATE_READY 5
 #define GXP_POWER_STATE_UUD_PLUS 6
 #define GXP_POWER_STATE_SUD_PLUS 7
 #define GXP_POWER_STATE_UD_PLUS 8
@@ -666,13 +677,13 @@ struct gxp_mailbox_command_ioctl {
  * Memory interface power state values for use as `memory_power_state` in
  * `struct gxp_acquire_wakelock_ioctl`.
  */
-#define MEMORY_POWER_STATE_UNDEFINED	0
-#define MEMORY_POWER_STATE_MIN		1
-#define MEMORY_POWER_STATE_VERY_LOW	2
-#define MEMORY_POWER_STATE_LOW		3
-#define MEMORY_POWER_STATE_HIGH		4
-#define MEMORY_POWER_STATE_VERY_HIGH	5
-#define MEMORY_POWER_STATE_MAX		6
+#define MEMORY_POWER_STATE_UNDEFINED 0
+#define MEMORY_POWER_STATE_MIN 1
+#define MEMORY_POWER_STATE_VERY_LOW 2
+#define MEMORY_POWER_STATE_LOW 3
+#define MEMORY_POWER_STATE_HIGH 4
+#define MEMORY_POWER_STATE_VERY_HIGH 5
+#define MEMORY_POWER_STATE_MAX 6
 
 /*
  * GXP power flag macros, supported by `flags` in `gxp_acquire_wakelock_ioctl`
@@ -681,7 +692,7 @@ struct gxp_mailbox_command_ioctl {
  * Non-aggressor flag is deprecated. Setting this flag is a no-op since
  * non-aggressor support is defeatured.
  */
-#define GXP_POWER_NON_AGGRESSOR		(1 << 0)
+#define GXP_POWER_NON_AGGRESSOR (1 << 0)
 /*
  * The client can request low frequency clkmux vote by this flag, which means
  * the kernel driver will switch the CLKMUX clocks to save more power.
@@ -694,7 +705,7 @@ struct gxp_mailbox_command_ioctl {
  * with GXP_POWER_LOW_FREQ_CLKMUX. The voting result is GXP_POWER_STATE_UUD
  * without GXP_POWER_LOW_FREQ_CLKMUX.
  */
-#define GXP_POWER_LOW_FREQ_CLKMUX       (1 << 1)
+#define GXP_POWER_LOW_FREQ_CLKMUX (1 << 1)
 
 struct gxp_acquire_wakelock_ioctl {
 	/*
@@ -816,5 +827,11 @@ struct gxp_interface_version_ioctl {
  * Note: Root access is required to use this IOCTL.
  */
 #define GXP_TRIGGER_DEBUG_DUMP _IOW(GXP_IOCTL_BASE, 27, __u32)
+
+#define GXP_REGISTER_MCU_TELEMETRY_EVENTFD                                     \
+	_IOW(GXP_IOCTL_BASE, 28, struct gxp_register_telemetry_eventfd_ioctl)
+
+#define GXP_UNREGISTER_MCU_TELEMETRY_EVENTFD                                   \
+	_IOW(GXP_IOCTL_BASE, 29, struct gxp_register_telemetry_eventfd_ioctl)
 
 #endif /* __GXP_H__ */

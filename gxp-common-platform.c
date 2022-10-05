@@ -32,6 +32,7 @@
 
 #include "gxp-client.h"
 #include "gxp-config.h"
+#include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
 #include "gxp-debugfs.h"
 #include "gxp-dma.h"
@@ -45,14 +46,15 @@
 #include "gxp-mapping.h"
 #include "gxp-notification.h"
 #include "gxp-pm.h"
-#include "gxp-telemetry.h"
 #include "gxp-thermal.h"
 #include "gxp-vd.h"
 #include "gxp-wakelock.h"
 #include "gxp.h"
 
-#ifdef GXP_HAS_DCI
+#ifndef GXP_LEGACY_MAILBOX
 #include "gxp-dci.h"
+#else
+#include "gxp-mailbox-impl.h"
 #endif
 
 /* Caller needs to hold client->semaphore */
@@ -195,10 +197,12 @@ static int gxp_release(struct inode *inode, struct file *file)
 	if (!client)
 		return 0;
 
-	if (client->enabled_telemetry_logging)
-		gxp_telemetry_disable(client->gxp, GXP_TELEMETRY_TYPE_LOGGING);
-	if (client->enabled_telemetry_tracing)
-		gxp_telemetry_disable(client->gxp, GXP_TELEMETRY_TYPE_TRACING);
+	if (client->enabled_core_telemetry_logging)
+		gxp_core_telemetry_disable(client->gxp,
+					   GXP_TELEMETRY_TYPE_LOGGING);
+	if (client->enabled_core_telemetry_tracing)
+		gxp_core_telemetry_disable(client->gxp,
+					   GXP_TELEMETRY_TYPE_TRACING);
 
 	mutex_lock(&client->gxp->client_list_lock);
 	list_del(&client->list_entry);
@@ -804,8 +808,8 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
-static int gxp_enable_telemetry(struct gxp_client *client,
-				__u8 __user *argp)
+static int gxp_enable_core_telemetry(struct gxp_client *client,
+				     __u8 __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	__u8 type;
@@ -818,21 +822,22 @@ static int gxp_enable_telemetry(struct gxp_client *client,
 	    type != GXP_TELEMETRY_TYPE_TRACING)
 		return -EINVAL;
 
-	ret = gxp_telemetry_enable(gxp, type);
+	ret = gxp_core_telemetry_enable(gxp, type);
 
 	/*
-	 * Record what telemetry types this client enabled so they can be
+	 * Record what core telemetry types this client enabled so they can be
 	 * cleaned-up if the client closes without disabling them.
 	 */
 	if (!ret && type == GXP_TELEMETRY_TYPE_LOGGING)
-		client->enabled_telemetry_logging = true;
+		client->enabled_core_telemetry_logging = true;
 	if (!ret && type == GXP_TELEMETRY_TYPE_TRACING)
-		client->enabled_telemetry_tracing = true;
+		client->enabled_core_telemetry_tracing = true;
 
 	return ret;
 }
 
-static int gxp_disable_telemetry(struct gxp_client *client, __u8 __user *argp)
+static int gxp_disable_core_telemetry(struct gxp_client *client,
+				      __u8 __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	__u8 type;
@@ -845,16 +850,22 @@ static int gxp_disable_telemetry(struct gxp_client *client, __u8 __user *argp)
 	    type != GXP_TELEMETRY_TYPE_TRACING)
 		return -EINVAL;
 
-	ret = gxp_telemetry_disable(gxp, type);
+	ret = gxp_core_telemetry_disable(gxp, type);
 
 	if (!ret && type == GXP_TELEMETRY_TYPE_LOGGING)
-		client->enabled_telemetry_logging = false;
+		client->enabled_core_telemetry_logging = false;
 	if (!ret && type == GXP_TELEMETRY_TYPE_TRACING)
-		client->enabled_telemetry_tracing = false;
+		client->enabled_core_telemetry_tracing = false;
 
 	return ret;
 }
 
+/*
+ * TODO(b/249440369): As the DSP KD will not get involved in the mapping the TPU mailbox buffer
+ * from Zuma, remove the corresponding logic from this function. Note that, we still have to do
+ * it from here in the direct mode. Also, we have to investigate whether it will be still proper
+ * to call the `ALLOCATE_EXTERNAL_MAILBOX` TPU external command from here in MCU mode.
+ */
 static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 				 struct gxp_tpu_mbx_queue_ioctl __user *argp)
 {
@@ -943,18 +954,28 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 				     phys_core_list, mbx_info);
 	if (ret) {
 		dev_err(gxp->dev, "Failed to map TPU mailbox buffer %d", ret);
-		fput(client->tpu_file);
-		client->tpu_file = NULL;
-		edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
-				       EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
-				       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info,
-				       NULL);
-		goto out_free;
+		goto err_fput;
 	}
 	client->mbx_desc.phys_core_list = phys_core_list;
 	client->mbx_desc.cmdq_size = mbx_info->cmdq_size;
 	client->mbx_desc.respq_size = mbx_info->respq_size;
 
+	if (gxp->after_map_tpu_mbx_queue) {
+		ret = gxp->after_map_tpu_mbx_queue(gxp, client);
+		if (ret)
+			goto err_unmap;
+	}
+
+	goto out_free;
+
+err_unmap:
+	gxp_dma_unmap_tpu_buffer(gxp, client->vd->domain, client->mbx_desc);
+err_fput:
+	fput(client->tpu_file);
+	client->tpu_file = NULL;
+	edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
+			       EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
+			       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info, NULL);
 out_free:
 	kfree(mbx_info);
 
@@ -969,6 +990,7 @@ out_unlock_client_semaphore:
 #endif
 }
 
+/* TODO(b/249440369): The same as the `gxp_map_tpu_mbx_queue` function. */
 static int gxp_unmap_tpu_mbx_queue(struct gxp_client *client,
 				   struct gxp_tpu_mbx_queue_ioctl __user *argp)
 {
@@ -996,6 +1018,9 @@ static int gxp_unmap_tpu_mbx_queue(struct gxp_client *client,
 		goto out;
 	}
 
+	if (gxp->before_unmap_tpu_mbx_queue)
+		gxp->before_unmap_tpu_mbx_queue(gxp, client);
+
 	gxp_dma_unmap_tpu_buffer(gxp, client->vd->domain, client->mbx_desc);
 
 	gxp_tpu_info.tpu_fd = ibuf.tpu_fd;
@@ -1014,7 +1039,7 @@ out:
 #endif
 }
 
-static int gxp_register_telemetry_eventfd(
+static int gxp_register_core_telemetry_eventfd(
 	struct gxp_client *client,
 	struct gxp_register_telemetry_eventfd_ioctl __user *argp)
 {
@@ -1024,10 +1049,11 @@ static int gxp_register_telemetry_eventfd(
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
 
-	return gxp_telemetry_register_eventfd(gxp, ibuf.type, ibuf.eventfd);
+	return gxp_core_telemetry_register_eventfd(gxp, ibuf.type,
+						   ibuf.eventfd);
 }
 
-static int gxp_unregister_telemetry_eventfd(
+static int gxp_unregister_core_telemetry_eventfd(
 	struct gxp_client *client,
 	struct gxp_register_telemetry_eventfd_ioctl __user *argp)
 {
@@ -1037,7 +1063,7 @@ static int gxp_unregister_telemetry_eventfd(
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
 
-	return gxp_telemetry_unregister_eventfd(gxp, ibuf.type);
+	return gxp_core_telemetry_unregister_eventfd(gxp, ibuf.type);
 }
 
 static int gxp_read_global_counter(struct gxp_client *client,
@@ -1512,11 +1538,11 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 	case GXP_ETM_GET_TRACE_INFO_COMMAND:
 		ret = gxp_etm_get_trace_info_command(client, argp);
 		break;
-	case GXP_ENABLE_TELEMETRY:
-		ret = gxp_enable_telemetry(client, argp);
+	case GXP_ENABLE_CORE_TELEMETRY:
+		ret = gxp_enable_core_telemetry(client, argp);
 		break;
-	case GXP_DISABLE_TELEMETRY:
-		ret = gxp_disable_telemetry(client, argp);
+	case GXP_DISABLE_CORE_TELEMETRY:
+		ret = gxp_disable_core_telemetry(client, argp);
 		break;
 	case GXP_MAP_TPU_MBX_QUEUE:
 		ret = gxp_map_tpu_mbx_queue(client, argp);
@@ -1524,11 +1550,11 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 	case GXP_UNMAP_TPU_MBX_QUEUE:
 		ret = gxp_unmap_tpu_mbx_queue(client, argp);
 		break;
-	case GXP_REGISTER_TELEMETRY_EVENTFD:
-		ret = gxp_register_telemetry_eventfd(client, argp);
+	case GXP_REGISTER_CORE_TELEMETRY_EVENTFD:
+		ret = gxp_register_core_telemetry_eventfd(client, argp);
 		break;
-	case GXP_UNREGISTER_TELEMETRY_EVENTFD:
-		ret = gxp_unregister_telemetry_eventfd(client, argp);
+	case GXP_UNREGISTER_CORE_TELEMETRY_EVENTFD:
+		ret = gxp_unregister_core_telemetry_eventfd(client, argp);
 		break;
 	case GXP_READ_GLOBAL_COUNTER:
 		ret = gxp_read_global_counter(client, argp);
@@ -1570,19 +1596,24 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 static int gxp_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct gxp_client *client = file->private_data;
+	int ret;
 
 	if (!client)
 		return -ENODEV;
 
+	if (client->gxp->handle_mmap) {
+		ret = client->gxp->handle_mmap(file, vma);
+		if (ret != -EOPNOTSUPP)
+			return ret;
+	}
+
 	switch (vma->vm_pgoff << PAGE_SHIFT) {
-	case GXP_MMAP_LOG_BUFFER_OFFSET:
-		return gxp_telemetry_mmap_buffers(client->gxp,
-						  GXP_TELEMETRY_TYPE_LOGGING,
-						  vma);
-	case GXP_MMAP_TRACE_BUFFER_OFFSET:
-		return gxp_telemetry_mmap_buffers(client->gxp,
-						  GXP_TELEMETRY_TYPE_TRACING,
-						  vma);
+	case GXP_MMAP_CORE_LOG_BUFFER_OFFSET:
+		return gxp_core_telemetry_mmap_buffers(
+			client->gxp, GXP_TELEMETRY_TYPE_LOGGING, vma);
+	case GXP_MMAP_CORE_TRACE_BUFFER_OFFSET:
+		return gxp_core_telemetry_mmap_buffers(
+			client->gxp, GXP_TELEMETRY_TYPE_TRACING, vma);
 	default:
 		return -EINVAL;
 	}
@@ -1729,7 +1760,7 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	}
 
 	if (gxp_is_direct_mode(gxp)) {
-#ifdef GXP_HAS_DCI
+#ifndef GXP_LEGACY_MAILBOX
 		gxp_dci_init(gxp->mailbox_mgr);
 #else
 		gxp_mailbox_init(gxp->mailbox_mgr);
@@ -1802,7 +1833,7 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	}
 
 	gxp_fw_data_init(gxp);
-	gxp_telemetry_init(gxp);
+	gxp_core_telemetry_init(gxp);
 	gxp_create_debugfs(gxp);
 	gxp->thermal_mgr = gxp_thermal_init(gxp);
 	if (!gxp->thermal_mgr)

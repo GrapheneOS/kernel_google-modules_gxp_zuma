@@ -8,8 +8,10 @@
 #include <linux/acpm_dvfs.h>
 
 #include "gxp-client.h"
+#include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
 #include "gxp-debugfs.h"
+#include "gxp-dma.h"
 #include "gxp-firmware-data.h"
 #include "gxp-firmware.h"
 #include "gxp-internal.h"
@@ -17,7 +19,6 @@
 #include "gxp-lpm.h"
 #include "gxp-mailbox.h"
 #include "gxp-pm.h"
-#include "gxp-telemetry.h"
 #include "gxp-vd.h"
 #include "gxp-wakelock.h"
 #include "gxp.h"
@@ -303,25 +304,25 @@ static int gxp_log_buff_set(void *data, u64 val)
 {
 	struct gxp_dev *gxp = (struct gxp_dev *)data;
 	int i;
-	u64 **buffers;
+	struct gxp_coherent_buf *buffers;
 	u64 *ptr;
 
-	mutex_lock(&gxp->telemetry_mgr->lock);
+	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
-	if (!gxp->telemetry_mgr->logging_buff_data) {
+	if (!gxp->core_telemetry_mgr->logging_buff_data) {
 		dev_err(gxp->dev, "%s: Logging buffer has not been created\n",
 			__func__);
-		mutex_unlock(&gxp->telemetry_mgr->lock);
+		mutex_unlock(&gxp->core_telemetry_mgr->lock);
 		return -ENODEV;
 	}
 
-	buffers = (u64 **)gxp->telemetry_mgr->logging_buff_data->buffers;
+	buffers = (struct gxp_coherent_buf *)gxp->core_telemetry_mgr->logging_buff_data->buffers;
 	for (i = 0; i < GXP_NUM_CORES; i++) {
-		ptr = buffers[i];
+		ptr = buffers[i].vaddr;
 		*ptr = val;
 	}
 
-	mutex_unlock(&gxp->telemetry_mgr->lock);
+	mutex_unlock(&gxp->core_telemetry_mgr->lock);
 
 	return 0;
 }
@@ -329,22 +330,22 @@ static int gxp_log_buff_set(void *data, u64 val)
 static int gxp_log_buff_get(void *data, u64 *val)
 {
 	struct gxp_dev *gxp = (struct gxp_dev *)data;
-	u64 **buffers;
+	struct gxp_coherent_buf *buffers;
 
-	mutex_lock(&gxp->telemetry_mgr->lock);
+	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
-	if (!gxp->telemetry_mgr->logging_buff_data) {
+	if (!gxp->core_telemetry_mgr->logging_buff_data) {
 		dev_err(gxp->dev, "%s: Logging buffer has not been created\n",
 			__func__);
-		mutex_unlock(&gxp->telemetry_mgr->lock);
+		mutex_unlock(&gxp->core_telemetry_mgr->lock);
 		return -ENODEV;
 	}
 
-	buffers = (u64 **)gxp->telemetry_mgr->logging_buff_data->buffers;
+	buffers = (struct gxp_coherent_buf *)gxp->core_telemetry_mgr->logging_buff_data->buffers;
 
-	*val = *buffers[0];
+	*val = *(u64 *)(buffers[0].vaddr);
 
-	mutex_unlock(&gxp->telemetry_mgr->lock);
+	mutex_unlock(&gxp->core_telemetry_mgr->lock);
 
 	return 0;
 }
@@ -357,17 +358,17 @@ static int gxp_log_eventfd_signal_set(void *data, u64 val)
 	struct gxp_dev *gxp = (struct gxp_dev *)data;
 	int ret = 0;
 
-	mutex_lock(&gxp->telemetry_mgr->lock);
+	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
-	if (!gxp->telemetry_mgr->logging_efd) {
+	if (!gxp->core_telemetry_mgr->logging_efd) {
 		ret = -ENODEV;
 		goto out;
 	}
 
-	ret = eventfd_signal(gxp->telemetry_mgr->logging_efd, 1);
+	ret = eventfd_signal(gxp->core_telemetry_mgr->logging_efd, 1);
 
 out:
-	mutex_unlock(&gxp->telemetry_mgr->lock);
+	mutex_unlock(&gxp->core_telemetry_mgr->lock);
 
 	return ret;
 }

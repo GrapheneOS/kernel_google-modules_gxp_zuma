@@ -10,10 +10,13 @@
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 
+#include <gcip/gcip-telemetry.h>
+
 #include "callisto-platform.h"
 
 #include "gxp-common-platform.c"
 #include "gxp-kci.h"
+#include "gxp-mcu-telemetry.h"
 #include "gxp-uci.h"
 #include "gxp-usage-stats.h"
 
@@ -25,10 +28,6 @@ static char *callisto_work_mode_name = "direct";
 
 module_param_named(work_mode, callisto_work_mode_name, charp, 0660);
 
-/*
- * TODO(b/245238253):
- * Set default to "B0/any" once we have most folks move to use B0 samples.
- */
 static char *zuma_revision = "a0";
 module_param_named(chip_rev, zuma_revision, charp, 0660);
 
@@ -121,17 +120,16 @@ static int gxp_ioctl_uci_command_helper(struct gxp_client *client,
 	/* TODO(b/248179414): Remove core assignment when MCU fw re-enable sticky core scheduler. */
 	down_read(&gxp->vd_semaphore);
 	cmd.priority = gxp_vd_virt_core_to_phys_core(client->vd, ibuf->virtual_core_id);
+	up_read(&gxp->vd_semaphore);
 	if (cmd.priority < 0) {
 		dev_err(gxp->dev,
 			"Mailbox command failed: Invalid virtual core id (%u)\n",
 			ibuf->virtual_core_id);
 		ret = -EINVAL;
-		up_read(&gxp->vd_semaphore);
 		goto out;
 	}
-	up_read(&gxp->vd_semaphore);
 
-	cmd.client_id = iommu_aux_get_pasid(client->vd->domain, gxp->dev);
+	cmd.client_id = client->vd->client_id;
 
 	/*
 	 * TODO(b/248196344): Use the only one permitted eventfd for the virtual device
@@ -214,6 +212,42 @@ out:
 	return ret;
 }
 
+static inline enum gcip_telemetry_type to_gcip_telemetry_type(u8 type)
+{
+	if (type == GXP_TELEMETRY_TYPE_LOGGING)
+		return GCIP_TELEMETRY_LOG;
+	else
+		return GCIP_TELEMETRY_TRACE;
+}
+
+static int gxp_register_mcu_telemetry_eventfd(
+	struct gxp_client *client,
+	struct gxp_register_telemetry_eventfd_ioctl __user *argp)
+{
+	struct gxp_mcu *mcu = gxp_mcu_of(client->gxp);
+	struct gxp_register_telemetry_eventfd_ioctl ibuf;
+
+	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
+		return -EFAULT;
+
+	return gxp_mcu_telemetry_register_eventfd(
+		mcu, to_gcip_telemetry_type(ibuf.type), ibuf.eventfd);
+}
+
+static int gxp_unregister_mcu_telemetry_eventfd(
+	struct gxp_client *client,
+	struct gxp_register_telemetry_eventfd_ioctl __user *argp)
+{
+	struct gxp_mcu *mcu = gxp_mcu_of(client->gxp);
+	struct gxp_register_telemetry_eventfd_ioctl ibuf;
+
+	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
+		return -EFAULT;
+
+	return gxp_mcu_telemetry_unregister_eventfd(
+		mcu, to_gcip_telemetry_type(ibuf.type));
+}
+
 static long callisto_platform_ioctl(struct file *file, uint cmd, ulong arg)
 {
 	struct gxp_client *client = file->private_data;
@@ -229,8 +263,39 @@ static long callisto_platform_ioctl(struct file *file, uint cmd, ulong arg)
 	case GXP_MAILBOX_RESPONSE:
 		ret = gxp_ioctl_uci_response(client, argp);
 		break;
+	case GXP_REGISTER_MCU_TELEMETRY_EVENTFD:
+		ret = gxp_register_mcu_telemetry_eventfd(client, argp);
+		break;
+	case GXP_UNREGISTER_MCU_TELEMETRY_EVENTFD:
+		ret = gxp_unregister_mcu_telemetry_eventfd(client, argp);
+		break;
 	default:
 		ret = -ENOTTY; /* unknown command */
+	}
+
+	return ret;
+}
+
+static int callisto_platform_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	struct gxp_client *client = file->private_data;
+	struct gxp_mcu *mcu = gxp_mcu_of(client->gxp);
+	int ret;
+
+	if (gxp_is_direct_mode(client->gxp))
+		return -EOPNOTSUPP;
+
+	switch (vma->vm_pgoff << PAGE_SHIFT) {
+	case GXP_MMAP_MCU_LOG_BUFFER_OFFSET:
+		ret = gxp_mcu_telemetry_mmap_buffer(mcu, GCIP_TELEMETRY_LOG,
+						    vma);
+		break;
+	case GXP_MMAP_MCU_TRACE_BUFFER_OFFSET:
+		ret = gxp_mcu_telemetry_mmap_buffer(mcu, GCIP_TELEMETRY_TRACE,
+						    vma);
+		break;
+	default:
+		ret = -EOPNOTSUPP; /* unknown offset */
 	}
 
 	return ret;
@@ -252,7 +317,7 @@ static int callisto_request_power_states(struct gxp_client *client,
 	cmd.wakelock_command_params.memory_operating_point = power_states.memory;
 	cmd.type = WAKELOCK_COMMAND;
 	cmd.priority = 0; /* currently unused */
-	cmd.client_id = iommu_aux_get_pasid(client->vd->domain, gxp->dev);
+	cmd.client_id = client->vd->client_id;
 
 	ret = gxp_uci_send_command(
 		&callisto->mcu.uci, &cmd,
@@ -268,29 +333,37 @@ static int callisto_platform_after_vd_block_ready(struct gxp_dev *gxp,
 {
 	struct gxp_kci *kci = &(to_callisto_dev(gxp)->mcu.kci);
 	int pasid, ret;
+	u8 operation = KCI_ALLOCATE_VMBOX_OP_ALLOCATE_VMBOX;
 
 	if (gxp_is_direct_mode(gxp))
 		return 0;
 
-	pasid = iommu_aux_get_pasid(vd->domain, gxp->dev);
-	ret = gxp_kci_allocate_vmbox(kci, vd->num_cores, pasid,
-				     vd->slice_index);
+	if (vd->tpu_client_id >= 0)
+		operation |= KCI_ALLOCATE_VMBOX_OP_LINK_OFFLOAD_VMBOX;
+
+	pasid = gxp_iommu_aux_get_pasid(gxp, vd->domain);
+	ret = gxp_kci_allocate_vmbox(kci, pasid, vd->num_cores, vd->slice_index,
+				     vd->tpu_client_id, operation);
 	if (ret) {
+		if (ret != GCIP_KCI_ERROR_UNIMPLEMENTED) {
+			dev_err(gxp->dev,
+				"Failed to allocate VMBox for client %d, TPU client %d: %d",
+				pasid, vd->tpu_client_id, ret);
+			return ret;
+		}
+
 		/*
 		 * TODO(241057541): Remove this conditional branch after the firmware side
 		 * implements handling allocate_vmbox command.
 		 */
-		if (ret == GCIP_KCI_ERROR_UNIMPLEMENTED) {
-			dev_info(
-				gxp->dev,
-				"Allocating vmbox is not implemented from the firmware side");
-			return 0;
-		}
-		dev_err(gxp->dev, "Failed to allocate virtual mailbox: ret=%d",
-			ret);
+		dev_info(
+			gxp->dev,
+			"Allocating VMBox is not implemented from the firmware side");
 	}
 
-	return ret;
+	vd->client_id = pasid;
+
+	return 0;
 }
 
 static void
@@ -298,27 +371,31 @@ callisto_platform_before_vd_block_unready(struct gxp_dev *gxp,
 					  struct gxp_virtual_device *vd)
 {
 	struct gxp_kci *kci = &(to_callisto_dev(gxp)->mcu.kci);
-	int pasid, ret;
+	int ret;
 
 	if (gxp_is_direct_mode(gxp))
 		return;
 
-	pasid = iommu_aux_get_pasid(vd->domain, gxp->dev);
-	ret = gxp_kci_release_vmbox(kci, pasid);
+	if (vd->client_id < 0)
+		return;
+
+	ret = gxp_kci_release_vmbox(kci, vd->client_id);
 	if (ret) {
 		/*
 		 * TODO(241057541): Remove this conditional branch after the firmware side
 		 * implements handling allocate_vmbox command.
 		 */
-		if (ret == GCIP_KCI_ERROR_UNIMPLEMENTED) {
+		if (ret == GCIP_KCI_ERROR_UNIMPLEMENTED)
 			dev_info(
 				gxp->dev,
-				"Releasing vmbox is not implemented from the firmware side");
-			return;
-		}
-		dev_err(gxp->dev, "Failed to release virtual mailbox: ret=%d",
-			ret);
+				"Releasing VMBox is not implemented from the firmware side");
+		else
+			dev_err(gxp->dev,
+				"Failed to release VMBox for client %d: %d",
+				vd->client_id, ret);
 	}
+
+	vd->client_id = -1;
 }
 
 static int callisto_wakelock_after_blk_on(struct gxp_dev *gxp)
@@ -339,6 +416,62 @@ static void callisto_wakelock_before_blk_off(struct gxp_dev *gxp)
 	gxp_mcu_firmware_stop(mcu_fw);
 }
 
+static int callisto_after_map_tpu_mbx_queue(struct gxp_dev *gxp,
+					    struct gxp_client *client)
+{
+	struct gxp_kci *kci = &(to_callisto_dev(gxp)->mcu.kci);
+	int tpu_client_id = -1, ret;
+
+	/*
+	 * TODO(b/247923533): Get a client ID from the TPU kernel driver and remove this workaround
+	 * condition.
+	 */
+	if (tpu_client_id < 0)
+		return 0;
+
+	if (client->vd->client_id >= 0) {
+		ret = gxp_kci_allocate_vmbox(
+			kci, client->vd->client_id, 0, 0, tpu_client_id,
+			KCI_ALLOCATE_VMBOX_OP_LINK_OFFLOAD_VMBOX);
+		if (ret) {
+			if (ret != GCIP_KCI_ERROR_UNIMPLEMENTED) {
+				dev_err(gxp->dev,
+					"Failed to link TPU VMbox client %d, TPU client %d: %d",
+					client->vd->client_id, tpu_client_id,
+					ret);
+				return ret;
+			}
+
+			/*
+			 * TODO(241057541): Remove this conditional branch after the firmware side
+			 * implements handling allocate_vmbox command.
+			 */
+			dev_info(
+				gxp->dev,
+				"Linking TPU VNMBox is not implemented from the firmware side");
+		}
+	}
+
+	client->vd->tpu_client_id = tpu_client_id;
+
+	return 0;
+}
+
+static void callisto_before_unmap_tpu_mbx_queue(struct gxp_dev *gxp,
+						struct gxp_client *client)
+{
+	/*
+	 * We don't have to care about the case that the client releases a TPU vmbox which is
+	 * linked to the DSP client without notifying the DSP MCU firmware because the client will
+	 * always release the DSP vmbox earlier than the TPU vmbox. (i.e, the `release_vmbox` KCI
+	 * command will be always sent to the DSP MCU firmware to release the DSP vmbox before
+	 * releasing the TPU vmbox and the firmware will stop TPU offloading.) Also, from Callisto,
+	 * we don't have to care about mapping/unmapping the TPU mailbox buffer here neither.
+	 * Therefore, just unset the TPU client ID here.
+	 */
+	client->vd->tpu_client_id = -1;
+}
+
 static int gxp_platform_probe(struct platform_device *pdev)
 {
 	struct callisto_dev *callisto =
@@ -353,6 +486,7 @@ static int gxp_platform_probe(struct platform_device *pdev)
 	callisto->gxp.after_probe = callisto_platform_after_probe;
 	callisto->gxp.before_remove = callisto_platform_before_remove;
 	callisto->gxp.handle_ioctl = callisto_platform_ioctl;
+	callisto->gxp.handle_mmap = callisto_platform_mmap;
 	callisto->gxp.after_vd_block_ready =
 		callisto_platform_after_vd_block_ready;
 	callisto->gxp.before_vd_block_unready =
@@ -361,6 +495,10 @@ static int gxp_platform_probe(struct platform_device *pdev)
 	callisto->gxp.wakelock_after_blk_on = callisto_wakelock_after_blk_on;
 	callisto->gxp.wakelock_before_blk_off =
 		callisto_wakelock_before_blk_off;
+	callisto->gxp.after_map_tpu_mbx_queue =
+		callisto_after_map_tpu_mbx_queue;
+	callisto->gxp.before_unmap_tpu_mbx_queue =
+		callisto_before_unmap_tpu_mbx_queue;
 
 	return gxp_common_platform_probe(pdev, &callisto->gxp);
 }

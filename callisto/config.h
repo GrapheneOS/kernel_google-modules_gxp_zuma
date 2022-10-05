@@ -39,9 +39,6 @@
  */
 #define GXP_IS_DMA_COHERENT
 
-/* Uses DCI from the direct mode */
-#define GXP_HAS_DCI
-
 #include "context.h"
 #include "csrs.h"
 #include "iova.h"

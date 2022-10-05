@@ -10,7 +10,7 @@
 #include "gxp-config.h"
 #include "gxp-mailbox.h"
 
-#ifdef GXP_HAS_DCI
+#ifndef GXP_LEGACY_MAILBOX
 #include <gcip/gcip-mailbox.h>
 #endif
 
@@ -133,7 +133,7 @@ int gxp_mailbox_inc_resp_queue_head_nolock(struct gxp_mailbox *mailbox, u32 inc,
 int gxp_mailbox_inc_resp_queue_head_locked(struct gxp_mailbox *mailbox, u32 inc,
 					   u32 wrap_bit);
 
-#ifdef GXP_HAS_DCI
+#ifndef GXP_LEGACY_MAILBOX
 /*
  * Following functions are used when setting the operators of `struct gcip_mailbox_ops`.
  * To use these functions, @mailbox->data should be set as an instance of `struct gxp_mailbox`.
@@ -168,6 +168,6 @@ int gxp_mailbox_gcip_ops_after_enqueue_cmd(struct gcip_mailbox *mailbox,
 					   void *cmd);
 void gxp_mailbox_gcip_ops_after_fetch_resps(struct gcip_mailbox *mailbox,
 					    u32 num_resps);
-#endif /* GXP_HAS_DCI */
+#endif /* !GXP_LEGACY_MAILBOX */
 
 #endif /* __GXP_MAILBOX_DRIVER_H__ */

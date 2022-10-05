@@ -730,7 +730,7 @@ struct work_struct *gxp_debug_dump_get_notification_handler(struct gxp_dev *gxp,
 int gxp_debug_dump_init(struct gxp_dev *gxp, void *sscd_dev, void *sscd_pdata)
 {
 	struct gxp_debug_dump_manager *mgr;
-	int core;
+	int core, ret;
 
 	/* Don't initialize the debug dump subsystem unless it's enabled. */
 	if (!gxp_debug_dump_enable)
@@ -742,12 +742,11 @@ int gxp_debug_dump_init(struct gxp_dev *gxp, void *sscd_dev, void *sscd_pdata)
 	gxp->debug_dump_mgr = mgr;
 	mgr->gxp = gxp;
 
-	mgr->buf.vaddr =
-		gxp_dma_alloc_coherent(gxp, NULL, DEBUG_DUMP_MEMORY_SIZE,
-				       &mgr->buf.daddr, GFP_KERNEL, 0);
-	if (!mgr->buf.vaddr) {
+	ret = gxp_dma_alloc_coherent_buf(gxp, NULL, DEBUG_DUMP_MEMORY_SIZE,
+					 GFP_KERNEL, 0, &mgr->buf);
+	if (ret) {
 		dev_err(gxp->dev, "Failed to allocate memory for debug dump\n");
-		return -ENODEV;
+		return ret;
 	}
 	mgr->buf.size = DEBUG_DUMP_MEMORY_SIZE;
 
@@ -782,8 +781,7 @@ void gxp_debug_dump_exit(struct gxp_dev *gxp)
 	}
 
 	kfree(gxp->debug_dump_mgr->common_dump);
-	gxp_dma_free_coherent(gxp, NULL, DEBUG_DUMP_MEMORY_SIZE, mgr->buf.vaddr,
-			      mgr->buf.daddr);
+	gxp_dma_free_coherent_buf(gxp, NULL, &mgr->buf);
 
 	mutex_destroy(&mgr->debug_dump_lock);
 	devm_kfree(mgr->gxp->dev, mgr);

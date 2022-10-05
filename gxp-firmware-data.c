@@ -87,7 +87,7 @@ struct gxp_fw_data_manager {
 	struct fw_memory_allocator *allocator;
 	struct fw_memory sys_desc_mem;
 	struct fw_memory wdog_mem;
-	struct fw_memory telemetry_mem;
+	struct fw_memory core_telemetry_mem;
 	struct fw_memory debug_dump_mem;
 };
 
@@ -266,18 +266,18 @@ static struct fw_memory init_watchdog(struct gxp_fw_data_manager *mgr)
 	return mem;
 }
 
-static struct fw_memory init_telemetry(struct gxp_fw_data_manager *mgr)
+static struct fw_memory init_core_telemetry(struct gxp_fw_data_manager *mgr)
 {
-	struct gxp_telemetry_descriptor *tel_region;
+	struct gxp_core_telemetry_descriptor *tel_region;
 	struct fw_memory mem;
 
 	mem_alloc_allocate(mgr->allocator, &mem, sizeof(*tel_region),
-			   __alignof__(struct gxp_telemetry_descriptor));
+			   __alignof__(struct gxp_core_telemetry_descriptor));
 
 	tel_region = mem.host_addr;
 
 	/*
-	 * Telemetry is disabled for now.
+	 * Core telemetry is disabled for now.
 	 * Subsuequent calls to the FW data module can be used to populate or
 	 * depopulate the descriptor pointers on demand.
 	 */
@@ -292,7 +292,7 @@ static struct fw_memory init_debug_dump(struct gxp_dev *gxp)
 
 	if (gxp->debug_dump_mgr) {
 		mem.host_addr = gxp->debug_dump_mgr->buf.vaddr;
-		mem.device_addr = gxp->debug_dump_mgr->buf.daddr;
+		mem.device_addr = gxp->debug_dump_mgr->buf.dsp_addr;
 		mem.sz = gxp->debug_dump_mgr->buf.size;
 	} else {
 		mem.host_addr = 0;
@@ -589,9 +589,10 @@ int gxp_fw_data_init(struct gxp_dev *gxp)
 	mgr->wdog_mem = init_watchdog(mgr);
 	mgr->system_desc->watchdog_dev_addr = mgr->wdog_mem.device_addr;
 
-	/* Allocate the descriptor for device-side telemetry */
-	mgr->telemetry_mem = init_telemetry(mgr);
-	mgr->system_desc->telemetry_dev_addr = mgr->telemetry_mem.device_addr;
+	/* Allocate the descriptor for device-side core telemetry */
+	mgr->core_telemetry_mem = init_core_telemetry(mgr);
+	mgr->system_desc->core_telemetry_dev_addr =
+		mgr->core_telemetry_mem.device_addr;
 
 	/* Set the debug dump region parameters if available */
 	mgr->debug_dump_mem = init_debug_dump(gxp);
@@ -710,7 +711,7 @@ void gxp_fw_data_destroy(struct gxp_dev *gxp)
 	if (!mgr)
 		return;
 
-	mem_alloc_free(mgr->allocator, &mgr->telemetry_mem);
+	mem_alloc_free(mgr->allocator, &mgr->core_telemetry_mem);
 	mem_alloc_free(mgr->allocator, &mgr->wdog_mem);
 	mem_alloc_free(mgr->allocator, &mgr->sys_desc_mem);
 	mem_alloc_destroy(mgr->allocator);
@@ -730,15 +731,16 @@ void gxp_fw_data_destroy(struct gxp_dev *gxp)
 	}
 }
 
-int gxp_fw_data_set_telemetry_descriptors(struct gxp_dev *gxp, u8 type,
-					  u32 host_status,
-					  dma_addr_t *buffer_addrs,
-					  u32 per_buffer_size)
+int gxp_fw_data_set_core_telemetry_descriptors(struct gxp_dev *gxp, u8 type,
+					       u32 host_status,
+					       struct gxp_coherent_buf *buffers,
+					       u32 per_buffer_size)
 {
-	struct gxp_telemetry_descriptor *descriptor =
-		gxp->data_mgr->telemetry_mem.host_addr;
-	struct telemetry_descriptor *core_descriptors;
+	struct gxp_core_telemetry_descriptor *descriptor =
+		gxp->data_mgr->core_telemetry_mem.host_addr;
+	struct core_telemetry_descriptor *core_descriptors;
 	uint core;
+	bool enable;
 
 	if (type == GXP_TELEMETRY_TYPE_LOGGING)
 		core_descriptors = descriptor->per_core_loggers;
@@ -747,26 +749,37 @@ int gxp_fw_data_set_telemetry_descriptors(struct gxp_dev *gxp, u8 type,
 	else
 		return -EINVAL;
 
-	/* Validate that the provided IOVAs are addressable (i.e. 32-bit) */
-	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (buffer_addrs[core] > U32_MAX)
-			return -EINVAL;
-	}
+	enable = (host_status & GXP_CORE_TELEMETRY_HOST_STATUS_ENABLED);
 
-	for (core = 0; core < GXP_NUM_CORES; core++) {
-		core_descriptors[core].host_status = host_status;
-		core_descriptors[core].buffer_addr = (u32)buffer_addrs[core];
-		core_descriptors[core].buffer_size = per_buffer_size;
+	if (enable) {
+		/* Validate that the provided IOVAs are addressable (i.e. 32-bit) */
+		for (core = 0; core < GXP_NUM_CORES; core++) {
+			if (buffers && buffers[core].dsp_addr > U32_MAX &&
+				buffers[core].size == per_buffer_size)
+				return -EINVAL;
+		}
+
+		for (core = 0; core < GXP_NUM_CORES; core++) {
+			core_descriptors[core].host_status = host_status;
+			core_descriptors[core].buffer_addr = (u32)buffers[core].dsp_addr;
+			core_descriptors[core].buffer_size = per_buffer_size;
+		}
+	} else {
+		for (core = 0; core < GXP_NUM_CORES; core++) {
+			core_descriptors[core].host_status = host_status;
+			core_descriptors[core].buffer_addr = 0;
+			core_descriptors[core].buffer_size = 0;
+		}
 	}
 
 	return 0;
 }
 
-u32 gxp_fw_data_get_telemetry_device_status(struct gxp_dev *gxp, uint core,
-					    u8 type)
+u32 gxp_fw_data_get_core_telemetry_device_status(struct gxp_dev *gxp, uint core,
+						 u8 type)
 {
-	struct gxp_telemetry_descriptor *descriptor =
-		gxp->data_mgr->telemetry_mem.host_addr;
+	struct gxp_core_telemetry_descriptor *descriptor =
+		gxp->data_mgr->core_telemetry_mem.host_addr;
 
 	if (core >= GXP_NUM_CORES)
 		return 0;

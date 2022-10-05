@@ -18,6 +18,7 @@
 
 #include "gxp-bpm.h"
 #include "gxp-config.h"
+#include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
 #include "gxp-doorbell.h"
 #include "gxp-firmware.h"
@@ -27,7 +28,6 @@
 #include "gxp-mailbox.h"
 #include "gxp-notification.h"
 #include "gxp-pm.h"
-#include "gxp-telemetry.h"
 #include "gxp-vd.h"
 
 #if IS_ENABLED(CONFIG_GXP_TEST)
@@ -785,10 +785,10 @@ static int gxp_firmware_finish_startup(struct gxp_dev *gxp,
 		gxp_notification_register_handler(
 			gxp, core, HOST_NOTIF_DEBUG_DUMP_READY, work);
 
-	work = gxp_telemetry_get_notification_handler(gxp, core);
+	work = gxp_core_telemetry_get_notification_handler(gxp, core);
 	if (work)
 		gxp_notification_register_handler(
-			gxp, core, HOST_NOTIF_TELEMETRY_STATUS, work);
+			gxp, core, HOST_NOTIF_CORE_TELEMETRY_STATUS, work);
 
 	mgr->firmware_running |= BIT(core);
 
@@ -813,7 +813,7 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 	gxp_notification_unregister_handler(gxp, core,
 					    HOST_NOTIF_DEBUG_DUMP_READY);
 	gxp_notification_unregister_handler(gxp, core,
-					    HOST_NOTIF_TELEMETRY_STATUS);
+					    HOST_NOTIF_CORE_TELEMETRY_STATUS);
 
 	if (gxp->mailbox_mgr->release_mailbox) {
 		gxp->mailbox_mgr->release_mailbox(

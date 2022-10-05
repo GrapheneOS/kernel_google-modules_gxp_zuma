@@ -46,11 +46,12 @@ struct gxp_client {
 	pid_t pid;
 
 	/*
-	 * Indicates whether the driver needs to disable telemetry when this
-	 * client closes. For when the client fails to disable telemetry itself.
+	 * Indicates whether the driver needs to disable core telemetry when
+	 * this client closes. For when the client fails to disable core
+	 * telemetry itself.
 	 */
-	bool enabled_telemetry_logging;
-	bool enabled_telemetry_tracing;
+	bool enabled_core_telemetry_logging;
+	bool enabled_core_telemetry_tracing;
 };
 
 /*

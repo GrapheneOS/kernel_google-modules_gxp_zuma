@@ -12,6 +12,7 @@
 
 #include "gxp-kci.h"
 #include "gxp-mcu-firmware.h"
+#include "gxp-mcu-telemetry.h"
 #include "gxp-uci.h"
 
 struct gxp_dev;
@@ -26,6 +27,7 @@ struct gxp_mcu {
 	struct gcip_mem_pool remap_secure_pool;
 	struct gxp_uci uci;
 	struct gxp_kci kci;
+	struct gxp_mcu_telemetry_ctx telemetry;
 };
 
 /*

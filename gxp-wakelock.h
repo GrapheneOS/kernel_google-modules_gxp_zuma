@@ -18,7 +18,7 @@ struct gxp_wakelock_manager {
 };
 
 /**
- * gxp_telemetry_init() - Initialize wakelock support
+ * gxp_wakelock_init() - Initialize wakelock support
  * @gxp: The GXP device to initialize wakelock support for
  *
  * Return:

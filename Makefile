@@ -12,6 +12,7 @@ obj-$(CONFIG_$(GXP_CHIP)) += gxp.o
 gxp-objs += \
 		gxp-bpm.o \
 		gxp-client.o \
+		gxp-core-telemetry.o \
 		gxp-debug-dump.o \
 		gxp-debugfs.o \
 		gxp-dma-iommu.o \
@@ -30,19 +31,12 @@ gxp-objs += \
 		gxp-pm.o \
 		gxp-range-alloc.o \
 		gxp-ssmt.o \
-		gxp-telemetry.o \
 		gxp-thermal.o \
 		gxp-vd.o \
 		gxp-wakelock.o
 
-ifeq ($(GXP_CHIP),AMALTHEA)
 
-gxp-objs +=	\
-		gxp-platform.o
-
-EDGETPU_CHIP := janeiro
-
-else ifeq ($(GXP_CHIP),CALLISTO)
+ifeq ($(GXP_CHIP),CALLISTO)
 
 USE_GCIP := TRUE
 
@@ -51,11 +45,13 @@ gxp-objs += \
 		gxp-dci.o \
 		gxp-kci.o \
 		gxp-mcu-firmware.o \
+		gxp-mcu-telemetry.o \
 		gxp-mcu.o \
 		gxp-uci.o \
 		gxp-usage-stats.o
 
 EDGETPU_CHIP := rio
+
 
 endif
 

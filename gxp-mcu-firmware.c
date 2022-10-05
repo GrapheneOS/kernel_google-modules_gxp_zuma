@@ -141,6 +141,7 @@ static int gxp_mcu_firmware_handshake(struct gxp_mcu_firmware *mcu_fw)
 	struct gxp_dev *gxp = mcu_fw->gxp;
 	struct gxp_mcu *mcu = container_of(mcu_fw, struct gxp_mcu, fw);
 	enum gcip_fw_flavor fw_flavor;
+	int ret;
 
 	dev_dbg(gxp->dev, "Detecting MCU firmware info...");
 	mcu_fw->fw_info.fw_build_time = 0;
@@ -162,6 +163,11 @@ static int gxp_mcu_firmware_handshake(struct gxp_mcu_firmware *mcu_fw)
 	gxp_bpm_stop(gxp, GXP_MCU_CORE_ID);
 	dev_notice(gxp->dev, "MCU Instruction read transactions: 0x%x\n",
 		   gxp_bpm_read_counter(gxp, GXP_MCU_CORE_ID, INST_BPM_OFFSET));
+
+	ret = gxp_mcu_telemetry_kci(mcu);
+	if (ret)
+		dev_warn(gxp->dev, "telemetry KCI error: %d", ret);
+
 	return 0;
 }
 
