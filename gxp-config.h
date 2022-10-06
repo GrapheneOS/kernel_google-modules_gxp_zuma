@@ -30,6 +30,10 @@
 
 #define SYNC_BARRIER_COUNT 16
 
+#ifndef GXP_USE_LEGACY_MAILBOX
+#define GXP_USE_LEGACY_MAILBOX 0
+#endif
+
 /* LPM address space starts at lpm_version register */
 #define GXP_LPM_BASE GXP_REG_LPM_VERSION
 #define GXP_LPM_PSM_0_BASE GXP_REG_LPM_PSM_0

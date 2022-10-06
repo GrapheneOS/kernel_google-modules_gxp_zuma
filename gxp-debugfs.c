@@ -310,13 +310,12 @@ static int gxp_log_buff_set(void *data, u64 val)
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
 	if (!gxp->core_telemetry_mgr->logging_buff_data) {
-		dev_err(gxp->dev, "%s: Logging buffer has not been created\n",
-			__func__);
+		dev_err(gxp->dev, "Logging buffer has not been created");
 		mutex_unlock(&gxp->core_telemetry_mgr->lock);
 		return -ENODEV;
 	}
 
-	buffers = (struct gxp_coherent_buf *)gxp->core_telemetry_mgr->logging_buff_data->buffers;
+	buffers = gxp->core_telemetry_mgr->logging_buff_data->buffers;
 	for (i = 0; i < GXP_NUM_CORES; i++) {
 		ptr = buffers[i].vaddr;
 		*ptr = val;
@@ -335,13 +334,12 @@ static int gxp_log_buff_get(void *data, u64 *val)
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
 	if (!gxp->core_telemetry_mgr->logging_buff_data) {
-		dev_err(gxp->dev, "%s: Logging buffer has not been created\n",
-			__func__);
+		dev_err(gxp->dev, "Logging buffer has not been created");
 		mutex_unlock(&gxp->core_telemetry_mgr->lock);
 		return -ENODEV;
 	}
 
-	buffers = (struct gxp_coherent_buf *)gxp->core_telemetry_mgr->logging_buff_data->buffers;
+	buffers = gxp->core_telemetry_mgr->logging_buff_data->buffers;
 
 	*val = *(u64 *)(buffers[0].vaddr);
 

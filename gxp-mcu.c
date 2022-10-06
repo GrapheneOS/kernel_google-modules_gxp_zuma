@@ -163,24 +163,25 @@ int gxp_mcu_init(struct gxp_dev *gxp, struct gxp_mcu *mcu)
 	ret = gxp_mcu_map_resources(gxp, mcu);
 	if (ret)
 		goto err_free_shared_buffer;
-	ret = gxp_uci_init(mcu);
-	if (ret)
-		goto err_mcu_unmap_resources;
-	ret = gxp_kci_init(mcu);
-	if (ret)
-		goto err_uci_exit;
 	/*
-	 * MCU telemetry must be initialized after KCI since the telemetry IRQ
-	 * is tied to KCI mailbox->interrupt_handlers.
+	 * MCU telemetry must be initialized before UCI and KCI to match the
+	 * .log_buffer address in the firmware linker.ld.
 	 */
 	ret = gxp_mcu_telemetry_init(mcu);
 	if (ret)
+		goto err_mcu_unmap_resources;
+	ret = gxp_uci_init(mcu);
+	if (ret)
+		goto err_telemetry_exit;
+	ret = gxp_kci_init(mcu);
+	if (ret)
 		goto err_uci_exit;
-
 	return 0;
 
 err_uci_exit:
 	gxp_uci_exit(&mcu->uci);
+err_telemetry_exit:
+	gxp_mcu_telemetry_exit(mcu);
 err_mcu_unmap_resources:
 	gxp_mcu_unmap_resources(mcu);
 err_free_shared_buffer:
@@ -194,9 +195,9 @@ err_fw_exit:
 
 void gxp_mcu_exit(struct gxp_mcu *mcu)
 {
-	gxp_mcu_telemetry_exit(mcu);
 	gxp_kci_exit(&mcu->kci);
 	gxp_uci_exit(&mcu->uci);
+	gxp_mcu_telemetry_exit(mcu);
 	gxp_mcu_unmap_resources(mcu);
 	gxp_free_shared_buffer(mcu);
 	gxp_mcu_mem_pools_exit(mcu);

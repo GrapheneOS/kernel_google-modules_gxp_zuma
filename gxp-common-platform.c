@@ -51,10 +51,10 @@
 #include "gxp-wakelock.h"
 #include "gxp.h"
 
-#ifndef GXP_LEGACY_MAILBOX
-#include "gxp-dci.h"
-#else
+#if GXP_USE_LEGACY_MAILBOX
 #include "gxp-mailbox-impl.h"
+#else
+#include "gxp-dci.h"
 #endif
 
 /* Caller needs to hold client->semaphore */
@@ -1760,10 +1760,10 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	}
 
 	if (gxp_is_direct_mode(gxp)) {
-#ifndef GXP_LEGACY_MAILBOX
-		gxp_dci_init(gxp->mailbox_mgr);
-#else
+#if GXP_USE_LEGACY_MAILBOX
 		gxp_mailbox_init(gxp->mailbox_mgr);
+#else
+		gxp_dci_init(gxp->mailbox_mgr);
 #endif
 	}
 

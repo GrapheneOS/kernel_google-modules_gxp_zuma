@@ -14,6 +14,7 @@
 #include <linux/slab.h>
 #include <uapi/linux/sched/types.h>
 
+#include "gxp-config.h" /* GXP_USE_LEGACY_MAILBOX */
 #include "gxp-dma.h"
 #include "gxp-internal.h"
 #include "gxp-mailbox.h"
@@ -21,7 +22,7 @@
 #include "gxp-pm.h"
 #include "gxp.h"
 
-#ifdef GXP_LEGACY_MAILBOX
+#if GXP_USE_LEGACY_MAILBOX
 #include "gxp-mailbox-impl.h"
 #else
 #include "gxp-kci.h"
@@ -48,7 +49,7 @@ static void gxp_mailbox_consume_responses_work(struct kthread_work *work)
 	if (mailbox->ops->consume_responses_work)
 		mailbox->ops->consume_responses_work(mailbox);
 
-#ifdef GXP_LEGACY_MAILBOX
+#if GXP_USE_LEGACY_MAILBOX
 	gxp_mailbox_consume_responses(mailbox);
 #else
 	switch (mailbox->type) {
@@ -191,10 +192,10 @@ static void release_mailbox(struct gxp_mailbox *mailbox,
 	kfree(mailbox);
 }
 
-#ifndef GXP_LEGACY_MAILBOX
+#if !GXP_USE_LEGACY_MAILBOX
 static int init_gcip_mailbox(struct gxp_mailbox *mailbox)
 {
-	struct gcip_mailbox_args args = {
+	const struct gcip_mailbox_args args = {
 		.dev = mailbox->gxp->dev,
 		.queue_wrap_bit = mailbox->queue_wrap_bit,
 		.cmd_queue = mailbox->cmd_queue_buf.vaddr,
@@ -238,7 +239,7 @@ static void release_gcip_mailbox(struct gxp_mailbox *mailbox)
 
 static int init_gcip_kci(struct gxp_mailbox *mailbox)
 {
-	struct gcip_kci_args args = {
+	const struct gcip_kci_args args = {
 		.dev = mailbox->gxp->dev,
 		.cmd_queue = mailbox->cmd_queue_buf.vaddr,
 		.resp_queue = mailbox->resp_queue_buf.vaddr,
@@ -278,7 +279,7 @@ static void release_gcip_kci(struct gxp_mailbox *mailbox)
 	kfree(gcip_kci);
 	mailbox->mbx_impl.gcip_kci = NULL;
 }
-#endif /* !GXP_LEGACY_MAILBOX */
+#endif /* !GXP_USE_LEGACY_MAILBOX */
 
 /*
  * Initializes @mailbox->mbx_impl to start waiting and consuming responses.
@@ -286,14 +287,14 @@ static void release_gcip_kci(struct gxp_mailbox *mailbox)
  * - GENERAL: will initialize @mailbox->mbx_impl.gcip_mbx
  * - KCI: will initialize @mailbox->mbx_impl.kci_mbx
  *
- * Note: if `GXP_LEGACY_MAILBOX` is defined, it will initialize @mailbox itself as its queueing
- * logic is implemented in the `gxp-mailbox-impl.c`.
+ * Note: On `GXP_USE_LEGACY_MAILBOX`, it will initialize @mailbox itself as its
+ * queuing logic is implemented in `gxp-mailbox-impl.c`.
  */
 static int init_mailbox_impl(struct gxp_mailbox *mailbox)
 {
 	int ret;
 
-#ifdef GXP_LEGACY_MAILBOX
+#if GXP_USE_LEGACY_MAILBOX
 	if (mailbox->type != GXP_MBOX_TYPE_GENERAL)
 		return -EOPNOTSUPP;
 
@@ -315,7 +316,7 @@ static int init_mailbox_impl(struct gxp_mailbox *mailbox)
 	default:
 		return -EOPNOTSUPP;
 	}
-#endif
+#endif /* GXP_USE_LEGACY_MAILBOX */
 
 	if (mailbox->ops->init_consume_responses_work) {
 		ret = mailbox->ops->init_consume_responses_work(mailbox);
@@ -375,20 +376,21 @@ struct gxp_mailbox *gxp_mailbox_alloc(struct gxp_mailbox_manager *mgr,
 }
 
 /*
- * Releases the @mailbox->mbx_impl to flush all pending responses in the wait list.
- * This will releases GCIP mailbox modules according to the type of @mailbox.
+ * Releases the @mailbox->mbx_impl to flush all pending responses in the wait
+ * list.
+ * This releases GCIP mailbox modules according to the type of @mailbox.
  * - GENERAL: will release @mailbox->mbx_impl.gcip_mbx
  * - KCI: will release @mailbox->mbx_impl.kci_mbx
  *
- * Note: if `GXP_LEGACY_MAILBOX` is defined, it will release @mailbox itself as its queueing
- * logic is implemented in the `gxp-mailbox-impl.c`.
+ * Note: On `GXP_USE_LEGACY_MAILBOX`, it will release @mailbox itself as its
+ * queuing logic is implemented in `gxp-mailbox-impl.c`.
  */
 static void release_mailbox_impl(struct gxp_mailbox *mailbox)
 {
 	if (mailbox->ops->release_consume_responses_work)
 		mailbox->ops->release_consume_responses_work(mailbox);
 
-#ifdef GXP_LEGACY_MAILBOX
+#if GXP_USE_LEGACY_MAILBOX
 	gxp_mailbox_release_consume_responses(mailbox);
 #else
 	switch (mailbox->type) {

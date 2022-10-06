@@ -9,15 +9,16 @@
 
 #include <linux/kthread.h>
 
-#ifndef GXP_LEGACY_MAILBOX
-#include <gcip/gcip-kci.h>
-#include <gcip/gcip-mailbox.h>
-#endif
-
 #include "gxp-client.h"
+#include "gxp-config.h" /* GXP_USE_LEGACY_MAILBOX */
 #include "gxp-dma.h"
 #include "gxp-internal.h"
 #include "gxp-mailbox-manager.h"
+
+#if !GXP_USE_LEGACY_MAILBOX
+#include <gcip/gcip-kci.h>
+#include <gcip/gcip-mailbox.h>
+#endif
 
 /*
  * Offset from the host mailbox interface to the device interface that needs to
@@ -61,17 +62,16 @@ enum gxp_mailbox_command_code {
 enum gxp_mailbox_type {
 	/*
 	 * Mailbox will utilize `gcip-mailbox.h` internally.
-	 * (Note: if `GXP_LEGACY_MAILBOX` is defined, it utilizes `gxp-mailbox-impl.h` instead.)
-	 * Can be used in most cases. Mostly, will be used for handling user commands.
+	 * (Note: On `GXP_USE_LEGACY_MAILBOX`, it utilizes `gxp-mailbox-impl.h`
+	 * instead.)
+	 * Mostly will be used for handling user commands.
 	 */
 	GXP_MBOX_TYPE_GENERAL = 0,
-#ifndef GXP_LEGACY_MAILBOX
 	/*
 	 * Mailbox will utilize `gcip-kci.h` internally.
 	 * Will be used for handling kernel commands.
 	 */
 	GXP_MBOX_TYPE_KCI = 1,
-#endif
 };
 
 enum gxp_response_status {
@@ -159,7 +159,7 @@ struct gxp_mailbox_ops {
 	 * Context: in_interrupt().
 	 */
 	void (*consume_responses_work)(struct gxp_mailbox *mailbox);
-#ifndef GXP_LEGACY_MAILBOX
+#if !GXP_USE_LEGACY_MAILBOX
 	/*
 	 * Operators which has dependency on the GCIP according to the type of mailbox.
 	 * - GXP_MBOX_TYPE_GENERAL: @gcip_ops.mbx must be defined.
@@ -227,13 +227,13 @@ struct gxp_mailbox {
 	struct gxp_mailbox_ops *ops;
 	void *data; /* private data */
 
-#ifdef GXP_LEGACY_MAILBOX
+#if GXP_USE_LEGACY_MAILBOX
 	u64 cur_seq;
 	/* add to this list if a command needs to wait for a response */
 	struct list_head wait_list;
 	/* queue for waiting for the wait_list to be consumed */
 	wait_queue_head_t wait_list_waitq;
-#else /* !GXP_LEGACY_MAILBOX */
+#else /* !GXP_USE_LEGACY_MAILBOX */
 	/*
 	 * Implementation of the mailbox according to the type.
 	 * - GXP_MBOX_TYPE_GENERAL: @gcip_mbx will be allocated.
@@ -243,7 +243,7 @@ struct gxp_mailbox {
 		struct gcip_mailbox *gcip_mbx;
 		struct gcip_kci *gcip_kci;
 	} mbx_impl;
-#endif /* GXP_LEGACY_MAILBOX */
+#endif /* GXP_USE_LEGACY_MAILBOX */
 };
 
 /* Mailbox APIs */

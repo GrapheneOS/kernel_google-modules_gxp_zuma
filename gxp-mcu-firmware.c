@@ -178,10 +178,21 @@ static void gxp_mcu_firmware_stop_locked(struct gxp_mcu_firmware *mcu_fw)
 	int ret;
 
 	lockdep_assert_held(&mcu_fw->lock);
+
+	gxp_lpm_enable_state(gxp, GXP_MCU_CORE_ID, LPM_PG_STATE);
+
+	/* Clear doorbell to refuse non-expected interrupts */
+	gxp_doorbell_clear(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
+
 	ret = gxp_kci_shutdown(&mcu->kci);
 	if (ret)
 		dev_warn(gxp->dev, "KCI shutdown failed: %d", ret);
-	gxp_lpm_down(gxp, GXP_MCU_CORE_ID);
+
+	if (!gxp_lpm_wait_state_eq(gxp, GXP_MCU_CORE_ID, LPM_PG_STATE))
+		dev_warn(gxp->dev,
+			 "MCU PSM transition to PS3 fails, current state: %u\n",
+			 gxp_lpm_get_state(gxp, GXP_MCU_CORE_ID));
+
 	gxp_mcu_firmware_unload_locked(mcu_fw);
 }
 
