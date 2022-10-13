@@ -82,6 +82,10 @@ enum gxp_csrs {
 #define GXP_CORE_REG_ALT_RESET_VECTOR(core) GXP_CORE_REG(core, 0x4008)
 #define GXP_CORE_REG_COMMON_INT_MASK_0(core)                                   \
 	GXP_CORE_MCU_REG(core, 0x4010, 0x4020)
+#define GXP_CORE_REG_COMMON_INT_MASK_1(core)                                   \
+	GXP_CORE_MCU_REG(core, 0x4014, 0x4024)
+#define GXP_CORE_REG_DEDICATED_INT_MASK(core)                                   \
+	GXP_CORE_MCU_REG(core, 0x401c, 0x4028)
 #define GXP_CORE_REG_ETM_PWRCTL(core) GXP_CORE_REG(core, 0xB020)
 
 #define SYNC_BARRIER_SHADOW_OFFSET 0x800

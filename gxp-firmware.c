@@ -702,6 +702,24 @@ err_authenticate_firmware:
 	return ret;
 }
 
+/* TODO(b/253464747): Refactor these interrupts handlers and gxp-doorbell.c. */
+static void enable_core_interrupts(struct gxp_dev *gxp, uint core)
+{
+	/*
+	 * GXP_CORE_REG_COMMON_INT_MASK_0 is handled in doorbell module, so we
+	 * don't need to enable it here.
+	 */
+	gxp_write_32(gxp, GXP_CORE_REG_COMMON_INT_MASK_1(core), 0xffffffff);
+	gxp_write_32(gxp, GXP_CORE_REG_DEDICATED_INT_MASK(core), 0xffffffff);
+}
+
+static void disable_core_interrupts(struct gxp_dev *gxp, uint core)
+{
+	gxp_write_32(gxp, GXP_CORE_REG_COMMON_INT_MASK_0(core), 0);
+	gxp_write_32(gxp, GXP_CORE_REG_COMMON_INT_MASK_1(core), 0);
+	gxp_write_32(gxp, GXP_CORE_REG_DEDICATED_INT_MASK(core), 0);
+}
+
 static int gxp_firmware_setup(struct gxp_dev *gxp, uint core)
 {
 	int ret = 0;
@@ -727,8 +745,10 @@ static int gxp_firmware_setup(struct gxp_dev *gxp, uint core)
 	if (ret) {
 		dev_err(gxp->dev, "Failed to power up core %u\n", core);
 		gxp_firmware_unload(gxp, core);
+		return ret;
 	}
 
+	enable_core_interrupts(gxp, core);
 	return ret;
 }
 
@@ -822,8 +842,14 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 		dev_notice(gxp->dev, "Mailbox %u released\n", core);
 	}
 
-	if (vd->state == GXP_VD_RUNNING)
+	if (vd->state == GXP_VD_RUNNING) {
+		/*
+		 * Disable interrupts to prevent cores from being woken up
+		 * unexpectedly.
+		 */
+		disable_core_interrupts(gxp, core);
 		gxp_pm_core_off(gxp, core);
+	}
 	gxp_firmware_unload(gxp, core);
 }
 
