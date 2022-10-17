@@ -8,11 +8,15 @@
 #ifndef __CALLISTO_LPM_H__
 #define __CALLISTO_LPM_H__
 
-/* The index of MCU PSM. */
-#define LPM_MCU_PSM 3
-/* The index of TOP PSM. */
-#define LPM_TOP_PSM 4
-/* Total number of PSMs. 3 for cores + 1 for MCU + 1 for TOP. */
-#define LPM_NUM_PSMS 5
+enum gxp_lpm_psm {
+	LPM_PSM_CORE0 = 0,
+	LPM_PSM_CORE1 = LPM_PSM_CORE0 + 1,
+	LPM_PSM_CORE2 = LPM_PSM_CORE0 + 2,
+	LPM_PSM_MCU,
+	LPM_PSM_TOP,
+	LPM_NUM_PSMS,
+};
+
+#define CORE_TO_PSM(core) (LPM_PSM_CORE0 + (core))
 
 #endif /* __CALLISTO_LPM_H__ */

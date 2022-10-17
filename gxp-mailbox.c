@@ -32,8 +32,8 @@
 #include "gxp-mcu-telemetry.h"
 #endif
 
-/* Timeout of 8s by default to account for slower emulation platforms */
-int gxp_mbx_timeout = 8000;
+/* Timeout of 1s by default */
+int gxp_mbx_timeout = 1000;
 module_param_named(mbx_timeout, gxp_mbx_timeout, int, 0660);
 
 /*
@@ -485,7 +485,7 @@ int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp)
 	return -EOPNOTSUPP;
 }
 
-struct gcip_mailbox_async_response *
+struct gcip_mailbox_resp_awaiter *
 gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp,
 		    void *data)
 {

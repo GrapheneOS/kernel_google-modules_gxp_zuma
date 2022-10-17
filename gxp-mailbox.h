@@ -170,7 +170,6 @@ struct gxp_mailbox {
 	/* Protects to_host_poll_task while it holds a sync barrier */
 	struct mutex polling_lock;
 
-
 	u64 queue_wrap_bit; /* warp bit for both cmd and resp queue */
 
 	u32 cmd_elem_size; /* size of element of cmd queue */
@@ -265,7 +264,7 @@ int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp);
  *
  * Note: KCI doesn't support asynchronous requests.
  */
-struct gcip_mailbox_async_response *
+struct gcip_mailbox_resp_awaiter *
 gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp,
 		    void *data);
 #endif /* !GXP_USE_LEGACY_MAILBOX */

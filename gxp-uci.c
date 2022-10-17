@@ -40,7 +40,7 @@ static void gxp_uci_mailbox_manager_release_unconsumed_async_resps(
 		cur, nxt, &vd->mailbox_resp_queues[UCI_RESOURCE_ID].queue,
 		list_entry) {
 		list_del(&cur->list_entry);
-		gcip_mailbox_release_async_resp(cur->awaiter);
+		gcip_mailbox_release_awaiter(cur->awaiter);
 	}
 	spin_unlock_irqrestore(&vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
 			       flags);
@@ -111,11 +111,11 @@ static void gxp_uci_set_resp_elem_status(struct gcip_mailbox *mailbox,
 	elem->code = status;
 }
 
-static void gxp_uci_handle_async_resp_arrived(
-	struct gcip_mailbox *mailbox,
-	struct gcip_mailbox_async_response *gcip_async_resp)
+static void
+gxp_uci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
+			       struct gcip_mailbox_resp_awaiter *awaiter)
 {
-	struct gxp_uci_async_response *async_resp = gcip_async_resp->data;
+	struct gxp_uci_async_response *async_resp = awaiter->data;
 	unsigned long flags;
 
 	/*
@@ -146,11 +146,11 @@ static void gxp_uci_handle_async_resp_arrived(
 	spin_unlock_irqrestore(async_resp->dest_queue_lock, flags);
 }
 
-static void gxp_uci_handle_async_resp_timedout(
-	struct gcip_mailbox *mailbox,
-	struct gcip_mailbox_async_response *gcip_async_resp)
+static void
+gxp_uci_handle_awaiter_timedout(struct gcip_mailbox *mailbox,
+				struct gcip_mailbox_resp_awaiter *awaiter)
 {
-	struct gxp_uci_async_response *async_resp = gcip_async_resp->data;
+	struct gxp_uci_async_response *async_resp = awaiter->data;
 	unsigned long flags;
 
 	/*
@@ -178,11 +178,10 @@ static void gxp_uci_handle_async_resp_timedout(
 	}
 }
 
-static void
-gxp_uci_flush_async_resp(struct gcip_mailbox *mailbox,
-			 struct gcip_mailbox_async_response *gcip_async_resp)
+static void gxp_uci_flush_awaiter(struct gcip_mailbox *mailbox,
+				  struct gcip_mailbox_resp_awaiter *awaiter)
 {
-	struct gxp_uci_async_response *async_resp = gcip_async_resp->data;
+	struct gxp_uci_async_response *async_resp = awaiter->data;
 	unsigned long flags;
 
 	spin_lock_irqsave(async_resp->dest_queue_lock, flags);
@@ -190,7 +189,7 @@ gxp_uci_flush_async_resp(struct gcip_mailbox *mailbox,
 	spin_unlock_irqrestore(async_resp->dest_queue_lock, flags);
 }
 
-static void gxp_uci_release_async_resp_data(void *data)
+static void gxp_uci_release_awaiter_data(void *data)
 {
 	struct gxp_uci_async_response *async_resp = data;
 
@@ -222,10 +221,10 @@ static const struct gcip_mailbox_ops gxp_uci_gcip_mbx_ops = {
 		gxp_mailbox_gcip_ops_wait_for_cmd_queue_not_full,
 	.after_enqueue_cmd = gxp_mailbox_gcip_ops_after_enqueue_cmd,
 	.after_fetch_resps = gxp_mailbox_gcip_ops_after_fetch_resps,
-	.handle_async_resp_arrived = gxp_uci_handle_async_resp_arrived,
-	.handle_async_resp_timedout = gxp_uci_handle_async_resp_timedout,
-	.flush_async_resp = gxp_uci_flush_async_resp,
-	.release_async_resp_data = gxp_uci_release_async_resp_data,
+	.handle_awaiter_arrived = gxp_uci_handle_awaiter_arrived,
+	.handle_awaiter_timedout = gxp_uci_handle_awaiter_timedout,
+	.flush_awaiter = gxp_uci_flush_awaiter,
+	.release_awaiter_data = gxp_uci_release_awaiter_data,
 };
 
 static int gxp_uci_allocate_resources(struct gxp_mailbox *mailbox,
@@ -438,8 +437,8 @@ int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
 	 * handler (which may reference the `gxp_async_response`) has
 	 * been able to exit cleanly.
 	 */
-	gcip_mailbox_cancel_async_resp_timeout(async_resp->awaiter);
-	gcip_mailbox_release_async_resp(async_resp->awaiter);
+	gcip_mailbox_cancel_awaiter_timeout(async_resp->awaiter);
+	gcip_mailbox_release_awaiter(async_resp->awaiter);
 
 	return 0;
 }

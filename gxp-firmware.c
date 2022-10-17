@@ -336,7 +336,7 @@ static int gxp_firmware_handshake(struct gxp_dev *gxp, uint core)
 	dev_notice(gxp->dev, "Waiting for core %u to power up...\n", core);
 	ctr = 1000;
 	while (ctr) {
-		if (gxp_lpm_is_powered(gxp, core))
+		if (gxp_lpm_is_powered(gxp, CORE_TO_PSM(core)))
 			break;
 		udelay(1 * GXP_TIME_DELAY_FACTOR);
 		ctr--;

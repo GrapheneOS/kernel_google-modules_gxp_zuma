@@ -78,9 +78,7 @@ static int gxp_pm_blkpwr_down(struct gxp_dev *gxp)
 	 * Need to put TOP LPM into active state before blk off
 	 * b/189396709
 	 */
-	lpm_write_32_psm(gxp, LPM_TOP_PSM, LPM_REG_ENABLE_STATE_1, 0x0);
-	lpm_write_32_psm(gxp, LPM_TOP_PSM, LPM_REG_ENABLE_STATE_2, 0x0);
-	if (!gxp_lpm_wait_state_eq(gxp, LPM_TOP_PSM, LPM_ACTIVE_STATE)) {
+	if (!gxp_lpm_wait_state_eq(gxp, LPM_PSM_TOP, LPM_ACTIVE_STATE)) {
 		dev_err(gxp->dev,
 			"failed to force TOP LPM to PS0 during blk down\n");
 		return -EAGAIN;
@@ -288,7 +286,7 @@ int gxp_pm_core_on(struct gxp_dev *gxp, uint core, bool verbose)
 {
 	int ret;
 
-	if (!gxp_lpm_is_initialized(gxp, LPM_TOP_PSM)) {
+	if (!gxp_lpm_is_initialized(gxp, LPM_PSM_TOP)) {
 		dev_err(gxp->dev, "unable to power on core without TOP powered");
 		return -EINVAL;
 	}
@@ -310,7 +308,7 @@ int gxp_pm_core_on(struct gxp_dev *gxp, uint core, bool verbose)
 
 void gxp_pm_core_off(struct gxp_dev *gxp, uint core)
 {
-	if (!gxp_lpm_is_initialized(gxp, LPM_TOP_PSM))
+	if (!gxp_lpm_is_initialized(gxp, LPM_PSM_TOP))
 		return;
 
 	mutex_lock(&gxp->power_mgr->pm_lock);
