@@ -409,7 +409,6 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 	struct gxp_dev *gxp = vd->gxp;
 	u32 boot_state;
 	uint failed_cores = 0;
-	uint virt_core;
 
 #ifdef DISABLE_VD_SUSPEND_RESUME_SUPPORT
 	if (!gxp_is_direct_mode(gxp))
@@ -447,7 +446,7 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 					      CORE_NOTIF_SUSPEND_REQUEST);
 		}
 	}
-	virt_core = 0;
+
 	/* Wait for all cores to complete core suspension. */
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (gxp->core_to_vd[core] == vd) {
@@ -471,7 +470,6 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 							     LPM_CG_STATE);
 				}
 			}
-			virt_core++;
 		}
 	}
 	gxp_dma_domain_detach_device(gxp, vd->domain);
