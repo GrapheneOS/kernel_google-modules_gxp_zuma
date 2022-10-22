@@ -9,14 +9,40 @@
 #include <linux/iommu.h>
 #include <linux/slab.h>
 
+#include "gxp-dma.h"
 #include "gxp-domain-pool.h"
 #include "gxp-internal.h"
+
+static struct gxp_iommu_domain *gxp_domain_alloc(struct gxp_dev *gxp)
+{
+	struct iommu_domain *domain;
+	struct gxp_iommu_domain *gdomain;
+
+	gdomain = kmalloc(sizeof(*gdomain), GFP_KERNEL);
+	if (!gdomain)
+		return ERR_PTR(-ENOMEM);
+
+	domain = iommu_domain_alloc(gxp->dev->bus);
+	if (!domain) {
+		kfree(gdomain);
+		return ERR_PTR(-ENOMEM);
+	}
+	gdomain->domain = domain;
+
+	return gdomain;
+}
+
+static void gxp_domain_free(struct gxp_iommu_domain *gdomain)
+{
+	iommu_domain_free(gdomain->domain);
+	kfree(gdomain);
+}
 
 int gxp_domain_pool_init(struct gxp_dev *gxp, struct gxp_domain_pool *pool,
 			 unsigned int size)
 {
 	unsigned int i;
-	struct iommu_domain *domain;
+	struct gxp_iommu_domain *gdomain;
 	int __maybe_unused ret;
 
 	pool->size = size;
@@ -34,45 +60,44 @@ int gxp_domain_pool_init(struct gxp_dev *gxp, struct gxp_domain_pool *pool,
 		return -ENOMEM;
 	}
 	for (i = 0; i < size; i++) {
-		domain = iommu_domain_alloc(pool->gxp->dev->bus);
-		if (!domain) {
+		gdomain = gxp_domain_alloc(pool->gxp);
+		if (IS_ERR(gdomain)) {
 			dev_err(pool->gxp->dev,
-				"Failed to allocate iommu domain %d of %u\n",
+				"Failed to allocate gxp iommu domain %d of %u\n",
 				i + 1, size);
 			gxp_domain_pool_destroy(pool);
 			return -ENOMEM;
 		}
-
 #if IS_ENABLED(CONFIG_GXP_GEM5)
 		/*
 		 * Gem5 uses arm-smmu-v3 which requires domain finalization to do iommu map. Calling
 		 * iommu_aux_attach_device to finalize the allocated domain and detach the device
 		 * right after that.
 		 */
-		ret = iommu_aux_attach_device(domain, pool->gxp->dev);
+		ret = iommu_aux_attach_device(gdomain->domain, pool->gxp->dev);
 		if (ret) {
-			dev_err(pool->gxp->dev,
+			dev_err(gxp->dev,
 				"Failed to attach device to iommu domain %d of %u, ret=%d\n",
 				i + 1, size, ret);
-			iommu_domain_free(domain);
+			gxp_domain_free(gdomain);
 			gxp_domain_pool_destroy(pool);
 			return ret;
 		}
 
-		iommu_aux_detach_device(domain, pool->gxp->dev);
+		iommu_aux_detach_device(gdomain->domain, pool->gxp->dev);
 #endif /* CONFIG_GXP_GEM5 */
 
-		pool->array[i] = domain;
+		pool->array[i] = gdomain;
 	}
 	return 0;
 }
 
-struct iommu_domain *gxp_domain_pool_alloc(struct gxp_domain_pool *pool)
+struct gxp_iommu_domain *gxp_domain_pool_alloc(struct gxp_domain_pool *pool)
 {
 	int id;
 
 	if (!pool->size)
-		return iommu_domain_alloc(pool->gxp->dev->bus);
+		return gxp_domain_alloc(pool->gxp);
 
 	id = ida_alloc_max(&pool->idp, pool->size - 1, GFP_KERNEL);
 
@@ -88,16 +113,16 @@ struct iommu_domain *gxp_domain_pool_alloc(struct gxp_domain_pool *pool)
 	return pool->array[id];
 }
 
-void gxp_domain_pool_free(struct gxp_domain_pool *pool, struct iommu_domain *domain)
+void gxp_domain_pool_free(struct gxp_domain_pool *pool, struct gxp_iommu_domain *gdomain)
 {
 	int id;
 
 	if (!pool->size) {
-		iommu_domain_free(domain);
+		gxp_domain_free(gdomain);
 		return;
 	}
 	for (id = 0; id < pool->size; id++) {
-		if (pool->array[id] == domain) {
+		if (pool->array[id] == gdomain) {
 			dev_dbg(pool->gxp->dev, "Released domain from pool with id = %d\n", id);
 			ida_free(&pool->idp, id);
 			return;
@@ -117,7 +142,7 @@ void gxp_domain_pool_destroy(struct gxp_domain_pool *pool)
 
 	for (i = 0; i < pool->size; i++) {
 		if (pool->array[i])
-			iommu_domain_free(pool->array[i]);
+			gxp_domain_free(pool->array[i]);
 	}
 
 	ida_destroy(&pool->idp);

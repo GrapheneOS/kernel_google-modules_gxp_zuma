@@ -85,10 +85,24 @@ struct gxp_uci_response {
  * sent the command.
  */
 struct gxp_uci_async_response {
+	struct list_head list_entry;
+	/* Stores the response. */
 	struct gxp_uci_response resp;
 	struct gxp_uci *uci;
-	struct gxp_async_response async_response;
-	struct gcip_mailbox_async_response *async_gcip_resp;
+	/* Queue to add the response to once it is complete or timed out. */
+	struct list_head *dest_queue;
+	/*
+	 * The lock that protects queue pointed to by `dest_queue`.
+	 * The mailbox code also uses this lock to protect changes to the
+	 * `dest_queue` pointer itself when processing this response.
+	 */
+	spinlock_t *dest_queue_lock;
+	/* Queue of clients to notify when this response is processed. */
+	wait_queue_head_t *dest_queue_waitq;
+	/* gxp_eventfd to signal when the response completes. May be NULL. */
+	struct gxp_eventfd *eventfd;
+	/* Handles arrival, timeout of async response. */
+	struct gcip_mailbox_async_response *awaiter;
 };
 
 struct gxp_uci_wait_list {
@@ -100,8 +114,7 @@ struct gxp_uci_wait_list {
 struct gxp_uci {
 	struct gxp_dev *gxp;
 	struct gxp_mcu *mcu;
-	struct gxp_mailbox *gxp_mbx;
-	struct gcip_mailbox *gcip_mbx;
+	struct gxp_mailbox *mbx;
 	struct gxp_mapped_resource cmd_queue_mem;
 	struct gxp_mapped_resource resp_queue_mem;
 	struct gxp_mapped_resource descriptor_mem;

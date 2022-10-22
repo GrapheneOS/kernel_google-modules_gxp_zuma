@@ -201,8 +201,7 @@ static void gxp_dci_mailbox_manager_set_ops(struct gxp_mailbox_manager *mgr)
 
 /* Private data structure of DCI mailbox. */
 struct gxp_dci {
-	struct gxp_mailbox *gxp_mbx;
-	struct gcip_mailbox *gcip_mbx;
+	struct gxp_mailbox *mbx;
 };
 
 static u64 gxp_dci_get_cmd_elem_seq(struct gcip_mailbox *mailbox, void *cmd)
@@ -262,12 +261,12 @@ static void gxp_dci_handle_async_resp_arrived(
 	struct gcip_mailbox *mailbox,
 	struct gcip_mailbox_async_response *gcip_async_resp)
 {
-	struct gxp_mailbox *gxp_mbx = mailbox->data;
+	struct gxp_mailbox *mbx = mailbox->data;
 	struct gxp_dci_async_response *async_resp = gcip_async_resp->data;
 	unsigned long flags;
 
 	gxp_pm_update_requested_power_states(
-		gxp_mbx->gxp, async_resp->requested_states, off_states);
+		mbx->gxp, async_resp->requested_states, off_states);
 
 	spin_lock_irqsave(async_resp->dest_queue_lock, flags);
 
@@ -294,7 +293,7 @@ static void gxp_dci_handle_async_resp_timedout(
 	struct gcip_mailbox *mailbox,
 	struct gcip_mailbox_async_response *gcip_async_resp)
 {
-	struct gxp_mailbox *gxp_mbx = mailbox->data;
+	struct gxp_mailbox *mbx = mailbox->data;
 	struct gxp_dci_async_response *async_resp = gcip_async_resp->data;
 	struct gxp_dci_response *resp = &async_resp->resp;
 	unsigned long flags;
@@ -314,7 +313,7 @@ static void gxp_dci_handle_async_resp_timedout(
 		spin_unlock_irqrestore(async_resp->dest_queue_lock, flags);
 
 		gxp_pm_update_requested_power_states(
-			gxp_mbx->gxp, async_resp->requested_states, off_states);
+			mbx->gxp, async_resp->requested_states, off_states);
 
 		if (async_resp->eventfd) {
 			gxp_eventfd_signal(async_resp->eventfd);
@@ -381,12 +380,14 @@ static int gxp_dci_allocate_resources(struct gxp_mailbox *mailbox,
 				      struct gxp_virtual_device *vd,
 				      uint virt_core)
 {
+	int ret;
+
 	/* Allocate and initialize the command queue */
-	mailbox->cmd_queue = (struct gxp_dci_command *)gxp_dma_alloc_coherent(
+	ret = gxp_dma_alloc_coherent_buf(
 		mailbox->gxp, vd->domain,
 		sizeof(struct gxp_dci_command) * MBOX_CMD_QUEUE_NUM_ENTRIES,
-		&(mailbox->cmd_queue_device_addr), GFP_KERNEL, 0);
-	if (!mailbox->cmd_queue)
+		GFP_KERNEL, 0, &mailbox->cmd_queue_buf);
+	if (ret)
 		goto err_cmd_queue;
 
 	mailbox->cmd_queue_size = MBOX_CMD_QUEUE_NUM_ENTRIES;
@@ -394,11 +395,11 @@ static int gxp_dci_allocate_resources(struct gxp_mailbox *mailbox,
 	mutex_init(&mailbox->cmd_queue_lock);
 
 	/* Allocate and initialize the response queue */
-	mailbox->resp_queue = (struct gxp_dci_response *)gxp_dma_alloc_coherent(
+	ret = gxp_dma_alloc_coherent_buf(
 		mailbox->gxp, vd->domain,
 		sizeof(struct gxp_dci_response) * MBOX_RESP_QUEUE_NUM_ENTRIES,
-		&(mailbox->resp_queue_device_addr), GFP_KERNEL, 0);
-	if (!mailbox->resp_queue)
+		GFP_KERNEL, 0, &mailbox->resp_queue_buf);
+	if (ret)
 		goto err_resp_queue;
 
 	mailbox->resp_queue_size = MBOX_RESP_QUEUE_NUM_ENTRIES;
@@ -406,114 +407,50 @@ static int gxp_dci_allocate_resources(struct gxp_mailbox *mailbox,
 	mutex_init(&mailbox->resp_queue_lock);
 
 	/* Allocate and initialize the mailbox descriptor */
-	mailbox->descriptor =
-		(struct gxp_mailbox_descriptor *)gxp_dma_alloc_coherent(
-			mailbox->gxp, vd->domain,
-			sizeof(struct gxp_mailbox_descriptor),
-			&(mailbox->descriptor_device_addr), GFP_KERNEL, 0);
-	if (!mailbox->descriptor)
+	ret = gxp_dma_alloc_coherent_buf(mailbox->gxp, vd->domain,
+					 sizeof(struct gxp_mailbox_descriptor),
+					 GFP_KERNEL, 0,
+					 &mailbox->descriptor_buf);
+	if (ret)
 		goto err_descriptor;
 
+	mailbox->descriptor =
+		(struct gxp_mailbox_descriptor *)mailbox->descriptor_buf.vaddr;
 	mailbox->descriptor->cmd_queue_device_addr =
-		mailbox->cmd_queue_device_addr;
+		mailbox->cmd_queue_buf.dsp_addr;
 	mailbox->descriptor->resp_queue_device_addr =
-		mailbox->resp_queue_device_addr;
+		mailbox->resp_queue_buf.dsp_addr;
 	mailbox->descriptor->cmd_queue_size = mailbox->cmd_queue_size;
 	mailbox->descriptor->resp_queue_size = mailbox->resp_queue_size;
 
 	return 0;
 
 err_descriptor:
-	gxp_dma_free_coherent(
-		mailbox->gxp, vd->domain,
-		sizeof(struct gxp_dci_response) * mailbox->resp_queue_size,
-		mailbox->resp_queue, mailbox->resp_queue_device_addr);
+	gxp_dma_free_coherent_buf(mailbox->gxp, vd->domain,
+				  &mailbox->resp_queue_buf);
 err_resp_queue:
-	gxp_dma_free_coherent(
-		mailbox->gxp, vd->domain,
-		sizeof(struct gxp_dci_command) * mailbox->cmd_queue_size,
-		mailbox->cmd_queue, mailbox->cmd_queue_device_addr);
+	gxp_dma_free_coherent_buf(mailbox->gxp, vd->domain,
+				  &mailbox->cmd_queue_buf);
 err_cmd_queue:
-	return -ENOMEM;
+	return ret;
 }
 
 static void gxp_dci_release_resources(struct gxp_mailbox *mailbox,
 				      struct gxp_virtual_device *vd,
 				      uint virt_core)
 {
-	gxp_dma_free_coherent(
-		mailbox->gxp, vd->domain,
-		sizeof(struct gxp_dci_command) * mailbox->cmd_queue_size,
-		mailbox->cmd_queue, mailbox->cmd_queue_device_addr);
-	gxp_dma_free_coherent(
-		mailbox->gxp, vd->domain,
-		sizeof(struct gxp_dci_response) * mailbox->resp_queue_size,
-		mailbox->resp_queue, mailbox->resp_queue_device_addr);
-	gxp_dma_free_coherent(mailbox->gxp, vd->domain,
-			      sizeof(struct gxp_mailbox_descriptor),
-			      mailbox->descriptor,
-			      mailbox->descriptor_device_addr);
-}
-
-static int gxp_dci_init_consume_responses_work(struct gxp_mailbox *gxp_mbx)
-{
-	struct gxp_dci *dci = gxp_mbx->data;
-	struct gcip_mailbox_args args = {
-		.dev = gxp_mbx->gxp->dev,
-		.queue_wrap_bit = CIRCULAR_QUEUE_WRAP_BIT,
-		.cmd_queue = gxp_mbx->cmd_queue,
-		.cmd_elem_size = sizeof(struct gxp_dci_command),
-		.resp_queue = gxp_mbx->resp_queue,
-		.resp_elem_size = sizeof(struct gxp_dci_response),
-		.timeout = MAILBOX_TIMEOUT,
-		.ops = &gxp_dci_gcip_mbx_ops,
-		.data = gxp_mbx,
-	};
-	int ret;
-
-	dci->gcip_mbx = kzalloc(sizeof(*dci->gcip_mbx), GFP_KERNEL);
-	if (!dci->gcip_mbx)
-		return -ENOMEM;
-
-	/* Initialize gcip_mailbox */
-	ret = gcip_mailbox_init(dci->gcip_mbx, &args);
-	if (ret) {
-		kfree(dci->gcip_mbx);
-		return ret;
-	}
-
-	return 0;
-}
-
-static void gxp_dci_release_consume_responses_work(struct gxp_mailbox *gxp_mbx)
-{
-	struct gxp_dci *dci = gxp_mbx->data;
-
-	/* Release gcip_mailbox */
-	gcip_mailbox_release(dci->gcip_mbx);
-	kfree(dci->gcip_mbx);
-}
-
-static void gxp_dci_consume_responses_work(struct gxp_mailbox *gxp_mbx)
-{
-	struct gxp_dci *dci = gxp_mbx->data;
-
-	if (gxp_is_a0(gxp_mbx->gxp))
-		dma_sync_single_for_cpu(gxp_mbx->gxp->dev,
-					gxp_mbx->resp_queue_device_addr,
-					gxp_mbx->resp_queue_size *
-						sizeof(struct gxp_dci_response),
-					DMA_BIDIRECTIONAL);
-	gcip_mailbox_consume_responses_work(dci->gcip_mbx);
+	gxp_dma_free_coherent_buf(mailbox->gxp, vd->domain,
+				  &mailbox->cmd_queue_buf);
+	gxp_dma_free_coherent_buf(mailbox->gxp, vd->domain,
+				  &mailbox->resp_queue_buf);
+	gxp_dma_free_coherent_buf(mailbox->gxp, vd->domain,
+				  &mailbox->descriptor_buf);
 }
 
 static struct gxp_mailbox_ops gxp_dci_gxp_mbx_ops = {
 	.allocate_resources = gxp_dci_allocate_resources,
 	.release_resources = gxp_dci_release_resources,
-	.init_consume_responses_work = gxp_dci_init_consume_responses_work,
-	.release_consume_responses_work =
-		gxp_dci_release_consume_responses_work,
-	.consume_responses_work = gxp_dci_consume_responses_work,
+	.gcip_ops.mbx = &gxp_dci_gcip_mbx_ops,
 };
 
 void gxp_dci_init(struct gxp_mailbox_manager *mgr)
@@ -527,7 +464,11 @@ struct gxp_mailbox *gxp_dci_alloc(struct gxp_mailbox_manager *mgr,
 {
 	struct gxp_dci *dci;
 	struct gxp_mailbox_args mbx_args = {
+		.type = GXP_MBOX_TYPE_GENERAL,
 		.ops = &gxp_dci_gxp_mbx_ops,
+		.queue_wrap_bit = CIRCULAR_QUEUE_WRAP_BIT,
+		.cmd_elem_size = sizeof(struct gxp_dci_command),
+		.resp_elem_size = sizeof(struct gxp_dci_response),
 	};
 
 	dci = kzalloc(sizeof(*dci), GFP_KERNEL);
@@ -535,38 +476,35 @@ struct gxp_mailbox *gxp_dci_alloc(struct gxp_mailbox_manager *mgr,
 		return ERR_PTR(-ENOMEM);
 	mbx_args.data = dci;
 
-	dci->gxp_mbx =
-		gxp_mailbox_alloc(mgr, vd, virt_core, core_id, &mbx_args);
-	if (IS_ERR(dci->gxp_mbx))
+	dci->mbx = gxp_mailbox_alloc(mgr, vd, virt_core, core_id, &mbx_args);
+	if (IS_ERR(dci->mbx))
 		kfree(dci);
 	else
-		gxp_mailbox_generate_device_interrupt(dci->gxp_mbx, BIT(0));
+		gxp_mailbox_generate_device_interrupt(dci->mbx, BIT(0));
 
-	return dci->gxp_mbx;
+	return dci->mbx;
 }
 
 void gxp_dci_release(struct gxp_mailbox_manager *mgr,
 		     struct gxp_virtual_device *vd, uint virt_core,
-		     struct gxp_mailbox *gxp_mbx)
+		     struct gxp_mailbox *mbx)
 {
-	gxp_mailbox_release(mgr, vd, virt_core, gxp_mbx);
+	gxp_mailbox_release(mgr, vd, virt_core, mbx);
 }
 
-int gxp_dci_execute_cmd(struct gxp_mailbox *gxp_mbx,
-			struct gxp_dci_command *cmd,
+int gxp_dci_execute_cmd(struct gxp_mailbox *mbx, struct gxp_dci_command *cmd,
 			struct gxp_dci_response *resp)
 {
-	struct gxp_dci *dci = gxp_mbx->data;
 	int ret;
 
-	ret = gcip_mailbox_send_cmd(dci->gcip_mbx, cmd, resp);
+	ret = gxp_mailbox_send_cmd(mbx, cmd, resp);
 	if (ret || !resp)
 		return ret;
 
 	return resp->retval;
 }
 
-int gxp_dci_execute_cmd_async(struct gxp_mailbox *gxp_mbx,
+int gxp_dci_execute_cmd_async(struct gxp_mailbox *mbx,
 			      struct gxp_dci_command *cmd,
 			      struct list_head *resp_queue,
 			      spinlock_t *queue_lock,
@@ -574,7 +512,6 @@ int gxp_dci_execute_cmd_async(struct gxp_mailbox *gxp_mbx,
 			      struct gxp_power_states requested_states,
 			      struct gxp_eventfd *eventfd)
 {
-	struct gxp_dci *dci = gxp_mbx->data;
 	struct gxp_dci_async_response *async_resp;
 	int ret;
 
@@ -591,10 +528,10 @@ int gxp_dci_execute_cmd_async(struct gxp_mailbox *gxp_mbx,
 	else
 		async_resp->eventfd = NULL;
 
-	gxp_pm_update_requested_power_states(gxp_mbx->gxp, off_states,
+	gxp_pm_update_requested_power_states(mbx->gxp, off_states,
 					     requested_states);
-	async_resp->async_resp = gcip_mailbox_put_cmd(
-		dci->gcip_mbx, cmd, &async_resp->resp, async_resp);
+	async_resp->async_resp =
+		gxp_mailbox_put_cmd(mbx, cmd, &async_resp->resp, async_resp);
 	if (IS_ERR(async_resp->async_resp)) {
 		ret = PTR_ERR(async_resp->async_resp);
 		goto err_free_resp;
@@ -603,7 +540,7 @@ int gxp_dci_execute_cmd_async(struct gxp_mailbox *gxp_mbx,
 	return 0;
 
 err_free_resp:
-	gxp_pm_update_requested_power_states(gxp_mbx->gxp, requested_states,
+	gxp_pm_update_requested_power_states(mbx->gxp, requested_states,
 					     off_states);
 	kfree(async_resp);
 	return ret;

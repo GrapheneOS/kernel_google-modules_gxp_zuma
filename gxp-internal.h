@@ -24,6 +24,15 @@
 
 #include "gxp-config.h"
 
+#define IS_GXP_TEST IS_ENABLED(CONFIG_GXP_TEST)
+
+enum gxp_chip_revision {
+	GXP_CHIP_A0,
+	GXP_CHIP_B0,
+	/* used when the revision is not explicitly specified */
+	GXP_CHIP_ANY,
+};
+
 /* Holds Client's TPU mailboxes info used during mapping */
 struct gxp_tpu_mbx_desc {
 	uint phys_core_list;
@@ -52,11 +61,12 @@ struct gxp_domain_pool;
 struct gxp_dma_manager;
 struct gxp_fw_data_manager;
 struct gxp_power_manager;
-struct gxp_telemetry_manager;
+struct gxp_core_telemetry_manager;
 struct gxp_thermal_manager;
 struct gxp_wakelock_manager;
 struct gxp_usage_stats;
 struct gxp_power_states;
+struct gxp_iommu_domain;
 
 struct gxp_dev {
 	struct device *dev;		 /* platform bus device */
@@ -95,8 +105,9 @@ struct gxp_dev {
 	struct gxp_dma_manager *dma_mgr;
 	struct gxp_fw_data_manager *data_mgr;
 	struct gxp_tpu_dev tpu_dev;
-	struct gxp_telemetry_manager *telemetry_mgr;
+	struct gxp_core_telemetry_manager *core_telemetry_mgr;
 	struct gxp_wakelock_manager *wakelock_mgr;
+	struct gxp_iommu_domain *default_domain;
 	/*
 	 * Pointer to GSA device for firmware authentication.
 	 * May be NULL if the chip does not support firmware authentication
@@ -164,6 +175,14 @@ struct gxp_dev {
 	 */
 	long (*handle_ioctl)(struct file *file, uint cmd, ulong arg);
 	/*
+	 * Device mmap handler for chip-dependent mmap calls.
+	 * Should return -EOPNOTSUPP when the mmap should be handled by common
+	 * device mmap handler.
+	 *
+	 * This callback is optional.
+	 */
+	int (*handle_mmap)(struct file *file, struct vm_area_struct *vma);
+	/*
 	 * Called for sending power states request.
 	 *
 	 * Return a non-zero value can fail the block wakelock acquisition.
@@ -206,6 +225,25 @@ struct gxp_dev {
 	 * This callback is optional.
 	 */
 	void (*wakelock_before_blk_off)(struct gxp_dev *gxp);
+	/*
+	 * Called in gxp_map_tpu_mbx_queue(), after the TPU mailbox buffers are mapped.
+	 *
+	 * This function is called with holding the write lock of @client->semaphore and the read
+	 * lock of @gxp->vd_semaphore.
+	 *
+	 * This callback is optional.
+	 */
+	int (*after_map_tpu_mbx_queue)(struct gxp_dev *gxp,
+				       struct gxp_client *client);
+	/*
+	 * Called in gxp_unmap_tpu_mbx_queue(), before unmapping the TPU mailbox buffers.
+	 *
+	 * This function is called with holding the write lock of @client->semaphore.
+	 *
+	 * This callback is optional.
+	 */
+	void (*before_unmap_tpu_mbx_queue)(struct gxp_dev *gxp,
+					   struct gxp_client *client);
 };
 
 /* GXP device IO functions */
@@ -246,8 +284,8 @@ static inline int gxp_acquire_rmem_resource(struct gxp_dev *gxp,
 bool gxp_is_direct_mode(struct gxp_dev *gxp);
 
 /*
- * Whether the target chip is A0.
+ * Returns the chip revision.
  */
-bool gxp_is_a0(struct gxp_dev *gxp);
+enum gxp_chip_revision gxp_get_chip_revision(struct gxp_dev *gxp);
 
 #endif /* __GXP_INTERNAL_H__ */

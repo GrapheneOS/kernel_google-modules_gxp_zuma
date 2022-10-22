@@ -27,7 +27,7 @@
  *         mapping of the dma-buf. Returns ERR_PTR on failure.
  */
 struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp,
-				   struct iommu_domain *domain, int fd,
+				   struct gxp_iommu_domain *domain, int fd,
 				   u32 flags, enum dma_data_direction dir);
 
 #endif /* __GXP_DMABUF_H__ */

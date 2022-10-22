@@ -17,13 +17,13 @@
 #define MAX_NUM_CORES 4
 #define NUM_SYSTEM_SEMAPHORES 64
 
-/* Bit masks for the status fields in the telemetry structures. */
-/* The telemetry buffers have been setup by the host. */
-#define GXP_TELEMETRY_HOST_STATUS_ENABLED (1 << 0)
-/* The telemetry buffers are being used by the device. */
-#define GXP_TELEMETRY_DEVICE_STATUS_ENABLED (1 << 0)
+/* Bit masks for the status fields in the core telemetry structures. */
+/* The core telemetry buffers have been setup by the host. */
+#define GXP_CORE_TELEMETRY_HOST_STATUS_ENABLED (1 << 0)
+/* The core telemetry buffers are being used by the device. */
+#define GXP_CORE_TELEMETRY_DEVICE_STATUS_ENABLED (1 << 0)
 /* There was an attempt to use the buffers but their content was invalid. */
-#define GXP_TELEMETRY_DEVICE_STATUS_SANITY_CHECK_FAILED (1 << 1)
+#define GXP_CORE_TELEMETRY_DEVICE_STATUS_SANITY_CHECK_FAILED (1 << 1)
 
 /* Definitions for host->device boot mode requests */
 /*
@@ -130,20 +130,20 @@ struct gxp_watchdog_descriptor {
 };
 
 /*
- * A structure describing the telemetry (logging and tracing) parameters and
- * buffers.
+ * A structure describing the core telemetry (logging and tracing) parameters
+ * and buffers.
  */
-struct gxp_telemetry_descriptor {
-	/* A struct for describing the parameters for telemetry buffers  */
-	struct telemetry_descriptor {
+struct gxp_core_telemetry_descriptor {
+	/* A struct for describing the parameters for core telemetry buffers. */
+	struct core_telemetry_descriptor {
 		/*
-		 * The telemetry status from the host's point of view. See the
-		 * top of the file for the appropriate flags.
+		 * The core telemetry status from the host's point of view. See
+		 * the top of the file for the appropriate flags.
 		 */
 		uint32_t host_status;
 		/*
-		 * The telemetry status from the device point of view. See the
-		 * top of the file for the appropriate flags.
+		 * The core telemetry status from the device point of view. See
+		 * the top of the file for the appropriate flags.
 		 */
 		uint32_t device_status;
 		/*
@@ -263,8 +263,8 @@ struct gxp_system_descriptor {
 	uint32_t app_descriptor_dev_addr[MAX_NUM_CORES];
 	/* A device address for the watchdog descriptor. */
 	uint32_t watchdog_dev_addr;
-	/* A device address for the telemetry descriptor */
-	uint32_t telemetry_dev_addr;
+	/* A device address for the core telemetry descriptor */
+	uint32_t core_telemetry_dev_addr;
 	/* A device address for the common debug dump region */
 	uint32_t debug_dump_dev_addr;
 };

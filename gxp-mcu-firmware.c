@@ -141,6 +141,7 @@ static int gxp_mcu_firmware_handshake(struct gxp_mcu_firmware *mcu_fw)
 	struct gxp_dev *gxp = mcu_fw->gxp;
 	struct gxp_mcu *mcu = container_of(mcu_fw, struct gxp_mcu, fw);
 	enum gcip_fw_flavor fw_flavor;
+	int ret;
 
 	dev_dbg(gxp->dev, "Detecting MCU firmware info...");
 	mcu_fw->fw_info.fw_build_time = 0;
@@ -162,6 +163,11 @@ static int gxp_mcu_firmware_handshake(struct gxp_mcu_firmware *mcu_fw)
 	gxp_bpm_stop(gxp, GXP_MCU_CORE_ID);
 	dev_notice(gxp->dev, "MCU Instruction read transactions: 0x%x\n",
 		   gxp_bpm_read_counter(gxp, GXP_MCU_CORE_ID, INST_BPM_OFFSET));
+
+	ret = gxp_mcu_telemetry_kci(mcu);
+	if (ret)
+		dev_warn(gxp->dev, "telemetry KCI error: %d", ret);
+
 	return 0;
 }
 
@@ -172,10 +178,21 @@ static void gxp_mcu_firmware_stop_locked(struct gxp_mcu_firmware *mcu_fw)
 	int ret;
 
 	lockdep_assert_held(&mcu_fw->lock);
+
+	gxp_lpm_enable_state(gxp, GXP_MCU_CORE_ID, LPM_PG_STATE);
+
+	/* Clear doorbell to refuse non-expected interrupts */
+	gxp_doorbell_clear(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
+
 	ret = gxp_kci_shutdown(&mcu->kci);
 	if (ret)
 		dev_warn(gxp->dev, "KCI shutdown failed: %d", ret);
-	gxp_lpm_down(gxp, GXP_MCU_CORE_ID);
+
+	if (!gxp_lpm_wait_state_eq(gxp, GXP_MCU_CORE_ID, LPM_PG_STATE))
+		dev_warn(gxp->dev,
+			 "MCU PSM transition to PS3 fails, current state: %u\n",
+			 gxp_lpm_get_state(gxp, GXP_MCU_CORE_ID));
+
 	gxp_mcu_firmware_unload_locked(mcu_fw);
 }
 
@@ -400,6 +417,8 @@ int gxp_mcu_firmware_init(struct gxp_dev *gxp, struct gxp_mcu_firmware *mcu_fw)
 
 void gxp_mcu_firmware_exit(struct gxp_mcu_firmware *mcu_fw)
 {
+	if (IS_GXP_TEST && (!mcu_fw || !mcu_fw->gxp))
+		return;
 	device_remove_group(mcu_fw->gxp->dev, &firmware_attr_group);
 }
 

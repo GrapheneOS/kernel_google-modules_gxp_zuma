@@ -12,6 +12,7 @@
 #include <linux/of_irq.h>
 #include <linux/spinlock.h>
 
+#include "gxp-config.h" /* GXP_USE_LEGACY_MAILBOX */
 #include "gxp-mailbox-driver.h"
 #include "gxp-mailbox-regs.h"
 #include "gxp-mailbox.h"
@@ -413,7 +414,7 @@ int gxp_mailbox_inc_resp_queue_head_locked(struct gxp_mailbox *mailbox, u32 inc,
 	return gxp_mailbox_inc_resp_queue_head_nolock(mailbox, inc, wrap_bit);
 }
 
-#ifdef GXP_HAS_DCI
+#if !GXP_USE_LEGACY_MAILBOX
 u32 gxp_mailbox_gcip_ops_get_cmd_queue_head(struct gcip_mailbox *mailbox)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
@@ -560,4 +561,4 @@ void gxp_mailbox_gcip_ops_after_fetch_resps(struct gcip_mailbox *mailbox,
 	if (num_resps == size)
 		gxp_mailbox_generate_device_interrupt(gxp_mbx, BIT(0));
 }
-#endif /* GXP_HAS_DCI */
+#endif /* !GXP_USE_LEGACY_MAILBOX */

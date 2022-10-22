@@ -10,8 +10,15 @@
 #include <linux/kthread.h>
 
 #include "gxp-client.h"
+#include "gxp-config.h" /* GXP_USE_LEGACY_MAILBOX */
+#include "gxp-dma.h"
 #include "gxp-internal.h"
 #include "gxp-mailbox-manager.h"
+
+#if !GXP_USE_LEGACY_MAILBOX
+#include <gcip/gcip-kci.h>
+#include <gcip/gcip-mailbox.h>
+#endif
 
 /*
  * Offset from the host mailbox interface to the device interface that needs to
@@ -52,103 +59,25 @@ enum gxp_mailbox_command_code {
 	GXP_MBOX_CODE_SUSPEND_REQUEST = 1,
 };
 
-/*
- * Basic Buffer descriptor struct for message payloads.
- * TODO(b/237908534): this will be used only in the old gxp.
- */
-struct buffer_descriptor {
-	/* Address in the device's virtual address space. */
-	u64 address;
-	/* Size in bytes. */
-	u32 size;
-	/* Flags can be used to indicate message type, etc. */
-	u32 flags;
-};
-
-/*
- * Format used for mailbox command queues.
- * TODO(b/237908534): this will be used only in the old gxp.
- */
-struct gxp_command {
-	/* Sequence number. Should match the corresponding response. */
-	u64 seq;
+enum gxp_mailbox_type {
 	/*
-	 * Identifies the type of command.
-	 * Should be a value from `gxp_mailbox_command_code`
+	 * Mailbox will utilize `gcip-mailbox.h` internally.
+	 * (Note: On `GXP_USE_LEGACY_MAILBOX`, it utilizes `gxp-mailbox-impl.h`
+	 * instead.)
+	 * Mostly will be used for handling user commands.
 	 */
-	u16 code;
+	GXP_MBOX_TYPE_GENERAL = 0,
 	/*
-	 * Priority level from 0 to 99, with 0 being the highest. Pending
-	 * commands with higher priorities will be executed before lower
-	 * priority ones.
+	 * Mailbox will utilize `gcip-kci.h` internally.
+	 * Will be used for handling kernel commands.
 	 */
-	u8 priority;
-	/*
-	 * Insert spaces to make padding explicit. This does not affect
-	 * alignment.
-	 */
-	u8 reserved[5];
-	/* Struct describing the buffer containing the message payload */
-	struct buffer_descriptor buffer_descriptor;
-};
-
-/*
- * Format used for mailbox response queues from kernel.
- * TODO(b/237908534): this will be used only in the old gxp.
- */
-struct gxp_response {
-	/* Sequence number. Should match the corresponding command. */
-	u64 seq;
-	/* The status code. Either SUCCESS or an error. */
-	u16 status;
-	/* Padding. */
-	u16 reserved;
-	/* Return value, dependent on the command this responds to. */
-	u32 retval;
-};
-
-/*
- * Wrapper struct for responses consumed by a thread other than the one which
- * sent the command.
- * TODO(b/237908534): this will be used only in the old gxp.
- */
-struct gxp_async_response {
-	struct list_head list_entry;
-	struct gxp_response resp;
-	/* TODO(b/237908534): this will be used only in the old gxp. */
-	struct delayed_work timeout_work;
-	/*
-	 * If this response times out, this pointer to the owning mailbox is
-	 * needed to delete this response from the list of pending responses.
-	 */
-	struct gxp_mailbox *mailbox;
-	/* Queue to add the response to once it is complete or timed out */
-	struct list_head *dest_queue;
-	/*
-	 * The lock that protects queue pointed to by `dest_queue`.
-	 * The mailbox code also uses this lock to protect changes to the
-	 * `dest_queue` pointer itself when processing this response.
-	 */
-	spinlock_t *dest_queue_lock;
-	/* Queue of clients to notify when this response is processed */
-	wait_queue_head_t *dest_queue_waitq;
-	/* Specified power states vote during the command execution */
-	struct gxp_power_states requested_states;
-	/* gxp_eventfd to signal when the response completes. May be NULL */
-	struct gxp_eventfd *eventfd;
+	GXP_MBOX_TYPE_KCI = 1,
 };
 
 enum gxp_response_status {
 	GXP_RESP_OK = 0,
 	GXP_RESP_WAITING = 1,
 	GXP_RESP_CANCELLED = 2,
-};
-
-/* TODO(b/237908534): this will be used only in the old gxp. */
-struct gxp_mailbox_wait_list {
-	struct list_head list;
-	struct gxp_response *resp;
-	bool is_async;
 };
 
 /* Mailbox Structures */
@@ -163,15 +92,11 @@ struct gxp_mailbox;
 
 /*
  * Defines the callback functions which are used by the mailbox.
- *
- * These callbacks will be called in this order:
- * `gxp_mailbox_alloc` -> `allocate_resources` -> `init_consume_responses_work`
- * -> ... -> `consume_responses_work` -> ...
- * `gxp_mailbox_release` -> `release_consume_responses_work` -> `release_resources`
  */
 struct gxp_mailbox_ops {
 	/*
 	 * Allocates resources such as cmd_queue and resp_queue which are used by the mailbox.
+	 * This callback will be called by the `gxp_mailbox_alloc` internally.
 	 * Following variables should be set in this callback.
 	 * - @mailbox->cmd_queue	: the pointer of the command queue.
 	 * - @mailbox->cmd_queue_size	: the size of @mailbox->cmd_queue. (the maximum number of
@@ -200,46 +125,33 @@ struct gxp_mailbox_ops {
 				  uint virt_core);
 	/*
 	 * Releases resources which are allocated by `allocate_resources`.
+	 * This callback will be called by the `gxp_mailbox_release` internally.
 	 * Context: normal.
 	 */
 	void (*release_resources)(struct gxp_mailbox *mailbox,
 				  struct gxp_virtual_device *vd,
 				  uint virt_core);
+#if !GXP_USE_LEGACY_MAILBOX
 	/*
-	 * Initializes consuming the resp_queue of the mailbox. This prepares the data which is
-	 * needed in the `consume_responses_work` callback before starting consuming. That data
-	 * should be released in the `release_consume_responses_work` callback. This function will
-	 * be called when the `gxp_mailbox_alloc` is called. (After the information of cmd_queue,
-	 * resp_queue and descriptor are written to the CSRs and before the mailbox registers to
-	 * the IRQ.)
-	 * Returns 0 if succeed.
-	 * Context: normal.
+	 * Operators which has dependency on the GCIP according to the type of mailbox.
+	 * - GXP_MBOX_TYPE_GENERAL: @gcip_ops.mbx must be defined.
+	 * - GXP_MBOX_TYPE_KCI: @gcip_ops.kci must be defined.
 	 */
-	int (*init_consume_responses_work)(struct gxp_mailbox *mailbox);
-	/*
-	 * Cleans up consuming the resp_queue of the mailbox. This releases the data which is
-	 * allocated by the `init_consume_responses_work` callback. This function will be called
-	 * when the `gxp_mailbox_release` is called. (After the mailbox unregisters from the IRQ
-	 * and before reset the mailbox hw.)
-	 * Context: normal.
-	 */
-	void (*release_consume_responses_work)(struct gxp_mailbox *mailbox);
-	/*
-	 * Consumes the resp_queue of the mailbox. This function will be called when the mailbox
-	 * IRQ is fired.
-	 * Context: in_interrupt().
-	 */
-	void (*consume_responses_work)(struct gxp_mailbox *mailbox);
+	union {
+		const struct gcip_mailbox_ops *mbx;
+		const struct gcip_kci_ops *kci;
+	} gcip_ops;
+#endif
 };
 
 struct gxp_mailbox_args {
+	enum gxp_mailbox_type type;
 	struct gxp_mailbox_ops *ops;
+	u64 queue_wrap_bit;
+	u32 cmd_elem_size;
+	u32 resp_elem_size;
 	void *data;
 };
-
-#ifndef GXP_HAS_DCI
-extern const struct gxp_mailbox_args gxp_mailbox_default_args;
-#endif
 
 #define GXP_MAILBOX_INT_BIT_COUNT 16
 
@@ -258,43 +170,52 @@ struct gxp_mailbox {
 	/* Protects to_host_poll_task while it holds a sync barrier */
 	struct mutex polling_lock;
 
-	/* TODO(b/237908534): this will be used only in the old gxp. */
-	u64 cur_seq;
 
+	u64 queue_wrap_bit; /* warp bit for both cmd and resp queue */
+
+	u32 cmd_elem_size; /* size of element of cmd queue */
+	struct gxp_coherent_buf descriptor_buf;
 	struct gxp_mailbox_descriptor *descriptor;
-	dma_addr_t descriptor_device_addr;
 
-	void *cmd_queue;
+	struct gxp_coherent_buf cmd_queue_buf;
 	u32 cmd_queue_size; /* size of cmd queue */
 	u32 cmd_queue_tail; /* offset within the cmd queue */
-	dma_addr_t cmd_queue_device_addr; /* device address for cmd queue */
 	struct mutex cmd_queue_lock; /* protects cmd_queue */
 
-	void *resp_queue;
+	u32 resp_elem_size; /* size of element of resp queue */
+	struct gxp_coherent_buf resp_queue_buf;
 	u32 resp_queue_size; /* size of resp queue */
 	u32 resp_queue_head; /* offset within the resp queue */
-	dma_addr_t resp_queue_device_addr; /* device address for resp queue */
 	struct mutex resp_queue_lock; /* protects resp_queue */
 
-	/*
-	 * add to this list if a command needs to wait for a response
-	 * TODO(b/237908534): this will be used only in the old gxp.
-	 */
-	struct list_head wait_list;
 	/* commands which need to wait for responses will be added to the wait_list */
 	struct mutex wait_list_lock; /* protects wait_list */
-	/*
-	 * queue for waiting for the wait_list to be consumed
-	 * TODO(b/237908534): this will be used only in the old gxp.
-	 */
-	wait_queue_head_t wait_list_waitq;
 	/* to create our own realtime worker for handling responses */
 	struct kthread_worker response_worker;
 	struct task_struct *response_thread;
 	struct kthread_work response_work;
 
+	enum gxp_mailbox_type type;
 	struct gxp_mailbox_ops *ops;
 	void *data; /* private data */
+
+#if GXP_USE_LEGACY_MAILBOX
+	u64 cur_seq;
+	/* add to this list if a command needs to wait for a response */
+	struct list_head wait_list;
+	/* queue for waiting for the wait_list to be consumed */
+	wait_queue_head_t wait_list_waitq;
+#else /* !GXP_USE_LEGACY_MAILBOX */
+	/*
+	 * Implementation of the mailbox according to the type.
+	 * - GXP_MBOX_TYPE_GENERAL: @gcip_mbx will be allocated.
+	 * - GXP_MBOX_TYPE_KCI: @gcip_kci will be allocated.
+	 */
+	union {
+		struct gcip_mailbox *gcip_mbx;
+		struct gcip_kci *gcip_kci;
+	} mbx_impl;
+#endif /* GXP_USE_LEGACY_MAILBOX */
 };
 
 /* Mailbox APIs */
@@ -303,38 +224,25 @@ extern int gxp_mbx_timeout;
 #define MAILBOX_TIMEOUT (gxp_mbx_timeout * GXP_TIME_DELAY_FACTOR)
 
 /*
- * The following functions all require their caller have locked gxp->vd_semaphore for reading. To
- * communicate with the firmware, the platform device should use the callbacks of the mailbox
- * manager instead of calling these functions directly. The purpose of it is to abstract the usage
- * of the mailbox and avoid effort of fixing the codes outside of the mailbox when the interface of
- * these functions are updated. (Except `gxp_mailbox_{register,unregister}_interrupt_handler`
- * functions.)
+ * The following functions are low-level interfaces of the mailbox. The actual work of it will be
+ * implemented from the high-level interfaces such as DCI, UCI and KCI via the callbacks defined
+ * above. Therefore, you may not call these functions directly.
+ * (Except `gxp_mailbox_{register,unregister}_interrupt_handler` functions.)
+ *
+ * If the mailbox interacts with virtual cores according to the implementation, the caller must
+ * have locked gxp->vd_semaphore for reading.
  */
 
 struct gxp_mailbox *gxp_mailbox_alloc(struct gxp_mailbox_manager *mgr,
 				      struct gxp_virtual_device *vd,
 				      uint virt_core, u8 core_id,
 				      const struct gxp_mailbox_args *args);
+
 void gxp_mailbox_release(struct gxp_mailbox_manager *mgr,
 			 struct gxp_virtual_device *vd, uint virt_core,
 			 struct gxp_mailbox *mailbox);
 
 void gxp_mailbox_reset(struct gxp_mailbox *mailbox);
-
-#ifndef GXP_HAS_DCI
-void gxp_mailbox_init(struct gxp_mailbox_manager *mgr);
-
-int gxp_mailbox_execute_cmd(struct gxp_mailbox *mailbox,
-			    struct gxp_command *cmd, struct gxp_response *resp);
-
-int gxp_mailbox_execute_cmd_async(struct gxp_mailbox *mailbox,
-				  struct gxp_command *cmd,
-				  struct list_head *resp_queue,
-				  spinlock_t *queue_lock,
-				  wait_queue_head_t *queue_waitq,
-				  struct gxp_power_states power_states,
-				  struct gxp_eventfd *eventfd);
-#endif
 
 int gxp_mailbox_register_interrupt_handler(struct gxp_mailbox *mailbox,
 					   u32 int_bit,
@@ -342,5 +250,24 @@ int gxp_mailbox_register_interrupt_handler(struct gxp_mailbox *mailbox,
 
 int gxp_mailbox_unregister_interrupt_handler(struct gxp_mailbox *mailbox,
 					     u32 int_bit);
+
+#if !GXP_USE_LEGACY_MAILBOX
+/*
+ * Executes command synchronously. If @resp is not NULL, the response will be returned to it.
+ * See the `gcip_mailbox_send_cmd` of `gcip-mailbox.h` or `gcip_kci_send_cmd` of `gcip-kci.h`
+ * for detail.
+ */
+int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp);
+
+/*
+ * Executes command asynchronously. The response will be written to @resp.
+ * See the `gcip_mailbox_put_cmd` function of `gcip-mailbox.h` for detail.
+ *
+ * Note: KCI doesn't support asynchronous requests.
+ */
+struct gcip_mailbox_async_response *
+gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp,
+		    void *data);
+#endif /* !GXP_USE_LEGACY_MAILBOX */
 
 #endif /* __GXP_MAILBOX_H__ */

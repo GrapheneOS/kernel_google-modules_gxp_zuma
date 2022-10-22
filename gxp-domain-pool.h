@@ -20,7 +20,7 @@ struct gxp_domain_pool {
 	 * dynamic domain allocation using the IOMMU API directly.
 	 */
 	unsigned int size;
-	struct iommu_domain **array;	/* Array holding the pointers to pre-allocated domains. */
+	struct gxp_iommu_domain **array; /* Array holding the pointers to pre-allocated domains. */
 	struct gxp_dev *gxp;	/* The gxp device used for logging warnings/errors. */
 };
 
@@ -42,10 +42,10 @@ int gxp_domain_pool_init(struct gxp_dev *gxp, struct gxp_domain_pool *pool,
  * Allocates a domain from the pool
  * returns NULL on error.
  */
-struct iommu_domain *gxp_domain_pool_alloc(struct gxp_domain_pool *pool);
+struct gxp_iommu_domain *gxp_domain_pool_alloc(struct gxp_domain_pool *pool);
 
 /* Releases a domain from the pool. */
-void gxp_domain_pool_free(struct gxp_domain_pool *pool, struct iommu_domain *domain);
+void gxp_domain_pool_free(struct gxp_domain_pool *pool, struct gxp_iommu_domain *domain);
 
 /* Cleans up all resources used by the domain pool. */
 void gxp_domain_pool_destroy(struct gxp_domain_pool *pool);

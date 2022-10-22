@@ -56,7 +56,7 @@ static void destroy_mapping(struct gxp_mapping *mapping)
 }
 
 struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
-				       struct iommu_domain *domain,
+				       struct gxp_iommu_domain *domain,
 				       u64 user_address, size_t size, u32 flags,
 				       enum dma_data_direction dir)
 {

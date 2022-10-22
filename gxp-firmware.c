@@ -18,6 +18,7 @@
 
 #include "gxp-bpm.h"
 #include "gxp-config.h"
+#include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
 #include "gxp-doorbell.h"
 #include "gxp-firmware.h"
@@ -27,7 +28,6 @@
 #include "gxp-mailbox.h"
 #include "gxp-notification.h"
 #include "gxp-pm.h"
-#include "gxp-telemetry.h"
 #include "gxp-vd.h"
 
 #if IS_ENABLED(CONFIG_GXP_TEST)
@@ -642,6 +642,9 @@ void gxp_fw_destroy(struct gxp_dev *gxp)
 	uint core;
 	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
 
+	if (IS_GXP_TEST && !mgr)
+		return;
+
 	device_remove_group(gxp->dev, &gxp_firmware_attr_group);
 
 	for (core = 0; core < GXP_NUM_CORES; core++) {
@@ -699,6 +702,24 @@ err_authenticate_firmware:
 	return ret;
 }
 
+/* TODO(b/253464747): Refactor these interrupts handlers and gxp-doorbell.c. */
+static void enable_core_interrupts(struct gxp_dev *gxp, uint core)
+{
+	/*
+	 * GXP_CORE_REG_COMMON_INT_MASK_0 is handled in doorbell module, so we
+	 * don't need to enable it here.
+	 */
+	gxp_write_32(gxp, GXP_CORE_REG_COMMON_INT_MASK_1(core), 0xffffffff);
+	gxp_write_32(gxp, GXP_CORE_REG_DEDICATED_INT_MASK(core), 0xffffffff);
+}
+
+static void disable_core_interrupts(struct gxp_dev *gxp, uint core)
+{
+	gxp_write_32(gxp, GXP_CORE_REG_COMMON_INT_MASK_0(core), 0);
+	gxp_write_32(gxp, GXP_CORE_REG_COMMON_INT_MASK_1(core), 0);
+	gxp_write_32(gxp, GXP_CORE_REG_DEDICATED_INT_MASK(core), 0);
+}
+
 static int gxp_firmware_setup(struct gxp_dev *gxp, uint core)
 {
 	int ret = 0;
@@ -724,8 +745,10 @@ static int gxp_firmware_setup(struct gxp_dev *gxp, uint core)
 	if (ret) {
 		dev_err(gxp->dev, "Failed to power up core %u\n", core);
 		gxp_firmware_unload(gxp, core);
+		return ret;
 	}
 
+	enable_core_interrupts(gxp, core);
 	return ret;
 }
 
@@ -782,10 +805,10 @@ static int gxp_firmware_finish_startup(struct gxp_dev *gxp,
 		gxp_notification_register_handler(
 			gxp, core, HOST_NOTIF_DEBUG_DUMP_READY, work);
 
-	work = gxp_telemetry_get_notification_handler(gxp, core);
+	work = gxp_core_telemetry_get_notification_handler(gxp, core);
 	if (work)
 		gxp_notification_register_handler(
-			gxp, core, HOST_NOTIF_TELEMETRY_STATUS, work);
+			gxp, core, HOST_NOTIF_CORE_TELEMETRY_STATUS, work);
 
 	mgr->firmware_running |= BIT(core);
 
@@ -810,7 +833,7 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 	gxp_notification_unregister_handler(gxp, core,
 					    HOST_NOTIF_DEBUG_DUMP_READY);
 	gxp_notification_unregister_handler(gxp, core,
-					    HOST_NOTIF_TELEMETRY_STATUS);
+					    HOST_NOTIF_CORE_TELEMETRY_STATUS);
 
 	if (gxp->mailbox_mgr->release_mailbox) {
 		gxp->mailbox_mgr->release_mailbox(
@@ -819,8 +842,14 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 		dev_notice(gxp->dev, "Mailbox %u released\n", core);
 	}
 
-	if (vd->state == GXP_VD_RUNNING)
+	if (vd->state == GXP_VD_RUNNING) {
+		/*
+		 * Disable interrupts to prevent cores from being woken up
+		 * unexpectedly.
+		 */
+		disable_core_interrupts(gxp, core);
 		gxp_pm_core_off(gxp, core);
+	}
 	gxp_firmware_unload(gxp, core);
 }
 
