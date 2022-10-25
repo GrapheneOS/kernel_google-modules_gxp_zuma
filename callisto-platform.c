@@ -512,7 +512,6 @@ static int gxp_platform_remove(struct platform_device *pdev)
 
 static const struct of_device_id gxp_of_match[] = {
 	{ .compatible = "google,gxp", },
-	{ .compatible = "google,gxp-gs301", },
 	{ .compatible = "google,gxp-zuma", },
 	{ /* end of list */ },
 };

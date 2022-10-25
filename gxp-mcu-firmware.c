@@ -13,6 +13,7 @@
 #include <linux/resource.h>
 #include <linux/string.h>
 
+#include <gcip/gcip-common-image-header.h>
 #include <gcip/gcip-image-config.h>
 
 #include "gxp-bpm.h"
@@ -26,7 +27,8 @@
 #include "gxp-pm.h"
 #include "gxp-wakelock.h"
 
-static const char signature_magic_string[] = "DSPF";
+/* Value of Magic field in the common header "DSPF' as a 32-bit LE int */
+#define GXP_FW_MAGIC 0x46505344
 
 /*
  * Programs instruction remap CSRs.
@@ -46,13 +48,13 @@ static void program_iremap_csr(struct gxp_dev *gxp,
 /*
  * Check whether the firmware file is signed or not.
  */
-static bool is_signed_firmware(const struct firmware *fw)
+static bool is_signed_firmware(const struct firmware *fw,
+			       const struct gcip_common_image_header *hdr)
 {
-	if (fw->size < MCU_SIGNATURE_SIZE)
+	if (fw->size < GCIP_FW_HEADER_SIZE)
 		return false;
 
-	if (strncmp(fw->data + MCU_SIGNATURE_HEADER_OFFSET,
-		    signature_magic_string, strlen(signature_magic_string)))
+	if (hdr->common.magic != GXP_FW_MAGIC)
 		return false;
 
 	return true;
@@ -69,6 +71,7 @@ static int gxp_mcu_firmware_load_locked(struct gxp_mcu_firmware *mcu_fw,
 	struct device *dev = gxp->dev;
 	struct gcip_image_config *imgcfg;
 	const struct firmware *fw;
+	struct gcip_common_image_header *hdr;
 	size_t offset, size;
 
 	lockdep_assert_held(&mcu_fw->lock);
@@ -78,11 +81,13 @@ static int gxp_mcu_firmware_load_locked(struct gxp_mcu_firmware *mcu_fw,
 		return ret;
 	}
 
-	mcu_fw->is_signed = is_signed_firmware(fw);
+	hdr = (struct gcip_common_image_header *)fw->data;
+
+	mcu_fw->is_signed = is_signed_firmware(fw, hdr);
 
 	if (mcu_fw->is_signed) {
-		offset = MCU_SIGNATURE_SIZE;
-		size = fw->size - MCU_SIGNATURE_SIZE;
+		offset = GCIP_FW_HEADER_SIZE;
+		size = fw->size - GCIP_FW_HEADER_SIZE;
 	} else {
 		offset = 0;
 		size = fw->size;
@@ -96,8 +101,12 @@ static int gxp_mcu_firmware_load_locked(struct gxp_mcu_firmware *mcu_fw,
 	}
 
 	if (mcu_fw->is_signed) {
-		imgcfg = (struct gcip_image_config *)(fw->data +
-						      MCU_IMAGE_CONFIG_OFFSET);
+		imgcfg = get_image_config_from_hdr(hdr);
+		if (!imgcfg) {
+			dev_err(dev, "Unsupported image header generation");
+			ret = -EINVAL;
+			goto out_release_firmware;
+		}
 		ret = gcip_image_config_parse(&mcu_fw->cfg_parser, imgcfg);
 		if (ret)
 			dev_err(dev, "image config parsing failed: %d", ret);

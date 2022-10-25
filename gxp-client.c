@@ -100,7 +100,6 @@ int gxp_client_allocate_virtual_device(struct gxp_client *client,
 			ret);
 		goto error;
 	}
-	up_write(&gxp->vd_semaphore);
 
 	if (client->has_block_wakelock) {
 		ret = gxp_vd_block_ready(vd);
@@ -109,6 +108,7 @@ int gxp_client_allocate_virtual_device(struct gxp_client *client,
 			goto error;
 		}
 	}
+	up_write(&gxp->vd_semaphore);
 
 	client->vd = vd;
 	return 0;

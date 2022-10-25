@@ -9,21 +9,16 @@
 #include <linux/platform_data/sscoredump.h>
 #endif
 
-#include <linux/acpi.h>
-#include <linux/cred.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/genalloc.h>
-#include <linux/kthread.h>
-#include <linux/log2.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
-#include <linux/pm_runtime.h>
 #include <linux/sched.h>
+#include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/uidgid.h>
 #if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
@@ -56,6 +51,8 @@
 #else
 #include "gxp-dci.h"
 #endif
+
+static struct gxp_dev *gxp_debug_pointer;
 
 /* Caller needs to hold client->semaphore */
 static bool check_client_has_available_vd(struct gxp_client *client,
@@ -1856,6 +1853,8 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		goto err_before_remove;
 	}
 
+	gxp_debug_pointer = gxp;
+
 	dev_info(dev, "Probe finished");
 	return 0;
 
@@ -1902,6 +1901,8 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 	gxp_dma_exit(gxp);
 	put_device(gxp->tpu_dev.dev);
 	gxp_pm_destroy(gxp);
+
+	gxp_debug_pointer = NULL;
 
 	return 0;
 }

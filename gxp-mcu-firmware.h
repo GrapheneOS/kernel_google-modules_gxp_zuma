@@ -15,11 +15,6 @@
 
 #include "gxp-internal.h"
 
-#define MCU_SIGNATURE_SIZE 0x1000
-#define MCU_SIGNATURE_HEADER_OFFSET 0x400
-/* The offset from top of the signed MCU firmware to the image config data. */
-#define MCU_IMAGE_CONFIG_OFFSET 0x560
-
 struct gxp_mcu_firmware {
 	struct gxp_dev *gxp;
 	/* resource for MCU firmware image */
