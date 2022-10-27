@@ -25,12 +25,8 @@ static inline bool is_telemetry_enabled(struct gxp_dev *gxp, uint core, u8 type)
 	return device_status & GXP_CORE_TELEMETRY_DEVICE_STATUS_ENABLED;
 }
 
-static void telemetry_status_notification_work(struct work_struct *work)
+void gxp_core_telemetry_status_notify(struct gxp_dev *gxp, uint core)
 {
-	struct gxp_core_telemetry_work *telem_work =
-		container_of(work, struct gxp_core_telemetry_work, work);
-	struct gxp_dev *gxp = telem_work->gxp;
-	uint core = telem_work->core;
 	struct gxp_core_telemetry_manager *mgr = gxp->core_telemetry_mgr;
 
 	/* Wake any threads waiting on a core telemetry disable ACK */
@@ -48,6 +44,16 @@ static void telemetry_status_notification_work(struct work_struct *work)
 		eventfd_signal(mgr->tracing_efd, 1);
 
 	mutex_unlock(&mgr->lock);
+}
+
+static void telemetry_status_notification_work(struct work_struct *work)
+{
+	struct gxp_core_telemetry_work *telem_work =
+		container_of(work, struct gxp_core_telemetry_work, work);
+	struct gxp_dev *gxp = telem_work->gxp;
+	uint core = telem_work->core;
+
+	gxp_core_telemetry_status_notify(gxp, core);
 }
 
 int gxp_core_telemetry_init(struct gxp_dev *gxp)

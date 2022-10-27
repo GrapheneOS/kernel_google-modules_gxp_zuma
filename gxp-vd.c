@@ -248,8 +248,9 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 			goto error_unassign_cores;
 		}
 	}
+	/* TODO(b/255706432): Adopt vd->slice_index after the firmware supports this. */
 	err = gxp_dma_map_core_resources(gxp, vd->domain, vd->core_list,
-					 vd->slice_index);
+					 /*slice_index=*/0);
 	if (err)
 		goto error_destroy_fw_data;
 	err = map_core_telemetry_buffers(gxp, vd, vd->core_list);

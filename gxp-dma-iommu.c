@@ -125,6 +125,48 @@ static int sysmmu_fault_handler(struct iommu_fault *fault, void *token)
 	return -EAGAIN;
 }
 
+#if GXP_HAS_LAP
+
+/* No need to map CSRs when local access path exists. */
+
+#define gxp_map_csrs(...) 0
+#define gxp_unmap_csrs(...)
+
+#else /* !GXP_HAS_LAP */
+
+#define SYNC_BARRIERS_SIZE 0x100000
+
+static int gxp_map_csrs(struct gxp_dev *gxp, struct iommu_domain *domain,
+			struct gxp_mapped_resource *regs)
+{
+	int ret = iommu_map(domain, GXP_IOVA_AURORA_TOP, gxp->regs.paddr,
+			    gxp->regs.size, IOMMU_READ | IOMMU_WRITE);
+	if (ret)
+		return ret;
+	/*
+	 * Firmware expects to access the sync barriers at a separate
+	 * address, lower than the rest of the AURORA_TOP registers.
+	 */
+	ret = iommu_map(domain, GXP_IOVA_SYNC_BARRIERS,
+			gxp->regs.paddr + GXP_IOVA_SYNC_BARRIERS,
+			SYNC_BARRIERS_SIZE, IOMMU_READ | IOMMU_WRITE);
+	if (ret) {
+		iommu_unmap(domain, GXP_IOVA_AURORA_TOP, gxp->regs.size);
+		return ret;
+	}
+
+	return 0;
+}
+
+static void gxp_unmap_csrs(struct gxp_dev *gxp, struct iommu_domain *domain,
+			   struct gxp_mapped_resource *regs)
+{
+	iommu_unmap(domain, GXP_IOVA_SYNC_BARRIERS, SYNC_BARRIERS_SIZE);
+	iommu_unmap(domain, GXP_IOVA_AURORA_TOP, gxp->regs.size);
+}
+
+#endif /* GXP_HAS_LAP */
+
 /* Maps the shared buffer region to @domain. */
 static int gxp_map_core_shared_buffer(struct gxp_dev *gxp,
 				      struct iommu_domain *domain,
@@ -244,8 +286,6 @@ void gxp_dma_exit(struct gxp_dev *gxp)
 			"Failed to unregister SysMMU fault handler\n");
 }
 
-#define SYNC_BARRIERS_SIZE 0x100000
-#define SYNC_BARRIERS_TOP_OFFSET 0x100000
 #define EXT_TPU_MBX_SIZE 0x2000
 
 void gxp_dma_init_default_resources(struct gxp_dev *gxp)
@@ -257,7 +297,6 @@ void gxp_dma_init_default_resources(struct gxp_dev *gxp)
 		gxp->mbx[i].daddr = GXP_IOVA_MAILBOX(i);
 	for (core = 0; core < GXP_NUM_CORES; core++)
 		gxp->fwbufs[core].daddr = GXP_IOVA_FIRMWARE(core);
-	gxp->regs.daddr = GXP_IOVA_AURORA_TOP;
 	gxp->fwdatabuf.daddr = GXP_IOVA_FW_DATA;
 }
 
@@ -289,19 +328,10 @@ int gxp_dma_map_core_resources(struct gxp_dev *gxp,
 	uint i;
 	struct iommu_domain *domain = gdomain->domain;
 
-	ret = iommu_map(domain, gxp->regs.daddr, gxp->regs.paddr,
-			gxp->regs.size, IOMMU_READ | IOMMU_WRITE);
+	ret = gxp_map_csrs(gxp, domain, &gxp->regs);
 	if (ret)
 		goto err;
-	/*
-	 * Firmware expects to access the sync barriers at a separate
-	 * address, lower than the rest of the AURORA_TOP registers.
-	 */
-	ret = iommu_map(domain, GXP_IOVA_SYNC_BARRIERS,
-			gxp->regs.paddr + SYNC_BARRIERS_TOP_OFFSET,
-			SYNC_BARRIERS_SIZE, IOMMU_READ | IOMMU_WRITE);
-	if (ret)
-		goto err;
+
 	for (i = 0; i < GXP_NUM_CORES; i++) {
 		if (!(BIT(i) & core_list))
 			continue;
@@ -385,8 +415,7 @@ void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
 			continue;
 		iommu_unmap(domain, gxp->mbx[i].daddr, gxp->mbx[i].size);
 	}
-	iommu_unmap(domain, GXP_IOVA_SYNC_BARRIERS, SYNC_BARRIERS_SIZE);
-	iommu_unmap(domain, gxp->regs.daddr, gxp->regs.size);
+	gxp_unmap_csrs(gxp, domain, &gxp->regs);
 }
 
 static inline struct sg_table *alloc_sgt_for_buffer(void *ptr, size_t size,

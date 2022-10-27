@@ -80,12 +80,10 @@ void gxp_client_destroy(struct gxp_client *client);
  */
 int gxp_client_allocate_virtual_device(struct gxp_client *client, uint core_count);
 /**
- * gxp_client_acquire_block_wakelock() - Acquires a block wakelock and requests
- * power votes.
+ * gxp_client_acquire_block_wakelock() - Acquires a block wakelock.
  *
- * @client: The client to acquire wakelock and request power votes.
+ * @client: The client to acquire wakelock.
  * @acquired_wakelock: True if block wakelock has been acquired by this client.
- * @requested_states: The requested power states.
  *
  * The caller must have locked client->semaphore.
  *
@@ -94,8 +92,7 @@ int gxp_client_allocate_virtual_device(struct gxp_client *client, uint core_coun
  * * Otherwise  - Errno returned by block wakelock acquisition
  */
 int gxp_client_acquire_block_wakelock(struct gxp_client *client,
-				      bool *acquired_wakelock,
-				      struct gxp_power_states requested_states);
+				      bool *acquired_wakelock);
 /**
  * gxp_client_release_block_wakelock() - Releases the holded block wakelock and
  * revokes the power votes.
@@ -106,6 +103,10 @@ void gxp_client_release_block_wakelock(struct gxp_client *client);
 /**
  * gxp_client_acquire_vd_wakelock() - Acquires a VD wakelock for the current
  * virtual device to start the virtual device or resume it if it's suspended.
+ * Also the client can request the power votes tied with the acquired wakelock.
+ *
+ * @client: The client to acquire wakelock and request power votes.
+ * @requested_states: The requested power states.
  *
  * The caller must have locked client->semaphore.
  *
@@ -114,7 +115,8 @@ void gxp_client_release_block_wakelock(struct gxp_client *client);
  * * -EINVAL    - No holded block wakelock
  * * -ENODEV    - VD state is unavailable
  */
-int gxp_client_acquire_vd_wakelock(struct gxp_client *client);
+int gxp_client_acquire_vd_wakelock(struct gxp_client *client,
+				   struct gxp_power_states requested_states);
 /**
  * gxp_client_release_vd_wakelock() - Releases the holded VD wakelock to suspend
  * the current virtual device.

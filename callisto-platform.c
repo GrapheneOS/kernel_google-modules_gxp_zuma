@@ -342,8 +342,10 @@ static int callisto_platform_after_vd_block_ready(struct gxp_dev *gxp,
 		operation |= KCI_ALLOCATE_VMBOX_OP_LINK_OFFLOAD_VMBOX;
 
 	pasid = gxp_iommu_aux_get_pasid(gxp, vd->domain);
-	ret = gxp_kci_allocate_vmbox(kci, pasid, vd->num_cores, vd->slice_index,
-				     vd->tpu_client_id, operation);
+	/* TODO(b/255706432): Adopt vd->slice_index after the firmware supports this. */
+	ret = gxp_kci_allocate_vmbox(kci, pasid, vd->num_cores,
+				     /*slice_index=*/0, vd->tpu_client_id,
+				     operation);
 	if (ret) {
 		if (ret != GCIP_KCI_ERROR_UNIMPLEMENTED) {
 			dev_err(gxp->dev,
