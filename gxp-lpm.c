@@ -32,7 +32,7 @@
 		return i != 0;                                                 \
 	} while (0)
 
-void gxp_lpm_enable_state(struct gxp_dev *gxp, uint psm, uint state)
+void gxp_lpm_enable_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state)
 {
 	uint offset = LPM_REG_ENABLE_STATE_0 + (LPM_STATE_TABLE_SIZE * state);
 
@@ -49,7 +49,7 @@ void gxp_lpm_enable_state(struct gxp_dev *gxp, uint psm, uint state)
 	lpm_write_32_psm(gxp, psm, offset, 0x1);
 }
 
-bool gxp_lpm_is_initialized(struct gxp_dev *gxp, uint psm)
+bool gxp_lpm_is_initialized(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 {
 	u32 status = lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET);
 
@@ -63,7 +63,7 @@ bool gxp_lpm_is_initialized(struct gxp_dev *gxp, uint psm)
 	return false;
 }
 
-bool gxp_lpm_is_powered(struct gxp_dev *gxp, uint psm)
+bool gxp_lpm_is_powered(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 {
 	u32 status = lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET);
 	u32 state;
@@ -74,14 +74,14 @@ bool gxp_lpm_is_powered(struct gxp_dev *gxp, uint psm)
 	return state == LPM_ACTIVE_STATE || state == LPM_CG_STATE;
 }
 
-uint gxp_lpm_get_state(struct gxp_dev *gxp, uint psm)
+uint gxp_lpm_get_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 {
 	u32 status = lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET);
 
 	return status & PSM_CURR_STATE_MASK;
 }
 
-static int set_state_internal(struct gxp_dev *gxp, uint psm, uint target_state)
+static int set_state_internal(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint target_state)
 {
 	u32 val;
 	int i = 10000;
@@ -109,7 +109,7 @@ static int set_state_internal(struct gxp_dev *gxp, uint psm, uint target_state)
 	return 0;
 }
 
-int gxp_lpm_set_state(struct gxp_dev *gxp, uint psm, uint target_state,
+int gxp_lpm_set_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint target_state,
 		      bool verbose)
 {
 	uint curr_state = gxp_lpm_get_state(gxp, psm);
@@ -146,13 +146,13 @@ int gxp_lpm_set_state(struct gxp_dev *gxp, uint psm, uint target_state,
 	return 0;
 }
 
-static int psm_enable(struct gxp_dev *gxp, uint psm)
+static int psm_enable(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 {
 	int i = 10000;
 
 	/* Return early if LPM is already initialized */
 	if (gxp_lpm_is_initialized(gxp, psm)) {
-		if (psm != LPM_TOP_PSM) {
+		if (psm != LPM_PSM_TOP) {
 			/* Ensure core is in PS3 */
 			return gxp_lpm_set_state(gxp, psm, LPM_PG_STATE,
 						 /*verbose=*/true);
@@ -183,7 +183,7 @@ static int psm_enable(struct gxp_dev *gxp, uint psm)
 void gxp_lpm_init(struct gxp_dev *gxp)
 {
 	/* Enable Top PSM */
-	if (psm_enable(gxp, LPM_TOP_PSM))
+	if (psm_enable(gxp, LPM_PSM_TOP))
 		dev_err(gxp->dev, "Timed out when enabling Top PSM!\n");
 }
 
@@ -193,8 +193,8 @@ void gxp_lpm_destroy(struct gxp_dev *gxp)
 	dev_dbg(gxp->dev, "Kicking Top PSM out of ACG\n");
 
 	/* Disable all low-power states for TOP */
-	lpm_write_32_psm(gxp, LPM_TOP_PSM, LPM_REG_ENABLE_STATE_1, 0x0);
-	lpm_write_32_psm(gxp, LPM_TOP_PSM, LPM_REG_ENABLE_STATE_2, 0x0);
+	lpm_write_32_psm(gxp, LPM_PSM_TOP, LPM_REG_ENABLE_STATE_1, 0x0);
+	lpm_write_32_psm(gxp, LPM_PSM_TOP, LPM_REG_ENABLE_STATE_2, 0x0);
 }
 
 int gxp_lpm_up(struct gxp_dev *gxp, uint core)
@@ -203,7 +203,7 @@ int gxp_lpm_up(struct gxp_dev *gxp, uint core)
 	gxp_doorbell_clear(gxp, CORE_WAKEUP_DOORBELL(core));
 
 	/* Enable core PSM */
-	if (psm_enable(gxp, core)) {
+	if (psm_enable(gxp, CORE_TO_PSM(core))) {
 		dev_err(gxp->dev, "Timed out when enabling Core%u PSM!\n",
 			core);
 		return -ETIMEDOUT;
@@ -211,7 +211,7 @@ int gxp_lpm_up(struct gxp_dev *gxp, uint core)
 
 	/* Enable PS1 (Clk Gated). Only required for core PSMs. */
 	if (core < GXP_NUM_CORES)
-		gxp_lpm_enable_state(gxp, core, LPM_CG_STATE);
+		gxp_lpm_enable_state(gxp, CORE_TO_PSM(core), LPM_CG_STATE);
 
 	gxp_bpm_start(gxp, core);
 
@@ -223,7 +223,7 @@ void gxp_lpm_down(struct gxp_dev *gxp, uint core)
 	if (gxp_lpm_get_state(gxp, core) == LPM_PG_STATE)
 		return;
 	/* Enable PS3 (Pwr Gated) */
-	gxp_lpm_enable_state(gxp, core, LPM_PG_STATE);
+	gxp_lpm_enable_state(gxp, CORE_TO_PSM(core), LPM_PG_STATE);
 
 	/* Set wakeup doorbell to trigger an automatic transition to PS3 */
 	gxp_doorbell_enable_for_core(gxp, CORE_WAKEUP_DOORBELL(core), core);
@@ -238,17 +238,17 @@ void gxp_lpm_down(struct gxp_dev *gxp, uint core)
 	gxp_doorbell_clear(gxp, CORE_WAKEUP_DOORBELL(core));
 
 	/* Ensure core is in PS3 */
-	gxp_lpm_set_state(gxp, core, LPM_PG_STATE, /*verbose=*/true);
+	gxp_lpm_set_state(gxp, CORE_TO_PSM(core), LPM_PG_STATE, /*verbose=*/true);
 }
 
-bool gxp_lpm_wait_state_ne(struct gxp_dev *gxp, uint psm, uint state)
+bool gxp_lpm_wait_state_ne(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state)
 {
 	uint lpm_state;
 
 	gxp_lpm_wait_until(lpm_state, lpm_state != state);
 }
 
-bool gxp_lpm_wait_state_eq(struct gxp_dev *gxp, uint psm, uint state)
+bool gxp_lpm_wait_state_eq(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state)
 {
 	uint lpm_state;
 

@@ -157,8 +157,8 @@ static int gxp_dci_mailbox_manager_wait_async_resp(struct gxp_client *client,
 	 * handler (which may reference the `gxp_dci_async_response`) has
 	 * been able to exit cleanly.
 	 */
-	gcip_mailbox_cancel_async_resp_timeout(resp_ptr->async_resp);
-	gcip_mailbox_release_async_resp(resp_ptr->async_resp);
+	gcip_mailbox_cancel_awaiter_timeout(resp_ptr->awaiter);
+	gcip_mailbox_release_awaiter(resp_ptr->awaiter);
 
 	return 0;
 }
@@ -181,7 +181,7 @@ static void gxp_dci_mailbox_manager_release_unconsumed_async_resps(
 					  &vd->mailbox_resp_queues[i].queue,
 					  list_entry) {
 			list_del(&cur->list_entry);
-			gcip_mailbox_release_async_resp(cur->async_resp);
+			gcip_mailbox_release_awaiter(cur->awaiter);
 		}
 		spin_unlock_irqrestore(&vd->mailbox_resp_queues[i].lock, flags);
 	}
@@ -257,12 +257,12 @@ static void gxp_dci_set_resp_elem_status(struct gcip_mailbox *mailbox,
 	elem->status = status;
 }
 
-static void gxp_dci_handle_async_resp_arrived(
-	struct gcip_mailbox *mailbox,
-	struct gcip_mailbox_async_response *gcip_async_resp)
+static void
+gxp_dci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
+			       struct gcip_mailbox_resp_awaiter *awaiter)
 {
 	struct gxp_mailbox *mbx = mailbox->data;
-	struct gxp_dci_async_response *async_resp = gcip_async_resp->data;
+	struct gxp_dci_async_response *async_resp = awaiter->data;
 	unsigned long flags;
 
 	gxp_pm_update_requested_power_states(
@@ -289,12 +289,12 @@ static void gxp_dci_handle_async_resp_arrived(
 	spin_unlock_irqrestore(async_resp->dest_queue_lock, flags);
 }
 
-static void gxp_dci_handle_async_resp_timedout(
-	struct gcip_mailbox *mailbox,
-	struct gcip_mailbox_async_response *gcip_async_resp)
+static void
+gxp_dci_handle_awaiter_timedout(struct gcip_mailbox *mailbox,
+				struct gcip_mailbox_resp_awaiter *awaiter)
 {
 	struct gxp_mailbox *mbx = mailbox->data;
-	struct gxp_dci_async_response *async_resp = gcip_async_resp->data;
+	struct gxp_dci_async_response *async_resp = awaiter->data;
 	struct gxp_dci_response *resp = &async_resp->resp;
 	unsigned long flags;
 
@@ -326,11 +326,10 @@ static void gxp_dci_handle_async_resp_timedout(
 	}
 }
 
-static void
-gxp_dci_flush_async_resp(struct gcip_mailbox *mailbox,
-			 struct gcip_mailbox_async_response *gcip_async_resp)
+static void gxp_dci_flush_awaiter(struct gcip_mailbox *mailbox,
+				  struct gcip_mailbox_resp_awaiter *awaiter)
 {
-	struct gxp_dci_async_response *async_resp = gcip_async_resp->data;
+	struct gxp_dci_async_response *async_resp = awaiter->data;
 	unsigned long flags;
 
 	spin_lock_irqsave(async_resp->dest_queue_lock, flags);
@@ -338,7 +337,7 @@ gxp_dci_flush_async_resp(struct gcip_mailbox *mailbox,
 	spin_unlock_irqrestore(async_resp->dest_queue_lock, flags);
 }
 
-static void gxp_dci_release_async_resp_data(void *data)
+static void gxp_dci_release_awaiter_data(void *data)
 {
 	struct gxp_dci_async_response *async_resp = data;
 
@@ -370,10 +369,10 @@ static const struct gcip_mailbox_ops gxp_dci_gcip_mbx_ops = {
 		gxp_mailbox_gcip_ops_wait_for_cmd_queue_not_full,
 	.after_enqueue_cmd = gxp_mailbox_gcip_ops_after_enqueue_cmd,
 	.after_fetch_resps = gxp_mailbox_gcip_ops_after_fetch_resps,
-	.handle_async_resp_arrived = gxp_dci_handle_async_resp_arrived,
-	.handle_async_resp_timedout = gxp_dci_handle_async_resp_timedout,
-	.flush_async_resp = gxp_dci_flush_async_resp,
-	.release_async_resp_data = gxp_dci_release_async_resp_data,
+	.handle_awaiter_arrived = gxp_dci_handle_awaiter_arrived,
+	.handle_awaiter_timedout = gxp_dci_handle_awaiter_timedout,
+	.flush_awaiter = gxp_dci_flush_awaiter,
+	.release_awaiter_data = gxp_dci_release_awaiter_data,
 };
 
 static int gxp_dci_allocate_resources(struct gxp_mailbox *mailbox,
@@ -530,10 +529,10 @@ int gxp_dci_execute_cmd_async(struct gxp_mailbox *mbx,
 
 	gxp_pm_update_requested_power_states(mbx->gxp, off_states,
 					     requested_states);
-	async_resp->async_resp =
+	async_resp->awaiter =
 		gxp_mailbox_put_cmd(mbx, cmd, &async_resp->resp, async_resp);
-	if (IS_ERR(async_resp->async_resp)) {
-		ret = PTR_ERR(async_resp->async_resp);
+	if (IS_ERR(async_resp->awaiter)) {
+		ret = PTR_ERR(async_resp->awaiter);
 		goto err_free_resp;
 	}
 

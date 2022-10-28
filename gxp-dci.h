@@ -81,7 +81,7 @@ struct gxp_dci_async_response {
 	/* gxp_eventfd to signal when the response completes. May be NULL */
 	struct gxp_eventfd *eventfd;
 	/* Handles arrival, timeout of async response. */
-	struct gcip_mailbox_async_response *async_resp;
+	struct gcip_mailbox_resp_awaiter *awaiter;
 };
 
 enum gxp_dci_response_status {

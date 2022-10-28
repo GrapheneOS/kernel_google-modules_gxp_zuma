@@ -8,8 +8,6 @@
 #ifndef __CALLISTO_CSRS_H__
 #define __CALLISTO_CSRS_H__
 
-#include "lpm.h" /* LPM_MCU_PSM */
-
 /* TODO(b/232083805): Update values in this file. Also remove unused fields. */
 
 #define GXP_REG_DOORBELLS_SET_WRITEMASK 0x1
@@ -56,11 +54,7 @@ enum gxp_csrs {
 #define GXP_REG_ETM_PWRCTL_CORE_RESET_SHIFT	16
 
 /* helpers for calculating core CSRs offsets */
-/*
- * Set MCU ID (an enum) to PSM index so we don't need to implement an extra
- * "CORE_TO_PSM" macro for converting from core IDs to PSM indexes.
- */
-#define GXP_MCU_CORE_ID LPM_MCU_PSM
+#define GXP_MCU_CORE_ID GXP_NUM_CORES
 #define GXP_CORE_0_BASE GXP_REG_CORE_0_INST_BPM
 #define GXP_CORE_SIZE (GXP_REG_CORE_1_INST_BPM - GXP_REG_CORE_0_INST_BPM)
 #define GXP_CORE_REG(core, off) (GXP_CORE_0_BASE + GXP_CORE_SIZE * core + (off))
@@ -84,7 +78,7 @@ enum gxp_csrs {
 	GXP_CORE_MCU_REG(core, 0x4010, 0x4020)
 #define GXP_CORE_REG_COMMON_INT_MASK_1(core)                                   \
 	GXP_CORE_MCU_REG(core, 0x4014, 0x4024)
-#define GXP_CORE_REG_DEDICATED_INT_MASK(core)                                   \
+#define GXP_CORE_REG_DEDICATED_INT_MASK(core)                                  \
 	GXP_CORE_MCU_REG(core, 0x401c, 0x4028)
 #define GXP_CORE_REG_ETM_PWRCTL(core) GXP_CORE_REG(core, 0xB020)
 

@@ -387,7 +387,7 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 		 */
 		for (core = 0; core < GXP_NUM_CORES; core++) {
 			if (gxp->core_to_vd[core] == vd) {
-				lpm_state = gxp_lpm_get_state(gxp, core);
+				lpm_state = gxp_lpm_get_state(gxp, CORE_TO_PSM(core));
 				if (lpm_state != LPM_PG_STATE)
 					hold_core_in_reset(gxp, core);
 			}
@@ -428,7 +428,7 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 	 */
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (gxp->core_to_vd[core] == vd) {
-			if (!gxp_lpm_wait_state_ne(gxp, core, LPM_ACTIVE_STATE)) {
+			if (!gxp_lpm_wait_state_ne(gxp, CORE_TO_PSM(core), LPM_ACTIVE_STATE)) {
 				vd->state = GXP_VD_UNAVAILABLE;
 				failed_cores |= BIT(core);
 				hold_core_in_reset(gxp, core);
@@ -451,7 +451,7 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (gxp->core_to_vd[core] == vd) {
 			if (!(failed_cores & BIT(core))) {
-				if (!gxp_lpm_wait_state_eq(gxp, core,
+				if (!gxp_lpm_wait_state_eq(gxp, CORE_TO_PSM(core),
 							   LPM_PG_STATE)) {
 					boot_state = gxp_firmware_get_boot_mode(
 							gxp, core);
@@ -466,7 +466,7 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 					}
 				} else {
 					/* Re-set PS1 as the default low power state. */
-					gxp_lpm_enable_state(gxp, core,
+					gxp_lpm_enable_state(gxp, CORE_TO_PSM(core),
 							     LPM_CG_STATE);
 				}
 			}
@@ -543,7 +543,7 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 			 * Power on the core by explicitly switching its PSM to
 			 * PS0 (LPM_ACTIVE_STATE).
 			 */
-			gxp_lpm_set_state(gxp, core, LPM_ACTIVE_STATE,
+			gxp_lpm_set_state(gxp, CORE_TO_PSM(core), LPM_ACTIVE_STATE,
 					  /*verbose=*/false);
 		}
 	}

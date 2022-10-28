@@ -10,6 +10,7 @@
 
 #include <linux/types.h>
 
+#include "gxp-config.h"
 #include "gxp.h"
 
 enum lpm_psm_csrs {
@@ -67,40 +68,40 @@ void gxp_lpm_down(struct gxp_dev *gxp, uint core);
  * Return whether the specified PSM is initialized.
  * PSM0-PSM3 are for core0-core3, PSM4 is the TOP LPM.
  */
-bool gxp_lpm_is_initialized(struct gxp_dev *gxp, uint psm);
+bool gxp_lpm_is_initialized(struct gxp_dev *gxp, enum gxp_lpm_psm psm);
 
 /*
  * Return whether the specified PSM is powered.
  */
-bool gxp_lpm_is_powered(struct gxp_dev *gxp, uint psm);
+bool gxp_lpm_is_powered(struct gxp_dev *gxp, enum gxp_lpm_psm psm);
 
 /*
  * Wait for the specified @psm to be in any state other than @state
  * Return whether the waiting is successful or the timeout occurs.
  */
-bool gxp_lpm_wait_state_ne(struct gxp_dev *gxp, uint psm, uint state);
+bool gxp_lpm_wait_state_ne(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state);
 
 /*
  * Wait for the specified @psm to be in the specified @state
  * Return whether the waiting is successful or the timeout occurs.
  */
-bool gxp_lpm_wait_state_eq(struct gxp_dev *gxp, uint psm, uint state);
+bool gxp_lpm_wait_state_eq(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state);
 
 /*
  * Force a state transition on the specified PSM.
  */
-int gxp_lpm_set_state(struct gxp_dev *gxp, uint psm, uint target_state,
+int gxp_lpm_set_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint target_state,
 		      bool verbose);
 
 /*
  * Get current LPM state of the specified PSM.
  */
-uint gxp_lpm_get_state(struct gxp_dev *gxp, uint psm);
+uint gxp_lpm_get_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm);
 
 /*
  * Enable a state on the specified PSM.
  */
-void gxp_lpm_enable_state(struct gxp_dev *gxp, uint psm, uint state);
+void gxp_lpm_enable_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state);
 
 static inline u32 lpm_read_32(struct gxp_dev *gxp, uint reg_offset)
 {
@@ -116,7 +117,7 @@ static inline void lpm_write_32(struct gxp_dev *gxp, uint reg_offset, u32 value)
 	gxp_write_32(gxp, offset, value);
 }
 
-static inline u32 lpm_read_32_psm(struct gxp_dev *gxp, uint psm,
+static inline u32 lpm_read_32_psm(struct gxp_dev *gxp, enum gxp_lpm_psm psm,
 				  uint reg_offset)
 {
 	uint offset =
@@ -125,7 +126,7 @@ static inline u32 lpm_read_32_psm(struct gxp_dev *gxp, uint psm,
 	return gxp_read_32(gxp, offset);
 }
 
-static inline void lpm_write_32_psm(struct gxp_dev *gxp, uint psm,
+static inline void lpm_write_32_psm(struct gxp_dev *gxp, enum gxp_lpm_psm psm,
 				    uint reg_offset, u32 value)
 {
 	uint offset =
