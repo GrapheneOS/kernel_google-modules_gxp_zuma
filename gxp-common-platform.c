@@ -1164,11 +1164,8 @@ static int gxp_acquire_wake_lock(struct gxp_client *client,
 
 	/* Acquire a BLOCK wakelock if requested */
 	if (ibuf.components_to_wake & WAKELOCK_BLOCK) {
-		power_states.power = aur_state_array[ibuf.gxp_power_state];
-		power_states.memory = aur_memory_state_array[ibuf.memory_power_state];
-		power_states.low_clkmux = requested_low_clkmux;
 		ret = gxp_client_acquire_block_wakelock(
-			client, &acquired_block_wakelock, power_states);
+			client, &acquired_block_wakelock);
 		if (ret) {
 			dev_err(gxp->dev,
 				"Failed to acquire BLOCK wakelock for client (ret=%d)\n",
@@ -1179,7 +1176,10 @@ static int gxp_acquire_wake_lock(struct gxp_client *client,
 
 	/* Acquire a VIRTUAL_DEVICE wakelock if requested */
 	if (ibuf.components_to_wake & WAKELOCK_VIRTUAL_DEVICE) {
-		ret = gxp_client_acquire_vd_wakelock(client);
+		power_states.power = aur_state_array[ibuf.gxp_power_state];
+		power_states.memory = aur_memory_state_array[ibuf.memory_power_state];
+		power_states.low_clkmux = requested_low_clkmux;
+		ret = gxp_client_acquire_vd_wakelock(client, power_states);
 		if (ret) {
 			dev_err(gxp->dev,
 				"Failed to acquire VIRTUAL_DEVICE wakelock for client (ret=%d)\n",

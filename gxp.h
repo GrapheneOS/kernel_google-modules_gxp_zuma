@@ -764,14 +764,15 @@ struct gxp_acquire_wakelock_ioctl {
  * Acquire a wakelock and request minimum power states for the DSP subsystem
  * and the memory interface.
  *
- * Upon a successful return, the specified components will be powered on and if
- * they were not already running at the specified or higher power states,
- * requests will have been sent to transition both the DSP subsystem and
- * memory interface to the specified states.
+ * Upon a successful return, the specified components will be powered on.
+ * If the specified components contain VIRTUAL_DEVICE, and they were not
+ * already running at the specified or higher power states, requests will
+ * have been sent to transition both the DSP subsystem and memory interface
+ * to the specified states.
  *
  * If the same client invokes this IOCTL for the same component more than once
  * without a corresponding call to `GXP_RELEASE_WAKE_LOCK` in between, the
- * second call will update requested power states, but have no other effects.
+ * second call may update requested power states, but have no other effects.
  * No additional call to `GXP_RELEASE_WAKE_LOCK` will be required.
  *
  * If a client attempts to acquire a VIRTUAL_DEVICE wakelock and there are

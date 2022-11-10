@@ -13,6 +13,7 @@
 #include <gcip/gcip-telemetry.h>
 
 #include "gxp-config.h"
+#include "gxp-core-telemetry.h"
 #include "gxp-dma.h"
 #include "gxp-kci.h"
 #include "gxp-lpm.h"
@@ -92,7 +93,23 @@ gxp_reverse_kci_handle_response(struct gcip_kci *kci,
 
 	if (resp->code <= GCIP_RKCI_CHIP_CODE_LAST) {
 		/* TODO(b/239638427): Handle reverse kci */
-		dev_dbg(gxp->dev, "Reverse KCI received: %#x", resp->code);
+		switch (resp->code) {
+		case GXP_RKCI_CODE_CORE_TELEMETRY_READ: {
+			uint core;
+			uint core_list = (uint)(resp->status);
+
+			for (core = 0; core < GXP_NUM_CORES; core++) {
+				if (BIT(core) & core_list) {
+					gxp_core_telemetry_status_notify(gxp,
+									 core);
+				}
+			}
+			break;
+		}
+		default:
+			dev_dbg(gxp->dev, "Reverse KCI received: %#x",
+				resp->code);
+		}
 		return;
 	}
 

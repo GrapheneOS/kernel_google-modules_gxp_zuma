@@ -46,6 +46,13 @@
  */
 #define KCI_ALLOCATE_VMBOX_OFFLOAD_TYPE_TPU 0
 
+/*
+ * Chip specific reverse KCI request codes.
+ */
+enum gxp_reverse_rkci_code {
+	GXP_RKCI_CODE_CORE_TELEMETRY_READ = GCIP_RKCI_CHIP_CODE_FIRST + 4,
+};
+
 struct gxp_mcu;
 
 struct gxp_kci {

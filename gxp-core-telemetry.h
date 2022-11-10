@@ -135,4 +135,13 @@ int gxp_core_telemetry_unregister_eventfd(struct gxp_dev *gxp, u8 type);
 struct work_struct *
 gxp_core_telemetry_get_notification_handler(struct gxp_dev *gxp, uint core);
 
+/**
+ * gxp_core_telemetry_status_notify() - Checks the telemetry status of the
+ *                                      specified core and signals the eventfd.
+ * @gxp: The GXP device to obtain the handler for
+ * @core: The physical core number to obtain the handler
+ *
+ */
+void gxp_core_telemetry_status_notify(struct gxp_dev *gxp, uint core);
+
 #endif /* __GXP_CORE_TELEMETRY_H__ */
