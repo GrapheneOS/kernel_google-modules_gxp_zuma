@@ -549,6 +549,21 @@ int gxp_kci_release_vmbox(struct gxp_kci *gkci, u8 client_id)
 	return ret;
 }
 
+int gxp_kci_notify_throttling(struct gxp_kci *gkci, u32 rate)
+{
+	struct gcip_kci_command_element cmd = {
+		.code = GCIP_KCI_CODE_NOTIFY_THROTTLING,
+		.dma = {
+			.flags = rate,
+		},
+	};
+
+	if (!gkci || !gkci->mbx)
+		return -ENODEV;
+
+	return gxp_kci_send_cmd(gkci->mbx, &cmd);
+}
+
 int gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,
 			  struct gcip_kci_response_element *rkci_cmd)
 {

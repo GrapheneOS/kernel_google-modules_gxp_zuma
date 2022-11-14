@@ -32,6 +32,12 @@ void thermal_cdev_update(struct thermal_cooling_device *cdev);
 #include "gxp-thermal.h"
 #include "gxp-lpm.h"
 
+#if GXP_HAS_MCU
+#include "gxp-kci.h"
+#include "gxp-mcu.h"
+#include "gxp-wakelock.h"
+#endif /* GXP_HAS_MCU */
+
 /*
  * Value comes from internal measurement
  * b/229623553
@@ -66,7 +72,8 @@ static int gxp_set_cur_state(struct thermal_cooling_device *cdev,
 {
 	int ret = 0;
 	struct gxp_thermal_manager *thermal = cdev->devdata;
-	struct device *dev = thermal->gxp->dev;
+	struct gxp_dev *gxp = thermal->gxp;
+	struct device *dev = gxp->dev;
 	unsigned long pwr_state;
 
 	if (cooling_state >= thermal->gxp_num_states) {
@@ -83,15 +90,35 @@ static int gxp_set_cur_state(struct thermal_cooling_device *cdev,
 		goto out;
 	}
 	pwr_state = state_pwr_map[cooling_state].state;
-	dev_dbg(dev, "setting policy %ld\n", pwr_state);
+	dev_dbg(dev, "setting state %ld\n", pwr_state);
 	if (cooling_state != thermal->cooling_state) {
-		ret = exynos_acpm_set_policy(AUR_DVFS_DOMAIN,
-			pwr_state < aur_power_state2rate[AUR_UUD] ?
-			aur_power_state2rate[AUR_UUD] :
-			pwr_state);
+		if (!gxp_is_direct_mode(gxp)) {
+#if GXP_HAS_MCU
+			struct gxp_mcu *mcu = gxp_mcu_of(gxp);
+
+			ret = gxp_wakelock_acquire_if_powered(mcu->gxp);
+			if (ret) {
+				dev_err(dev,
+					"Can't acquire wakelock when powered down: %d\n",
+					ret);
+				goto out;
+			}
+
+			ret = gxp_kci_notify_throttling(&mcu->kci, pwr_state);
+			gxp_wakelock_release(gxp);
+#endif /* GXP_HAS_MCU */
+		} else {
+			ret = gxp_pm_blk_set_rate_acpm(
+				gxp,
+				max(pwr_state,
+				    (unsigned long)
+					    aur_power_state2rate[AUR_UUD]));
+		}
+
 		if (ret) {
-			dev_err(dev,
-				"error setting gxp cooling policy: %d\n", ret);
+			dev_err(dev, "error setting gxp cooling state: %d\n",
+				ret);
+			ret = -ENODEV;
 			goto out;
 		}
 		thermal->cooling_state = cooling_state;

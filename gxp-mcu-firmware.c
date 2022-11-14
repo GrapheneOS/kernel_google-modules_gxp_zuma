@@ -177,6 +177,15 @@ static int gxp_mcu_firmware_handshake(struct gxp_mcu_firmware *mcu_fw)
 	if (ret)
 		dev_warn(gxp->dev, "telemetry KCI error: %d", ret);
 
+	if (gxp->power_mgr->thermal_limit &&
+	    gxp->power_mgr->thermal_limit != aur_power_state2rate[AUR_NOM]) {
+		ret = gxp_kci_notify_throttling(&mcu->kci,
+						gxp->power_mgr->thermal_limit);
+		if (ret)
+			dev_warn(gxp->dev,
+				 "error setting gxp cooling state: %d\n", ret);
+	}
+
 	return 0;
 }
 
