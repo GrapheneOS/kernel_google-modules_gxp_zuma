@@ -17,7 +17,7 @@ static const uint aur_power_state2rate[] = {
 	178000,		/* AUR_UUD */
 	373000,		/* AUR_SUD */
 	750000,		/* AUR_UD */
-	1160000,	/* AUR_NOM */
+	1155000,	/* AUR_NOM */
 	178000,		/* AUR_READY */
 	268000,		/* AUR_UUD_PLUS */
 	560000,		/* AUR_SUD_PLUS */

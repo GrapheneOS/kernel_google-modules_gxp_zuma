@@ -191,6 +191,13 @@ int gxp_kci_map_mcu_trace_buffer(struct gcip_telemetry_kci_args *args);
 int gxp_kci_shutdown(struct gxp_kci *gkci);
 
 /*
+ * Set the GXP thermal throttling.
+ *
+ * Returns the code of response, or a negative errno on error.
+ */
+int gxp_kci_notify_throttling(struct gxp_kci *gkci, u32 rate);
+
+/*
  * Allocates a virtual mailbox to communicate with MCU firmware. According to @operation, it links
  * the TPU virtual mailbox of @tpu_client_id to the DSP client of @client_id to offload TPU
  * commands from the firmware side.

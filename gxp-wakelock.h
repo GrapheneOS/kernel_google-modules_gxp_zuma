@@ -42,6 +42,21 @@ int gxp_wakelock_init(struct gxp_dev *gxp);
 int gxp_wakelock_acquire(struct gxp_dev *gxp);
 
 /**
+ * gxp_wakelock_acquire_if_powered() - Increment the GXP wakelock counter if
+ *                                     the counter is nonzero.
+ * @gxp: The GXP device to increment the wakelock counter for
+ *
+ * Similar to gxp_wakelock_acquire, but only increment the wakelock counter if
+ * the counter is nonzero.
+ *
+ * Return:
+ * * 0       - Success
+ * * -EAGAIN - Wakelock counter is zero
+ * * Other   - Error returned by gxp_wakelock_acquire
+ */
+int gxp_wakelock_acquire_if_powered(struct gxp_dev *gxp);
+
+/**
  * gxp_wakelock_release() - Decrement the GXP wakelock counter
  * @gxp: The GXP device to decrement the wakelock counter for
  *

@@ -8,6 +8,7 @@
 #include <linux/dma-buf.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
+#include <linux/version.h>
 
 #include "gxp-dma.h"
 #include "gxp-dmabuf.h"
@@ -114,3 +115,7 @@ err_attach:
 	dma_buf_put(dmabuf);
 	return ERR_PTR(ret);
 }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
+MODULE_IMPORT_NS(DMA_BUF);
+#endif
