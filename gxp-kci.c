@@ -90,6 +90,7 @@ gxp_reverse_kci_handle_response(struct gcip_kci *kci,
 {
 	struct gxp_mailbox *mbx = gcip_kci_get_data(kci);
 	struct gxp_dev *gxp = mbx->gxp;
+	struct gxp_kci *gxp_kci = mbx->data;
 
 	if (resp->code <= GCIP_RKCI_CHIP_CODE_LAST) {
 		/* TODO(b/239638427): Handle reverse kci */
@@ -104,6 +105,7 @@ gxp_reverse_kci_handle_response(struct gcip_kci *kci,
 									 core);
 				}
 			}
+			gxp_kci_resp_rkci_ack(gxp_kci, resp);
 			break;
 		}
 		default:
@@ -564,16 +566,18 @@ int gxp_kci_notify_throttling(struct gxp_kci *gkci, u32 rate)
 	return gxp_kci_send_cmd(gkci->mbx, &cmd);
 }
 
-int gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,
-			  struct gcip_kci_response_element *rkci_cmd)
+void gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,
+			   struct gcip_kci_response_element *rkci_cmd)
 {
 	struct gcip_kci_command_element cmd = {
 		.seq = rkci_cmd->seq,
 		.code = GCIP_KCI_CODE_RKCI_ACK,
 	};
+	struct gxp_dev *gxp = gkci->gxp;
+	int ret;
 
-	if (!gkci || !gkci->mbx)
-		return -ENODEV;
-
-	return gxp_kci_send_cmd(gkci->mbx, &cmd);
+	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
+	if (ret)
+		dev_err(gxp->dev, "failed to send rkci resp %llu (%d)",
+			rkci_cmd->seq, ret);
 }

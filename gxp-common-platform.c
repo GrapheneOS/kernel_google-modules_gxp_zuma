@@ -21,9 +21,6 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/uidgid.h>
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
-#include <soc/google/tpu-ext.h>
-#endif
 
 #include "gxp-client.h"
 #include "gxp-config.h"
@@ -45,6 +42,11 @@
 #include "gxp-vd.h"
 #include "gxp-wakelock.h"
 #include "gxp.h"
+
+#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
+#define HAS_TPU_EXT
+#include <soc/google/tpu-ext.h>
+#endif
 
 #if GXP_USE_LEGACY_MAILBOX
 #include "gxp-mailbox-impl.h"
@@ -857,22 +859,112 @@ static int gxp_disable_core_telemetry(struct gxp_client *client,
 	return ret;
 }
 
+#ifdef HAS_TPU_EXT
+
 /*
- * TODO(b/249440369): As the DSP KD will not get involved in the mapping the TPU mailbox buffer
- * from Zuma, remove the corresponding logic from this function. Note that, we still have to do
- * it from here in the direct mode. Also, we have to investigate whether it will be still proper
- * to call the `ALLOCATE_EXTERNAL_MAILBOX` TPU external command from here in MCU mode.
+ * Map TPU mailboxes to IOVA.
+ * This function will be called only when the device is in the direct mode.
  */
-static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
-				 struct gxp_tpu_mbx_queue_ioctl __user *argp)
+static int map_tpu_mbx_queue(struct gxp_client *client,
+			     struct gxp_tpu_mbx_queue_ioctl *ibuf)
 {
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
 	struct gxp_dev *gxp = client->gxp;
 	struct edgetpu_ext_mailbox_info *mbx_info;
-	struct gxp_tpu_mbx_queue_ioctl ibuf;
 	struct edgetpu_ext_client_info gxp_tpu_info;
 	u32 phys_core_list = 0;
 	u32 core_count;
+	int ret = 0;
+
+	if (client->mbx_desc.mapped) {
+		dev_err(gxp->dev, "Mappings already exist for TPU mailboxes");
+		return -EBUSY;
+	}
+
+	down_read(&gxp->vd_semaphore);
+
+	core_count = client->vd->num_cores;
+	phys_core_list = gxp_vd_phys_core_list(client->vd);
+
+	mbx_info = kmalloc(
+		sizeof(struct edgetpu_ext_mailbox_info) +
+			core_count *
+				sizeof(struct edgetpu_ext_mailbox_descriptor),
+		GFP_KERNEL);
+	if (!mbx_info) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	/*
+	 * TODO(b/249440369): Pass @client->tpu_file file pointer. For the backward compatibility,
+	 * keep sending @ibuf->tpu_fd here.
+	 */
+	gxp_tpu_info.tpu_fd = ibuf->tpu_fd;
+	gxp_tpu_info.mbox_map = phys_core_list;
+	gxp_tpu_info.attr =
+		(struct edgetpu_mailbox_attr __user *)ibuf->attr_ptr;
+	ret = edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
+				     EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
+				     ALLOCATE_EXTERNAL_MAILBOX, &gxp_tpu_info,
+				     mbx_info);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to allocate ext TPU mailboxes %d",
+			ret);
+		goto out_free;
+	}
+
+	/* Align queue size to page size for iommu map. */
+	mbx_info->cmdq_size = ALIGN(mbx_info->cmdq_size, PAGE_SIZE);
+	mbx_info->respq_size = ALIGN(mbx_info->respq_size, PAGE_SIZE);
+
+	ret = gxp_dma_map_tpu_buffer(gxp, client->vd->domain, phys_core_list,
+				     mbx_info);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to map TPU mailbox buffer %d", ret);
+		goto err_free_tpu_mbx;
+	}
+	client->mbx_desc.phys_core_list = phys_core_list;
+	client->mbx_desc.cmdq_size = mbx_info->cmdq_size;
+	client->mbx_desc.respq_size = mbx_info->respq_size;
+	client->mbx_desc.mapped = true;
+
+	goto out_free;
+
+err_free_tpu_mbx:
+	edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
+			       EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
+			       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info, NULL);
+out_free:
+	kfree(mbx_info);
+out:
+	up_read(&gxp->vd_semaphore);
+
+	return ret;
+}
+
+/*
+ * Unmap TPU mailboxes from IOVA.
+ * This function will be called only when the device is in the direct mode.
+ */
+static void unmap_tpu_mbx_queue(struct gxp_client *client,
+				struct gxp_tpu_mbx_queue_ioctl *ibuf)
+{
+	struct gxp_dev *gxp = client->gxp;
+	struct edgetpu_ext_client_info gxp_tpu_info;
+
+	gxp_dma_unmap_tpu_buffer(gxp, client->vd->domain, client->mbx_desc);
+	gxp_tpu_info.tpu_fd = ibuf->tpu_fd;
+	edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
+			       EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
+			       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info, NULL);
+	client->mbx_desc.mapped = false;
+}
+
+static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
+				 struct gxp_tpu_mbx_queue_ioctl __user *argp)
+{
+	struct gxp_dev *gxp = client->gxp;
+	struct gxp_tpu_mbx_queue_ioctl ibuf;
 	int ret = 0;
 
 	if (!gxp->tpu_dev.mbx_paddr) {
@@ -891,110 +983,50 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 		goto out_unlock_client_semaphore;
 	}
 
-	down_read(&gxp->vd_semaphore);
-
-	core_count = client->vd->num_cores;
-	phys_core_list = gxp_vd_phys_core_list(client->vd);
-
-	mbx_info =
-		kmalloc(sizeof(struct edgetpu_ext_mailbox_info) + core_count *
-			sizeof(struct edgetpu_ext_mailbox_descriptor),
-			GFP_KERNEL);
-	if (!mbx_info) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	if (client->tpu_file) {
-		dev_err(gxp->dev, "Mappings already exist for TPU mailboxes");
-		ret = -EBUSY;
-		goto out_free;
-	}
-
-	gxp_tpu_info.tpu_fd = ibuf.tpu_fd;
-	gxp_tpu_info.mbox_map = phys_core_list;
-	gxp_tpu_info.attr = (struct edgetpu_mailbox_attr __user *)ibuf.attr_ptr;
-	ret = edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
-				     EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
-				     ALLOCATE_EXTERNAL_MAILBOX, &gxp_tpu_info,
-				     mbx_info);
-	if (ret) {
-		dev_err(gxp->dev, "Failed to allocate ext TPU mailboxes %d",
-			ret);
-		goto out_free;
-	}
 	/*
 	 * If someone is attacking us through this interface -
-	 * it's possible that ibuf.tpu_fd here is already a different file from
-	 * the one passed to edgetpu_ext_driver_cmd() (if the runtime closes the
-	 * FD and opens another file exactly between the TPU driver call above
-	 * and the fget below).
-	 * But the worst consequence of this attack is we fget() ourselves (GXP
-	 * FD), which only leads to memory leak (because the file object has a
-	 * reference to itself). The race is also hard to hit so we don't insist
-	 * on preventing it.
+	 * it's possible that ibuf.tpu_fd here is already a different file from the one passed to
+	 * edgetpu_ext_driver_cmd() (if the runtime closes the FD and opens another file exactly
+	 * between the TPU driver call above and the fget below).
+	 *
+	 * However, from Zuma, we pass the file pointer directly to the TPU KD and it will check
+	 * whether that file is true TPU device file or not. Therefore, our code is safe from the
+	 * fd swapping attack.
 	 */
 	client->tpu_file = fget(ibuf.tpu_fd);
 	if (!client->tpu_file) {
-		edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
-				       EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
-				       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info,
-				       NULL);
 		ret = -EINVAL;
-		goto out_free;
+		goto out_unlock_client_semaphore;
 	}
-	/* Align queue size to page size for iommu map. */
-	mbx_info->cmdq_size = ALIGN(mbx_info->cmdq_size, PAGE_SIZE);
-	mbx_info->respq_size = ALIGN(mbx_info->respq_size, PAGE_SIZE);
 
-	ret = gxp_dma_map_tpu_buffer(gxp, client->vd->domain,
-				     phys_core_list, mbx_info);
-	if (ret) {
-		dev_err(gxp->dev, "Failed to map TPU mailbox buffer %d", ret);
-		goto err_fput;
+	/* TODO(b/237624453): remove '|| 1' once the MCU supports DSP->TPU interop */
+	if (gxp_is_direct_mode(gxp) || 1) {
+		ret = map_tpu_mbx_queue(client, &ibuf);
+		if (ret)
+			goto out_unlock_client_semaphore;
 	}
-	client->mbx_desc.phys_core_list = phys_core_list;
-	client->mbx_desc.cmdq_size = mbx_info->cmdq_size;
-	client->mbx_desc.respq_size = mbx_info->respq_size;
 
 	if (gxp->after_map_tpu_mbx_queue) {
 		ret = gxp->after_map_tpu_mbx_queue(gxp, client);
 		if (ret)
-			goto err_unmap;
+			goto err_unmap_tpu_mbx_queue;
 	}
 
-	goto out_free;
+	goto out_unlock_client_semaphore;
 
-err_unmap:
-	gxp_dma_unmap_tpu_buffer(gxp, client->vd->domain, client->mbx_desc);
-err_fput:
-	fput(client->tpu_file);
-	client->tpu_file = NULL;
-	edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
-			       EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
-			       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info, NULL);
-out_free:
-	kfree(mbx_info);
-
-out:
-	up_read(&gxp->vd_semaphore);
+err_unmap_tpu_mbx_queue:
+	unmap_tpu_mbx_queue(client, &ibuf);
 out_unlock_client_semaphore:
 	up_write(&client->semaphore);
 
 	return ret;
-#else
-	return -ENODEV;
-#endif
 }
 
-/* TODO(b/249440369): The same as the `gxp_map_tpu_mbx_queue` function. */
 static int gxp_unmap_tpu_mbx_queue(struct gxp_client *client,
 				   struct gxp_tpu_mbx_queue_ioctl __user *argp)
 {
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_tpu_mbx_queue_ioctl ibuf;
-	struct edgetpu_ext_client_info gxp_tpu_info;
 	int ret = 0;
 
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
@@ -1018,12 +1050,10 @@ static int gxp_unmap_tpu_mbx_queue(struct gxp_client *client,
 	if (gxp->before_unmap_tpu_mbx_queue)
 		gxp->before_unmap_tpu_mbx_queue(gxp, client);
 
-	gxp_dma_unmap_tpu_buffer(gxp, client->vd->domain, client->mbx_desc);
+	/* TODO(b/237624453): remove '|| 1' once the MCU supports DSP->TPU interop */
+	if (gxp_is_direct_mode(gxp) || 1)
+		unmap_tpu_mbx_queue(client, &ibuf);
 
-	gxp_tpu_info.tpu_fd = ibuf.tpu_fd;
-	edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
-			       EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
-			       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info, NULL);
 	fput(client->tpu_file);
 	client->tpu_file = NULL;
 
@@ -1031,10 +1061,14 @@ out:
 	up_write(&client->semaphore);
 
 	return ret;
-#else
-	return -ENODEV;
-#endif
 }
+
+#else /* HAS_TPU_EXT */
+
+#define gxp_map_tpu_mbx_queue(...) (-ENODEV)
+#define gxp_unmap_tpu_mbx_queue(...) (-ENODEV)
+
+#endif /* HAS_TPU_EXT */
 
 static int gxp_register_core_telemetry_eventfd(
 	struct gxp_client *client,

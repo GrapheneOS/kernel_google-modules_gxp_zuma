@@ -11,18 +11,7 @@
 
 #include "gxp-internal.h"
 
-#define AUR_DVFS_MIN_RATE 178000
-static const uint aur_power_state2rate[] = {
-	0,		/* AUR_OFF */
-	178000,		/* AUR_UUD */
-	373000,		/* AUR_SUD */
-	750000,		/* AUR_UD */
-	1155000,	/* AUR_NOM */
-	178000,		/* AUR_READY */
-	268000,		/* AUR_UUD_PLUS */
-	560000,		/* AUR_SUD_PLUS */
-	975000,		/* AUR_UD_PLUS */
-};
+#define AUR_DVFS_MIN_RATE AUR_UUD_RATE
 
 enum aur_power_state {
 	AUR_OFF = 0,
@@ -34,6 +23,18 @@ enum aur_power_state {
 	AUR_UUD_PLUS = 6,
 	AUR_SUD_PLUS = 7,
 	AUR_UD_PLUS = 8,
+};
+
+static const uint aur_power_state2rate[] = {
+	AUR_OFF_RATE,
+	AUR_UUD_RATE,
+	AUR_SUD_RATE,
+	AUR_UD_RATE,
+	AUR_NOM_RATE,
+	AUR_READY_RATE,
+	AUR_UUD_PLUS_RATE,
+	AUR_SUD_PLUS_RATE,
+	AUR_UD_PLUS_RATE,
 };
 
 enum aur_memory_power_state {

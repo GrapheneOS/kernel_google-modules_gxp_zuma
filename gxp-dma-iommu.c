@@ -213,6 +213,7 @@ struct gxp_iommu_domain *gxp_iommu_get_domain_for_dev(struct gxp_dev *gxp)
 			devm_kfree(gxp->dev, gdomain);
 			return ERR_PTR(-ENOMEM);
 		}
+		gxp->default_domain = gdomain;
 	}
 
 	return gdomain;

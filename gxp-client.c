@@ -30,6 +30,8 @@ struct gxp_client *gxp_client_create(struct gxp_dev *gxp)
 	client->has_vd_wakelock = false;
 	client->requested_states = off_states;
 	client->vd = NULL;
+	client->mbx_desc.mapped = false;
+
 	return client;
 }
 

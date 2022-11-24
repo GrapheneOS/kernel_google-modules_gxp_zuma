@@ -12,10 +12,11 @@
 
 #include "gxp-config.h"
 #include "gxp-internal.h"
-#include "gxp-mailbox.h"
 #include "gxp-mailbox-driver.h"
+#include "gxp-mailbox.h"
 #include "gxp-mcu.h"
 #include "gxp-uci.h"
+#include "gxp-vd.h"
 #include "gxp.h"
 
 #define CIRCULAR_QUEUE_WRAP_BIT BIT(15)
@@ -122,8 +123,10 @@ gxp_uci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
 	 * If dest_queue is a null pointer, it means we don't care the response
 	 * of the command. Skip it.
 	 */
-	if (!async_resp->dest_queue)
+	if (!async_resp->dest_queue) {
+		gcip_mailbox_release_awaiter(awaiter);
 		return;
+	}
 
 	spin_lock_irqsave(async_resp->dest_queue_lock, flags);
 
@@ -193,6 +196,7 @@ static void gxp_uci_release_awaiter_data(void *data)
 {
 	struct gxp_uci_async_response *async_resp = data;
 
+	gxp_vd_release_credit(async_resp->vd);
 	kfree(async_resp);
 }
 
@@ -309,6 +313,7 @@ int gxp_uci_init(struct gxp_mcu *mcu)
 		.queue_wrap_bit = CIRCULAR_QUEUE_WRAP_BIT,
 		.cmd_elem_size = sizeof(struct gxp_uci_command),
 		.resp_elem_size = sizeof(struct gxp_uci_response),
+		.ignore_seq_order = true,
 		.data = uci,
 	};
 
@@ -331,7 +336,8 @@ void gxp_uci_exit(struct gxp_uci *uci)
 	uci->mbx = NULL;
 }
 
-int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_uci_command *cmd,
+int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
+			 struct gxp_uci_command *cmd,
 			 struct list_head *resp_queue, spinlock_t *queue_lock,
 			 wait_queue_head_t *queue_waitq,
 			 struct gxp_eventfd *eventfd)
@@ -339,11 +345,16 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_uci_command *cmd,
 	struct gxp_uci_async_response *async_resp;
 	int ret;
 
+	if (!gxp_vd_has_and_use_credit(vd))
+		return -EBUSY;
 	async_resp = kzalloc(sizeof(*async_resp), GFP_KERNEL);
-	if (!async_resp)
-		return -ENOMEM;
+	if (!async_resp) {
+		ret = -ENOMEM;
+		goto err_release_credit;
+	}
 
 	async_resp->uci = uci;
+	async_resp->vd = vd;
 	/*
 	 * If the command is a wakelock command, keep dest_queue as a null
 	 * pointer to indicate that we will not expose the response to the
@@ -369,6 +380,8 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_uci_command *cmd,
 
 err_free_resp:
 	kfree(async_resp);
+err_release_credit:
+	gxp_vd_release_credit(vd);
 	return ret;
 }
 

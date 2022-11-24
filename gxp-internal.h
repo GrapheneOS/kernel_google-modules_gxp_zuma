@@ -37,6 +37,7 @@ enum gxp_chip_revision {
 struct gxp_tpu_mbx_desc {
 	uint phys_core_list;
 	size_t cmdq_size, respq_size;
+	bool mapped;
 };
 
 /* ioremapped resource */
