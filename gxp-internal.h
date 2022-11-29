@@ -37,7 +37,6 @@ enum gxp_chip_revision {
 struct gxp_tpu_mbx_desc {
 	uint phys_core_list;
 	size_t cmdq_size, respq_size;
-	bool mapped;
 };
 
 /* ioremapped resource */
@@ -55,10 +54,10 @@ struct gxp_tpu_dev {
 };
 
 /* Forward declarations from submodules */
+struct gcip_domain_pool;
 struct gxp_client;
 struct gxp_mailbox_manager;
 struct gxp_debug_dump_manager;
-struct gxp_domain_pool;
 struct gxp_dma_manager;
 struct gxp_fw_data_manager;
 struct gxp_power_manager;
@@ -116,7 +115,7 @@ struct gxp_dev {
 	 */
 	struct device *gsa_dev;
 	u32 memory_per_core;
-	struct gxp_domain_pool *domain_pool;
+	struct gcip_domain_pool *domain_pool;
 	struct list_head client_list;
 	struct mutex client_list_lock;
 	/*

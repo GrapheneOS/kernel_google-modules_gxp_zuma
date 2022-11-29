@@ -23,7 +23,6 @@ gxp-objs += \
 		gxp-firmware-data.o \
 		gxp-firmware.o \
 		gxp-lpm.o \
-		gxp-mailbox-driver.o \
 		gxp-mailbox-manager.o \
 		gxp-mailbox.o \
 		gxp-mapping.o \
@@ -42,10 +41,12 @@ USE_GCIP := TRUE
 
 gxp-objs += \
 		callisto-platform.o \
+		gsx01-mailbox-driver.o \
 		gxp-dci.o \
 		gxp-kci.o \
 		gxp-mcu-firmware.o \
 		gxp-mcu-fs.o \
+		gxp-mcu-platform.o \
 		gxp-mcu-telemetry.o \
 		gxp-mcu.o \
 		gxp-uci.o \

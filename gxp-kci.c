@@ -517,8 +517,8 @@ int gxp_kci_shutdown(struct gxp_kci *gkci)
 	return gxp_kci_send_cmd(gkci->mbx, &cmd);
 }
 
-int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u8 client_id, u8 num_cores,
-			   u8 slice_index, u8 tpu_client_id, u8 operation)
+int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u32 client_id, u8 num_cores,
+			   u8 slice_index)
 {
 	struct gcip_kci_command_element cmd = {
 		.code = GCIP_KCI_CODE_ALLOCATE_VMBOX,
@@ -535,18 +535,9 @@ int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u8 client_id, u8 num_cores,
 		return -ENOMEM;
 
 	detail = buf.vaddr;
-	detail->operation = operation;
 	detail->client_id = client_id;
-
-	if (detail->operation & KCI_ALLOCATE_VMBOX_OP_ALLOCATE_VMBOX) {
-		detail->num_cores = num_cores;
-		detail->slice_index = slice_index;
-	}
-
-	if (detail->operation & KCI_ALLOCATE_VMBOX_OP_LINK_OFFLOAD_VMBOX) {
-		detail->offload_client_id = tpu_client_id;
-		detail->offload_type = KCI_ALLOCATE_VMBOX_OFFLOAD_TYPE_TPU;
-	}
+	detail->num_cores = num_cores;
+	detail->slice_index = slice_index;
 
 	cmd.dma.address = buf.daddr;
 	cmd.dma.size = sizeof(*detail);
@@ -557,7 +548,7 @@ int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u8 client_id, u8 num_cores,
 	return ret;
 }
 
-int gxp_kci_release_vmbox(struct gxp_kci *gkci, u8 client_id)
+int gxp_kci_release_vmbox(struct gxp_kci *gkci, u32 client_id)
 {
 	struct gcip_kci_command_element cmd = {
 		.code = GCIP_KCI_CODE_RELEASE_VMBOX,
@@ -575,6 +566,39 @@ int gxp_kci_release_vmbox(struct gxp_kci *gkci, u8 client_id)
 
 	detail = buf.vaddr;
 	detail->client_id = client_id;
+
+	cmd.dma.address = buf.daddr;
+	cmd.dma.size = sizeof(*detail);
+
+	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
+	gxp_mcu_mem_free_data(gkci->mcu, &buf);
+
+	return ret;
+}
+
+int gxp_kci_link_unlink_offload_vmbox(
+	struct gxp_kci *gkci, u32 client_id, u32 offload_client_id,
+	enum gcip_kci_offload_chip_type offload_chip_type, bool link)
+{
+	struct gcip_kci_command_element cmd = {
+		.code = link ? GCIP_KCI_CODE_LINK_OFFLOAD_VMBOX :
+			       GCIP_KCI_CODE_UNLINK_OFFLOAD_VMBOX,
+	};
+	struct gxp_kci_link_unlink_offload_vmbox_detail *detail;
+	struct gxp_mapped_resource buf;
+	int ret;
+
+	if (!gkci || !gkci->mbx)
+		return -ENODEV;
+
+	ret = gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(*detail));
+	if (ret)
+		return -ENOMEM;
+
+	detail = buf.vaddr;
+	detail->client_id = client_id;
+	detail->offload_client_id = offload_client_id;
+	detail->offload_chip_type = offload_chip_type;
 
 	cmd.dma.address = buf.daddr;
 	cmd.dma.size = sizeof(*detail);

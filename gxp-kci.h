@@ -68,27 +68,8 @@ struct gxp_kci {
 
 /* Used when sending the details about allocate_vmbox KCI command. */
 struct gxp_kci_allocate_vmbox_detail {
-	/*
-	 * Operations of command.
-	 * The operations below can be sent in one command, but also separately according to how
-	 * the bits of this field are set.
-	 *
-	 * Bitfields:
-	 *   [0:0]   - Virtual mailbox allocation.
-	 *		0 = Ignore.
-	 *		1 = Allocate a virtual mailbox.
-	 *		    @client_id, @num_cores and @slice_index are mandatory.
-	 *   [1:1]   - Offload virtual mailbox linkage.
-	 *		0 = Ignore.
-	 *		1 = Link an offload virtual mailbox.
-	 *		    This operation cannot be called before allocating the virtual mailbox
-	 *		    for both DSP and offload chip.
-	 *		    @client_id, @offload_client_id and @offload_type are mandatory.
-	 *   [7:2]  - RESERVED
-	 */
-	u8 operation;
 	/* Client ID. */
-	u8 client_id;
+	u32 client_id;
 	/* The number of required cores. */
 	u8 num_cores;
 	/*
@@ -96,13 +77,6 @@ struct gxp_kci_allocate_vmbox_detail {
 	 * used for MCU<->core mailbox.
 	 */
 	u8 slice_index;
-	/* Client ID of offload chip. */
-	u8 offload_client_id;
-	/*
-	 * Type of offload chip.
-	 * 0: TPU
-	 */
-	u8 offload_type;
 	/* Reserved */
 	u8 reserved[58];
 } __packed;
@@ -110,9 +84,24 @@ struct gxp_kci_allocate_vmbox_detail {
 /* Used when sending the details about release_vmbox KCI command. */
 struct gxp_kci_release_vmbox_detail {
 	/* Client ID. */
-	u8 client_id;
+	u32 client_id;
 	/* Reserved */
-	u8 reserved[63];
+	u8 reserved[60];
+} __packed;
+
+/* Used when sending the details about {link,unlink}_offload_vmbox KCI command. */
+struct gxp_kci_link_unlink_offload_vmbox_detail {
+	/* DSP Client ID. */
+	u32 client_id;
+	/* Client ID of offload mailbox. */
+	u32 offload_client_id;
+	/*
+	 * Chip type of offload mailbox.
+	 * See enum gcip_kci_offload_chip_type.
+	 */
+	u8 offload_chip_type;
+	/* Reserved */
+	u8 reserved[55];
 } __packed;
 
 /*
@@ -199,29 +188,16 @@ int gxp_kci_shutdown(struct gxp_kci *gkci);
 int gxp_kci_notify_throttling(struct gxp_kci *gkci, u32 rate);
 
 /*
- * Allocates a virtual mailbox to communicate with MCU firmware. According to @operation, it links
- * the TPU virtual mailbox of @tpu_client_id to the DSP client of @client_id to offload TPU
- * commands from the firmware side.
+ * Allocates a virtual mailbox to communicate with MCU firmware.
  *
  * A new client wants to run a workload on DSP, it needs to allocate a virtual mailbox. Creating
  * mailbox will be initiated from the application by calling GXP_ALLOCATE_VIRTUAL_DEVICE ioctl.
- * Allocated virtual mailbox should be released by calling `gxp_kci_release_vmbox`. To allocate a
- * virtual mailbox, @client_id, @num_cores and @slice_index must be passed and @operation must be
- * masked with `KCI_ALLOCATE_VMBOX_OP_ALLOCATE_VMBOX`.
- *
- * To offload TPU commands, the virtual mailbox which is allocated from the TPU side should be
- * linked to the DSP client. Therefore, by passing @client_id which is a client ID of DSP,
- * @tpu_client_id which can be fetched from the TPU driver to this function and masking
- * @operation with `KCI_ALLOCATE_VMBOX_OP_LINK_OFFLOAD_VMBOX`, the TPU virtual mailbox will be
- * linked to the DSP client.
- *
- * Allocating a virtual mailbox and linking a TPU virtual mailbox can be done with the same
- * function call, but also can be done separately. It depends on how @operation is set.
+ * Allocated virtual mailbox should be released by calling `gxp_kci_release_vmbox`.
  *
  * Returns the code of response, or a negative errno on error.
  */
-int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u8 client_id, u8 num_cores,
-			   u8 slice_index, u8 tpu_client_id, u8 operation);
+int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u32 client_id, u8 num_cores,
+			   u8 slice_index);
 
 /*
  * Releases a virtual mailbox which is allocated by `gxp_kci_allocate_vmbox`.
@@ -229,7 +205,22 @@ int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u8 client_id, u8 num_cores,
  *
  * Returns the code of response, or a negative errno on error.
  */
-int gxp_kci_release_vmbox(struct gxp_kci *gkci, u8 client_id);
+int gxp_kci_release_vmbox(struct gxp_kci *gkci, u32 client_id);
+
+/*
+ * Links or unlinks @client_id (DSP client ID) and @offload_client_id (Client ID of offloading
+ * chip). It will link them if @link is true. Otherwise, it will unlink them.
+ *
+ * Link: Should be called before sending offload commands from DSP to the target chip.
+ * Unlink: Should be called after offloading is completed.
+ *
+ * The type of the target chip should be passed to the @offload_chip_type.
+ *
+ * Returns the code of response, or a negative errno on error.
+ */
+int gxp_kci_link_unlink_offload_vmbox(
+	struct gxp_kci *gkci, u32 client_id, u32 offload_client_id,
+	enum gcip_kci_offload_chip_type offload_chip_type, bool link);
 
 /*
  * Send an ack to the FW after handling a reverse KCI request.
