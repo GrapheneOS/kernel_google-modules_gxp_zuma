@@ -19,6 +19,9 @@
 #include "gxp-internal.h"
 #include "gxp-mapping.h"
 
+/* TODO(b/259192112): set to 8 once the runtime has added the credit limit. */
+#define GXP_COMMAND_CREDIT_PER_VD 256
+
 struct mailbox_resp_queue {
 	/* Queue of async responses */
 	struct list_head queue;
@@ -76,6 +79,20 @@ struct gxp_virtual_device {
 	 * This ID will be fetched from the TPU kernel driver.
 	 */
 	int tpu_client_id;
+	/*
+	 * Protects credit. Use a spin lock because the critical section of
+	 * using @credit is pretty small.
+	 */
+	spinlock_t credit_lock;
+	/*
+	 * Credits for sending mailbox commands. It's initialized as
+	 * GXP_COMMAND_CREDIT_PER_VD. The value is decreased on sending
+	 * mailbox commands; increased on receiving mailbox responses.
+	 * Mailbox command requests are rejected when this value reaches 0.
+	 *
+	 * Only used in MCU mode.
+	 */
+	uint credit;
 };
 
 /*
@@ -286,5 +303,17 @@ int gxp_vd_block_ready(struct gxp_virtual_device *vd);
  * state.
  */
 void gxp_vd_block_unready(struct gxp_virtual_device *vd);
+
+/*
+ * Checks whether the virtual device has a positive credit, and use 1 credit when
+ * yes.
+ *
+ * Returns true when there is enough credit, false otherwise.
+ */
+bool gxp_vd_has_and_use_credit(struct gxp_virtual_device *vd);
+/*
+ * Releases the credit.
+ */
+void gxp_vd_release_credit(struct gxp_virtual_device *vd);
 
 #endif /* __GXP_VD_H__ */

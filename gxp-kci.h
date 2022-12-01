@@ -236,7 +236,7 @@ int gxp_kci_release_vmbox(struct gxp_kci *gkci, u8 client_id);
  * The FW may wait for a response from the kernel for an RKCI request so a
  * response could be sent as an ack.
  */
-int gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,
-			  struct gcip_kci_response_element *rkci_cmd);
+void gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,
+			   struct gcip_kci_response_element *rkci_cmd);
 
 #endif /* __GXP_KCI_H__ */

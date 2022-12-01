@@ -15,6 +15,7 @@
 #include "gxp-client.h"
 #include "gxp-internal.h"
 #include "gxp-mailbox.h"
+#include "gxp-vd.h"
 
 #define UCI_RESOURCE_ID 0
 
@@ -101,6 +102,8 @@ struct gxp_uci_async_response {
 	wait_queue_head_t *dest_queue_waitq;
 	/* gxp_eventfd to signal when the response completes. May be NULL. */
 	struct gxp_eventfd *eventfd;
+	/* The request was sent from this virtual device. */
+	struct gxp_virtual_device *vd;
 	/* Handles arrival, timeout of async response. */
 	struct gcip_mailbox_resp_awaiter *awaiter;
 };
@@ -146,7 +149,8 @@ void gxp_uci_exit(struct gxp_uci *uci);
  *
  * Returns 0 on success, a negative errno on failure.
  */
-int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_uci_command *cmd,
+int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
+			 struct gxp_uci_command *cmd,
 			 struct list_head *resp_queue, spinlock_t *queue_lock,
 			 wait_queue_head_t *queue_waitq,
 			 struct gxp_eventfd *eventfd);

@@ -145,6 +145,7 @@ static struct gxp_mailbox *create_mailbox(struct gxp_mailbox_manager *mgr,
 	mailbox->queue_wrap_bit = args->queue_wrap_bit;
 	mailbox->cmd_elem_size = args->cmd_elem_size;
 	mailbox->resp_elem_size = args->resp_elem_size;
+	mailbox->ignore_seq_order = args->ignore_seq_order;
 	gxp_mailbox_set_data(mailbox, args->data);
 
 	ret = gxp_mailbox_set_ops(mailbox, args->ops);
@@ -205,6 +206,7 @@ static int init_gcip_mailbox(struct gxp_mailbox *mailbox)
 		.timeout = MAILBOX_TIMEOUT,
 		.ops = mailbox->ops->gcip_ops.mbx,
 		.data = mailbox,
+		.ignore_seq_order = mailbox->ignore_seq_order,
 	};
 	struct gcip_mailbox *gcip_mbx;
 	int ret;

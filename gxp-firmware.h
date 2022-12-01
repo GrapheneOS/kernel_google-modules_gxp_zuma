@@ -45,6 +45,16 @@ struct gxp_firmware_manager {
 	struct mutex dsp_firmware_lock;
 	/* Firmware status bitmap. Accessors must hold `vd_semaphore`. */
 	u32 firmware_running;
+	/*
+	 * The boundary of readonly segments and writable segments.
+	 * The mappings are programmed as
+	 *   [fwbufs[i].daddr, rw_boundaries[i]): RO
+	 *   [rw_boundaries[i], daddr + fwbufs[i].size): RW
+	 *
+	 * The boundary information is collected by parsing the ELF
+	 * header after @firmwares have been fetched.
+	 */
+	dma_addr_t rw_boundaries[GXP_NUM_CORES];
 };
 
 enum aurora_msg {

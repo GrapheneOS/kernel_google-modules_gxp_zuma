@@ -8,6 +8,7 @@
 #include <linux/bitops.h>
 #include <linux/idr.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
@@ -204,6 +205,8 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	vd->slice_index = -1;
 	vd->client_id = -1;
 	vd->tpu_client_id = -1;
+	spin_lock_init(&vd->credit_lock);
+	vd->credit = GXP_COMMAND_CREDIT_PER_VD;
 
 	vd->domain = gxp_domain_pool_alloc(gxp->domain_pool);
 	if (!vd->domain) {
@@ -764,4 +767,31 @@ struct gxp_mapping *gxp_vd_mapping_search_host(struct gxp_virtual_device *vd,
 	up_read(&vd->mappings_semaphore);
 
 	return NULL;
+}
+
+bool gxp_vd_has_and_use_credit(struct gxp_virtual_device *vd)
+{
+	bool ret = true;
+	unsigned long flags;
+
+	spin_lock_irqsave(&vd->credit_lock, flags);
+	if (vd->credit == 0)
+		ret = false;
+	else
+		vd->credit--;
+	spin_unlock_irqrestore(&vd->credit_lock, flags);
+
+	return ret;
+}
+
+void gxp_vd_release_credit(struct gxp_virtual_device *vd)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&vd->credit_lock, flags);
+	if (unlikely(vd->credit >= GXP_COMMAND_CREDIT_PER_VD))
+		dev_err(vd->gxp->dev, "unbalanced VD credit");
+	else
+		vd->credit++;
+	spin_unlock_irqrestore(&vd->credit_lock, flags);
 }

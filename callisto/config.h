@@ -39,6 +39,7 @@
  */
 #define GXP_IS_DMA_COHERENT
 
+#include "config-pwr-state.h"
 #include "context.h"
 #include "csrs.h"
 #include "iova.h"

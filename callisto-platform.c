@@ -88,6 +88,8 @@ static int gxp_ioctl_uci_command_helper(struct gxp_client *client,
 	struct gxp_uci_command cmd;
 	int ret;
 
+	if (ibuf->virtual_core_id >= GXP_NUM_CORES)
+		return -EINVAL;
 	down_read(&client->semaphore);
 
 	if (!check_client_has_available_vd(client, "GXP_MAILBOX_COMMAND")) {
@@ -118,15 +120,21 @@ static int gxp_ioctl_uci_command_helper(struct gxp_client *client,
 	cmd.type = CORE_COMMAND;
 
 	/* TODO(b/248179414): Remove core assignment when MCU fw re-enable sticky core scheduler. */
-	down_read(&gxp->vd_semaphore);
-	cmd.priority = gxp_vd_virt_core_to_phys_core(client->vd, ibuf->virtual_core_id);
-	up_read(&gxp->vd_semaphore);
-	if (cmd.priority < 0) {
-		dev_err(gxp->dev,
-			"Mailbox command failed: Invalid virtual core id (%u)\n",
-			ibuf->virtual_core_id);
-		ret = -EINVAL;
-		goto out;
+	{
+		int core;
+
+		down_read(&gxp->vd_semaphore);
+		core = gxp_vd_virt_core_to_phys_core(client->vd,
+						     ibuf->virtual_core_id);
+		up_read(&gxp->vd_semaphore);
+		if (core < 0) {
+			dev_err(gxp->dev,
+				"Mailbox command failed: Invalid virtual core id (%u)\n",
+				ibuf->virtual_core_id);
+			ret = -EINVAL;
+			goto out;
+		}
+		cmd.priority = core;
 	}
 
 	cmd.client_id = client->vd->client_id;
@@ -136,7 +144,7 @@ static int gxp_ioctl_uci_command_helper(struct gxp_client *client,
 	 * when MCU fw re-enable sticky core scheduler.
 	 */
 	ret = gxp_uci_send_command(
-		&callisto->mcu.uci, &cmd,
+		&callisto->mcu.uci, client->vd, &cmd,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].queue,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
@@ -320,7 +328,7 @@ static int callisto_request_power_states(struct gxp_client *client,
 	cmd.client_id = client->vd->client_id;
 
 	ret = gxp_uci_send_command(
-		&callisto->mcu.uci, &cmd,
+		&callisto->mcu.uci, client->vd, &cmd,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].queue,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,

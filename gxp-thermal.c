@@ -43,13 +43,13 @@ void thermal_cdev_update(struct thermal_cooling_device *cdev);
  * b/229623553
  */
 static struct gxp_state_pwr state_pwr_map[] = {
-	{1155000, 78},
-	{975000, 58},
-	{750000, 40},
-	{560000, 27},
-	{373000, 20},
-	{268000, 16},
-	{178000, 13},
+	{ AUR_NOM_RATE, 78 },
+	{ AUR_UD_PLUS_RATE, 58 },
+	{ AUR_UD_RATE, 40 },
+	{ AUR_SUD_PLUS_RATE, 27 },
+	{ AUR_SUD_RATE, 20 },
+	{ AUR_UUD_PLUS_RATE, 16 },
+	{ AUR_UUD_RATE, 13 },
 };
 
 static int gxp_get_max_state(struct thermal_cooling_device *cdev,

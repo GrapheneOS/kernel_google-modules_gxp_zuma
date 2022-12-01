@@ -94,59 +94,19 @@ static int elf_load_segments(struct gxp_dev *gxp, const u8 *elf_data,
 	ehdr = (struct elf32_hdr *)elf_data;
 	phdr = (struct elf32_phdr *)(elf_data + ehdr->e_phoff);
 
-	if ((ehdr->e_ident[EI_MAG0] != ELFMAG0) ||
-	    (ehdr->e_ident[EI_MAG1] != ELFMAG1) ||
-	    (ehdr->e_ident[EI_MAG2] != ELFMAG2) ||
-	    (ehdr->e_ident[EI_MAG3] != ELFMAG3)) {
-		dev_err(gxp->dev, "Cannot load FW! Invalid ELF format.\n");
-		return -EINVAL;
-	}
-
 	/* go through the available ELF segments */
 	for (i = 0; i < ehdr->e_phnum; i++, phdr++) {
-		u64 da = phdr->p_paddr;
-		u32 memsz = phdr->p_memsz;
-		u32 filesz = phdr->p_filesz;
-		u32 offset = phdr->p_offset;
+		const u64 da = phdr->p_paddr;
+		const u32 memsz = phdr->p_memsz;
+		const u32 filesz = phdr->p_filesz;
 		void *ptr;
 
-		if (phdr->p_type != PT_LOAD)
+		if (phdr->p_type != PT_LOAD || !phdr->p_flags || !memsz)
 			continue;
 
-		if (!phdr->p_flags)
+		if (!(da >= buffer->daddr &&
+		      da + memsz <= buffer->daddr + buffer->size))
 			continue;
-
-		if (!memsz)
-			continue;
-
-		if (!((da >= (u32)buffer->daddr) &&
-		   ((da + memsz) <= ((u32)buffer->daddr +
-				     (u32)buffer->size)))) {
-			/*
-			 * Some BSS data may be referenced from TCM, and can be
-			 * skipped while loading
-			 */
-			dev_err(gxp->dev, "Segment out of bounds: da 0x%llx mem 0x%x. Skipping...\n",
-				da, memsz);
-			continue;
-		}
-
-		dev_notice(gxp->dev, "phdr: type %d da 0x%llx memsz 0x%x filesz 0x%x\n",
-			   phdr->p_type, da, memsz, filesz);
-
-		if (filesz > memsz) {
-			dev_err(gxp->dev, "Bad phdr filesz 0x%x memsz 0x%x\n",
-				filesz, memsz);
-			ret = -EINVAL;
-			break;
-		}
-
-		if (offset + filesz > size) {
-			dev_err(gxp->dev, "Truncated fw: need 0x%x avail 0x%zx\n",
-				offset + filesz, size);
-			ret = -EINVAL;
-			break;
-		}
 
 		/* grab the kernel address for this device address */
 		ptr = buffer->vaddr + (da - buffer->daddr);
@@ -257,6 +217,112 @@ error:
 		buffer = &gxp->fwbufs[core];
 		memset_io(buffer->vaddr, 0, buffer->size);
 	}
+	return ret;
+}
+
+static int gxp_firmware_fetch_boundary(struct gxp_dev *gxp, const u8 *elf_data,
+				       size_t size,
+				       const struct gxp_mapped_resource *buffer,
+				       dma_addr_t *boundary_ptr)
+{
+	struct elf32_hdr *ehdr = (struct elf32_hdr *)elf_data;
+	struct elf32_phdr *phdr = (struct elf32_phdr *)(elf_data + ehdr->e_phoff);
+	int i, ret = 0;
+	dma_addr_t boundary = 0;
+
+	if ((ehdr->e_ident[EI_MAG0] != ELFMAG0) ||
+	    (ehdr->e_ident[EI_MAG1] != ELFMAG1) ||
+	    (ehdr->e_ident[EI_MAG2] != ELFMAG2) ||
+	    (ehdr->e_ident[EI_MAG3] != ELFMAG3)) {
+		dev_err(gxp->dev, "Invalid ELF format.");
+		return -EINVAL;
+	}
+
+	/* go through the available ELF segments */
+	for (i = 0; i < ehdr->e_phnum; i++, phdr++) {
+		const u64 da = phdr->p_paddr;
+		const u32 memsz = phdr->p_memsz;
+		const u32 filesz = phdr->p_filesz;
+		const u32 offset = phdr->p_offset;
+		const u32 p_flags = phdr->p_flags;
+
+		if (phdr->p_type != PT_LOAD || !p_flags || !memsz)
+			continue;
+
+		if (!(da >= buffer->daddr &&
+		      da + memsz <= buffer->daddr + buffer->size)) {
+			/*
+			 * Some BSS data may be referenced from TCM, and can be
+			 * skipped while loading
+			 */
+			dev_err(gxp->dev, "Segment out of bounds: da 0x%llx mem 0x%x. Skipping...",
+				da, memsz);
+			continue;
+		}
+
+		dev_info(gxp->dev,
+			 "phdr: da %#llx memsz %#x filesz %#x perm %d", da,
+			 memsz, filesz, p_flags);
+
+		if (filesz > memsz) {
+			dev_err(gxp->dev, "Bad phdr filesz %#x memsz %#x",
+				filesz, memsz);
+			ret = -EINVAL;
+			break;
+		}
+
+		if (offset + filesz > size) {
+			dev_err(gxp->dev, "Truncated fw: need %#x avail %#zx",
+				offset + filesz, size);
+			ret = -EINVAL;
+			break;
+		}
+		if (p_flags & PF_W) {
+			if (!boundary)
+				boundary = da;
+		} else if (boundary) {
+			dev_err(gxp->dev,
+				"Found RO region after a writable segment");
+			ret = -EINVAL;
+			break;
+		}
+	}
+	/* no boundary has been found - assume the whole image is RO */
+	if (!boundary)
+		boundary = buffer->daddr + buffer->size;
+	if (!ret)
+		*boundary_ptr = boundary;
+
+	return ret;
+}
+
+/*
+ * Sets @rw_boundaries by analyzing LOAD segments in ELF headers.
+ *
+ * Assumes the LOAD segments are arranged with RO first then RW. Returns -EINVAL
+ * if this is not true.
+ */
+static int gxp_firmware_fetch_boundaries(struct gxp_dev *gxp,
+					 struct gxp_firmware_manager *mgr)
+{
+	int core, ret;
+
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		ret = gxp_firmware_fetch_boundary(
+			gxp, mgr->firmwares[core]->data + FW_HEADER_SIZE,
+			mgr->firmwares[core]->size - FW_HEADER_SIZE,
+			&gxp->fwbufs[core], &mgr->rw_boundaries[core]);
+		if (ret) {
+			dev_err(gxp->dev,
+				"failed to fetch boundary of core %d: %d", core,
+				ret);
+			goto error;
+		}
+	}
+	return 0;
+
+error:
+	memset(mgr->rw_boundaries, 0, sizeof(mgr->rw_boundaries));
 	return ret;
 }
 
@@ -515,6 +581,10 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 		mgr->firmwares[core] = firmwares[core];
 	}
 
+	ret = gxp_firmware_fetch_boundaries(gxp, mgr);
+	if (ret)
+		goto err_fetch_boundaries;
+
 	kfree(mgr->firmware_name);
 	mgr->firmware_name = name_buf;
 
@@ -522,6 +592,9 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 	up_read(&gxp->vd_semaphore);
 	return count;
 
+err_fetch_boundaries:
+	for (core = 0; core < GXP_NUM_CORES; core++)
+		mgr->firmwares[core] = NULL;
 err_authenticate_firmware:
 	for (core = 0; core < GXP_NUM_CORES; core++)
 		release_firmware(firmwares[core]);
@@ -684,6 +757,10 @@ int gxp_firmware_request_if_needed(struct gxp_dev *gxp)
 		goto out;
 
 	ret = gxp_firmware_authenticate(gxp, mgr->firmwares);
+	if (ret)
+		goto err_authenticate_firmware;
+
+	ret = gxp_firmware_fetch_boundaries(gxp, mgr);
 	if (ret)
 		goto err_authenticate_firmware;
 
