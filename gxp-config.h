@@ -42,9 +42,4 @@
 #define GXP_HAS_MCU 1
 #endif
 
-/* LPM address space starts at lpm_version register */
-#define GXP_LPM_BASE GXP_REG_LPM_VERSION
-#define GXP_LPM_PSM_0_BASE GXP_REG_LPM_PSM_0
-#define GXP_LPM_PSM_SIZE (GXP_REG_LPM_PSM_1 - GXP_REG_LPM_PSM_0)
-
 #endif /* __GXP_CONFIG_H__ */

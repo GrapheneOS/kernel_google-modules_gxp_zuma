@@ -270,3 +270,22 @@ void gxp_client_release_vd_wakelock(struct gxp_client *client)
 	gxp_client_request_power_states(client, off_states);
 	client->has_vd_wakelock = false;
 }
+
+bool gxp_client_has_available_vd(struct gxp_client *client, const char *name)
+{
+	struct gxp_dev *gxp = client->gxp;
+
+	lockdep_assert_held(&client->semaphore);
+	if (!client->vd) {
+		dev_err(gxp->dev,
+			"%s requires the client allocate a VIRTUAL_DEVICE\n",
+			name);
+		return false;
+	}
+	if (client->vd->state == GXP_VD_UNAVAILABLE) {
+		dev_err(gxp->dev, "Cannot do %s on a broken virtual device\n",
+			name);
+		return false;
+	}
+	return true;
+}

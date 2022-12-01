@@ -74,6 +74,7 @@ struct gxp_dev {
 	struct miscdevice misc_dev;	 /* misc device structure */
 	struct dentry *d_entry;		 /* debugfs dir for this device */
 	struct gxp_mapped_resource regs; /* ioremapped CSRs */
+	struct gxp_mapped_resource lpm_regs; /* ioremapped LPM CSRs, may be equal to @regs */
 	struct gxp_mapped_resource mbx[GXP_NUM_MAILBOXES]; /* mailbox CSRs */
 	struct gxp_mapped_resource fwbufs[GXP_NUM_CORES]; /* FW carveout */
 	struct gxp_mapped_resource fwdatabuf; /* Shared FW data carveout */

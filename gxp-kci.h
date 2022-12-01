@@ -50,6 +50,7 @@
  * Chip specific reverse KCI request codes.
  */
 enum gxp_reverse_rkci_code {
+	GXP_RKCI_CODE_PM_QOS_BTS = GCIP_RKCI_CHIP_CODE_FIRST + 3,
 	GXP_RKCI_CODE_CORE_TELEMETRY_READ = GCIP_RKCI_CHIP_CODE_FIRST + 4,
 };
 

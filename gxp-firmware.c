@@ -131,6 +131,15 @@ static int elf_load_segments(struct gxp_dev *gxp, const u8 *elf_data,
 	return ret;
 }
 
+static void elf_fetch_entry_point(struct gxp_dev *gxp, const u8 *elf_data,
+				  uint core)
+{
+	struct elf32_hdr *ehdr;
+
+	ehdr = (struct elf32_hdr *)elf_data;
+	gxp->firmware_mgr->entry_points[core] = ehdr->e_entry;
+}
+
 static int
 gxp_firmware_authenticate(struct gxp_dev *gxp,
 			  const struct firmware *firmwares[GXP_NUM_CORES])
@@ -339,11 +348,11 @@ static void gxp_program_reset_vector(struct gxp_dev *gxp, uint core, bool verbos
 			   "Current Aurora reset vector for core %u: 0x%x\n",
 			   core, reset_vec);
 	gxp_write_32(gxp, GXP_CORE_REG_ALT_RESET_VECTOR(core),
-		     gxp->fwbufs[core].daddr);
+		     gxp->firmware_mgr->entry_points[core]);
 	if (verbose)
 		dev_notice(gxp->dev,
-			   "New Aurora reset vector for core %u: 0x%llx\n",
-			   core, gxp->fwbufs[core].daddr);
+			   "New Aurora reset vector for core %u: 0x%x\n",
+			   core, gxp->firmware_mgr->entry_points[core]);
 }
 
 static int gxp_firmware_load(struct gxp_dev *gxp, uint core)
@@ -365,6 +374,10 @@ static int gxp_firmware_load(struct gxp_dev *gxp, uint core)
 		dev_err(gxp->dev, "Unable to load elf file\n");
 		goto out_firmware_unload;
 	}
+
+	elf_fetch_entry_point(gxp,
+			      mgr->firmwares[core]->data + FW_HEADER_SIZE,
+			      core);
 
 	memset(gxp->fwbufs[core].vaddr + AURORA_SCRATCHPAD_OFF, 0,
 	       AURORA_SCRATCHPAD_LEN);

@@ -125,4 +125,15 @@ int gxp_client_acquire_vd_wakelock(struct gxp_client *client,
  */
 void gxp_client_release_vd_wakelock(struct gxp_client *client);
 
+/**
+ * gxp_client_has_available_vd() - Returns whether @client has an available
+ * virtual device.
+ *
+ * @client: The client to check.
+ * @name: The string used for logging when the client has an invalid VD.
+ *
+ * The caller must have locked client->semaphore.
+ */
+bool gxp_client_has_available_vd(struct gxp_client *client, const char *name);
+
 #endif /* __GXP_CLIENT_H__ */

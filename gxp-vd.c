@@ -59,8 +59,8 @@ static int map_core_telemetry_buffers(struct gxp_dev *gxp,
 		return 0;
 
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
-	data[0] = gxp->core_telemetry_mgr->logging_buff_data;
-	data[1] = gxp->core_telemetry_mgr->tracing_buff_data;
+	data[0] = gxp->core_telemetry_mgr->logging_buff_data_legacy;
+	data[1] = gxp->core_telemetry_mgr->tracing_buff_data_legacy;
 
 	for (i = 0; i < ARRAY_SIZE(data); i++) {
 		if (!data[i] || !data[i]->is_enabled)
@@ -111,8 +111,8 @@ static void unmap_core_telemetry_buffers(struct gxp_dev *gxp,
 	if (!gxp->core_telemetry_mgr)
 		return;
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
-	data[0] = gxp->core_telemetry_mgr->logging_buff_data;
-	data[1] = gxp->core_telemetry_mgr->tracing_buff_data;
+	data[0] = gxp->core_telemetry_mgr->logging_buff_data_legacy;
+	data[1] = gxp->core_telemetry_mgr->tracing_buff_data_legacy;
 
 	for (i = 0; i < ARRAY_SIZE(data); i++) {
 		if (!data[i] || !data[i]->is_enabled)

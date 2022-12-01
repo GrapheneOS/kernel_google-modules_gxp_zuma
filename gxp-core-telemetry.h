@@ -16,6 +16,16 @@
 #include "gxp-internal.h"
 #include "gxp.h"
 
+/* Core telemetry buffer size is a multiple of 64 kB */
+#define CORE_TELEMETRY_BUFFER_UNIT_SIZE SZ_64K
+#define CORE_TELEMETRY_DEFAULT_BUFFER_SIZE CORE_TELEMETRY_BUFFER_UNIT_SIZE
+/**
+ * Maximum core telemetry buffer size that can be represented by GXP_GET_SPECS
+ * ioctl. 8 bits are reserved to represent telemetry buffer size in GXP_GET_SPECS
+ * ioctl and the size is represented in unit of CORE_TELEMETRY_BUFFER_UNIT_SIZE.
+ */
+#define CORE_TELEMETRY_MAX_BUFFER_SIZE (U8_MAX * CORE_TELEMETRY_BUFFER_UNIT_SIZE)
+
 struct gxp_core_telemetry_work {
 	struct work_struct work;
 	struct gxp_dev *gxp;
@@ -29,7 +39,8 @@ struct gxp_core_telemetry_manager {
 		u32 size;
 		refcount_t ref_count;
 		bool is_enabled;
-	} *logging_buff_data, *tracing_buff_data;
+	} *logging_buff_data_legacy, *tracing_buff_data_legacy,
+	  *logging_buff_data, *tracing_buff_data;
 	/* Protects logging_buff_data and tracing_buff_data */
 	struct mutex lock;
 	struct gxp_core_telemetry_work notification_works[GXP_NUM_CORES];
@@ -49,9 +60,9 @@ struct gxp_core_telemetry_manager {
 int gxp_core_telemetry_init(struct gxp_dev *gxp);
 
 /**
- * gxp_core_telemetry_mmap_buffers() - Allocate a telemetry buffer for each core
- *                                     and map them to their core and the
- *                                     user-space vma
+ * gxp_core_telemetry_mmap_buffers_legacy() - Allocate a telemetry buffer for
+ *                                            each core and map them to their
+ *                                            core and the user-space vma
  * @gxp: The GXP device to create the buffers for
  * @type: EIther `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`
  * @vma: The vma from user-space which all cores' buffers will be mapped into
@@ -64,8 +75,8 @@ int gxp_core_telemetry_init(struct gxp_dev *gxp);
  * * -EINVAL - Either the vma size is not aligned or @type is not valid
  * * -ENOMEM - Insufficient memory is available to allocate and map the buffers
  */
-int gxp_core_telemetry_mmap_buffers(struct gxp_dev *gxp, u8 type,
-				    struct vm_area_struct *vma);
+int gxp_core_telemetry_mmap_buffers_legacy(struct gxp_dev *gxp, u8 type,
+                                           struct vm_area_struct *vma);
 
 /**
  * gxp_core_telemetry_enable() - Enable logging or tracing for all DSP cores
@@ -143,5 +154,14 @@ gxp_core_telemetry_get_notification_handler(struct gxp_dev *gxp, uint core);
  *
  */
 void gxp_core_telemetry_status_notify(struct gxp_dev *gxp, uint core);
+
+/**
+ * gxp_core_telemetry_exit() - Reverts gxp_core_telemetry_init() to release the
+ *                             resources acquired by core telemetry manager.
+ * @gxp: The GXP device to obtain the handler for
+ *
+ */
+void gxp_core_telemetry_exit(struct gxp_dev *gxp);
+
 
 #endif /* __GXP_CORE_TELEMETRY_H__ */
