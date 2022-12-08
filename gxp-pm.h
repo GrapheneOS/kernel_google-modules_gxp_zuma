@@ -119,7 +119,7 @@ struct gxp_power_manager {
 	/* Last requested clock mux state */
 	bool last_scheduled_low_clkmux;
 	int curr_state;
-	int curr_memory_state;
+	int curr_memory_state; /* Note: this state will not be maintained in the MCU mode. */
 	struct gxp_pm_device_ops *ops;
 	struct gxp_set_acpm_state_work
 		set_acpm_state_work[AUR_NUM_POWER_STATE_WORKER];
@@ -263,6 +263,22 @@ int gxp_pm_blk_get_state_acpm(struct gxp_dev *gxp);
 int gxp_pm_update_requested_power_states(struct gxp_dev *gxp,
 					 struct gxp_power_states origin_states,
 					 struct gxp_power_states requested_states);
+
+/**
+ * gxp_pm_update_pm_qos() - API for updating the memory power state but passing the values of
+ * INT and MIF frequencies directly. This function will ignore the vote ratings and update the
+ * frequencies right away.
+ * @gxp: The GXP device to operate.
+ * @int_val: The value of INT frequency.
+ * @mif_val: The value of MIF frequency.
+ *
+ * Note: This function will not update the @curr_memory_state of gxp_power_manager.
+ *
+ * Return:
+ * * 0       - The memory power state has been changed
+ * * -EINVAL - Invalid requested state
+ */
+int gxp_pm_update_pm_qos(struct gxp_dev *gxp, s32 int_val, s32 mif_val);
 
 /*
  * gxp_pm_force_clkmux_normal() - Force PLL_CON0_NOC_USER and PLL_CON0_PLL_AUR MUX

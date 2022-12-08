@@ -17,21 +17,21 @@
 #define GXP_INTERFACE_VERSION_BUILD 0
 
 /*
- * mmap offsets for core logging and tracing buffers
+ * Legacy mmap offsets for core logging and tracing buffers
  * Requested size will be divided evenly among all cores. The whole buffer
  * must be page-aligned, and the size of each core's buffer must be a multiple
  * of PAGE_SIZE.
  */
-#define GXP_MMAP_CORE_LOG_BUFFER_OFFSET 0x10000
-#define GXP_MMAP_CORE_TRACE_BUFFER_OFFSET 0x20000
+#define GXP_MMAP_CORE_LOG_BUFFER_OFFSET_LEGACY 0x10000
+#define GXP_MMAP_CORE_TRACE_BUFFER_OFFSET_LEGACY 0x20000
 
 /* mmap offsets for MCU logging and tracing buffers */
 #define GXP_MMAP_MCU_LOG_BUFFER_OFFSET 0x30000
 #define GXP_MMAP_MCU_TRACE_BUFFER_OFFSET 0x40000
 
-/* For backward compatibility. */
-#define GXP_MMAP_LOG_BUFFER_OFFSET GXP_MMAP_CORE_LOG_BUFFER_OFFSET
-#define GXP_MMAP_TRACE_BUFFER_OFFSET GXP_MMAP_CORE_TRACE_BUFFER_OFFSET
+/* mmap offsets for core logging and tracing buffers */
+#define GXP_MMAP_CORE_LOG_BUFFER_OFFSET 0x50000
+#define GXP_MMAP_CORE_TRACE_BUFFER_OFFSET 0x60000
 
 #define GXP_IOCTL_BASE 0xEE
 

@@ -33,6 +33,7 @@
 #include "gxp-firmware.h"
 #include "gxp-firmware-data.h"
 #include "gxp-internal.h"
+#include "gxp-lpm.h"
 #include "gxp-mailbox.h"
 #include "gxp-mailbox-driver.h"
 #include "gxp-mapping.h"
@@ -55,27 +56,6 @@
 #endif
 
 static struct gxp_dev *gxp_debug_pointer;
-
-/* Caller needs to hold client->semaphore */
-static bool check_client_has_available_vd(struct gxp_client *client,
-					  char *ioctl_name)
-{
-	struct gxp_dev *gxp = client->gxp;
-
-	lockdep_assert_held(&client->semaphore);
-	if (!client->vd) {
-		dev_err(gxp->dev,
-			"%s requires the client allocate a VIRTUAL_DEVICE\n",
-			ioctl_name);
-		return false;
-	}
-	if (client->vd->state == GXP_VD_UNAVAILABLE) {
-		dev_err(gxp->dev, "Cannot do %s on a broken virtual device\n",
-			ioctl_name);
-		return false;
-	}
-	return true;
-}
 
 /* Caller needs to hold client->semaphore for reading */
 static bool check_client_has_available_vd_wakelock(struct gxp_client *client,
@@ -248,7 +228,7 @@ static int gxp_map_buffer(struct gxp_client *client,
 
 	down_read(&client->semaphore);
 
-	if (!check_client_has_available_vd(client, "GXP_MAP_BUFFER")) {
+	if (!gxp_client_has_available_vd(client, "GXP_MAP_BUFFER")) {
 		ret = -ENODEV;
 		goto out;
 	}
@@ -978,7 +958,7 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 
 	down_write(&client->semaphore);
 
-	if (!check_client_has_available_vd(client, "GXP_MAP_TPU_MBX_QUEUE")) {
+	if (!gxp_client_has_available_vd(client, "GXP_MAP_TPU_MBX_QUEUE")) {
 		ret = -ENODEV;
 		goto out_unlock_client_semaphore;
 	}
@@ -1274,7 +1254,7 @@ static int gxp_map_dmabuf(struct gxp_client *client,
 
 	down_read(&client->semaphore);
 
-	if (!check_client_has_available_vd(client, "GXP_MAP_DMABUF")) {
+	if (!gxp_client_has_available_vd(client, "GXP_MAP_DMABUF")) {
 		ret = -ENODEV;
 		goto out_unlock;
 	}
@@ -1380,7 +1360,7 @@ static int gxp_register_mailbox_eventfd(
 
 	down_write(&client->semaphore);
 
-	if (!check_client_has_available_vd(client, "GXP_REGISTER_MAILBOX_EVENTFD")) {
+	if (!gxp_client_has_available_vd(client, "GXP_REGISTER_MAILBOX_EVENTFD")) {
 		ret = -ENODEV;
 		goto out;
 	}
@@ -1639,11 +1619,11 @@ static int gxp_mmap(struct file *file, struct vm_area_struct *vma)
 	}
 
 	switch (vma->vm_pgoff << PAGE_SHIFT) {
-	case GXP_MMAP_CORE_LOG_BUFFER_OFFSET:
-		return gxp_core_telemetry_mmap_buffers(
+	case GXP_MMAP_CORE_LOG_BUFFER_OFFSET_LEGACY:
+		return gxp_core_telemetry_mmap_buffers_legacy(
 			client->gxp, GXP_TELEMETRY_TYPE_LOGGING, vma);
-	case GXP_MMAP_CORE_TRACE_BUFFER_OFFSET:
-		return gxp_core_telemetry_mmap_buffers(
+	case GXP_MMAP_CORE_TRACE_BUFFER_OFFSET_LEGACY:
+		return gxp_core_telemetry_mmap_buffers_legacy(
 			client->gxp, GXP_TELEMETRY_TYPE_TRACING, vma);
 	default:
 		return -EINVAL;
@@ -1718,6 +1698,24 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	}
 #endif
 
+#ifdef GXP_SEPARATE_LPM_OFFSET
+	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "lpm");
+	if (IS_ERR_OR_NULL(r)) {
+		dev_err(dev, "Failed to get LPM resource\n");
+		return -ENODEV;
+	}
+	gxp->lpm_regs.paddr = r->start;
+	gxp->lpm_regs.size = resource_size(r);
+	gxp->lpm_regs.vaddr = devm_ioremap_resource(dev, r);
+	if (IS_ERR_OR_NULL(gxp->lpm_regs.vaddr)) {
+		dev_err(dev, "Failed to map LPM registers\n");
+		return -ENODEV;
+	}
+#else
+	gxp->lpm_regs.vaddr = gxp->regs.vaddr;
+	gxp->lpm_regs.size = gxp->regs.size;
+	gxp->lpm_regs.paddr = gxp->regs.paddr;
+#endif
 	ret = gxp_pm_init(gxp);
 	if (ret) {
 		dev_err(dev, "Failed to init power management (ret=%d)\n", ret);
@@ -1864,7 +1862,11 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	}
 
 	gxp_fw_data_init(gxp);
-	gxp_core_telemetry_init(gxp);
+	ret = gxp_core_telemetry_init(gxp);
+	if (ret) {
+		dev_err(dev, "Failed to initialize core telemetry (ret=%d)", ret);
+		goto err_fw_data_destroy;
+	}
 	gxp_create_debugfs(gxp);
 	gxp->thermal_mgr = gxp_thermal_init(gxp);
 	if (!gxp->thermal_mgr)
@@ -1897,6 +1899,8 @@ err_before_remove:
 		gxp->before_remove(gxp);
 err_vd_destroy:
 	gxp_remove_debugfs(gxp);
+	gxp_core_telemetry_exit(gxp);
+err_fw_data_destroy:
 	gxp_fw_data_destroy(gxp);
 	put_device(gxp->gsa_dev);
 	gxp_vd_destroy(gxp);
@@ -1924,6 +1928,7 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);
 	gxp_remove_debugfs(gxp);
+	gxp_core_telemetry_exit(gxp);
 	gxp_fw_data_destroy(gxp);
 	if (gxp->gsa_dev)
 		put_device(gxp->gsa_dev);

@@ -22,7 +22,7 @@
 		int i = 100000;                                                \
 		while (i) {                                                    \
 			lpm_state =                                            \
-				lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET) & \
+				lpm_read_32_psm(gxp, psm, PSM_REG_STATUS_OFFSET) & \
 				PSM_CURR_STATE_MASK;                           \
 			if (condition)                                         \
 				break;                                         \
@@ -34,24 +34,22 @@
 
 void gxp_lpm_enable_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state)
 {
-	uint offset = LPM_REG_ENABLE_STATE_0 + (LPM_STATE_TABLE_SIZE * state);
-
 	/* PS0 should always be enabled */
-	if (state == 0)
+	if (state == LPM_ACTIVE_STATE || state > LPM_PG_STATE)
 		return;
 
 	/* Disable all low power states */
-	lpm_write_32_psm(gxp, psm, LPM_REG_ENABLE_STATE_1, 0x0);
-	lpm_write_32_psm(gxp, psm, LPM_REG_ENABLE_STATE_2, 0x0);
-	lpm_write_32_psm(gxp, psm, LPM_REG_ENABLE_STATE_3, 0x0);
+	lpm_write_32_psm(gxp, psm, PSM_REG_ENABLE_STATE1_OFFSET, 0x0);
+	lpm_write_32_psm(gxp, psm, PSM_REG_ENABLE_STATE2_OFFSET, 0x0);
+	lpm_write_32_psm(gxp, psm, PSM_REG_ENABLE_STATE3_OFFSET, 0x0);
 
 	/* Enable the requested low power state */
-	lpm_write_32_psm(gxp, psm, offset, 0x1);
+	lpm_write_32_psm(gxp, psm, state, 0x1);
 }
 
 bool gxp_lpm_is_initialized(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 {
-	u32 status = lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET);
+	u32 status = lpm_read_32_psm(gxp, psm, PSM_REG_STATUS_OFFSET);
 
 	/*
 	 * state_valid bit goes active and stays high forever the first time you
@@ -65,7 +63,7 @@ bool gxp_lpm_is_initialized(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 
 bool gxp_lpm_is_powered(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 {
-	u32 status = lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET);
+	u32 status = lpm_read_32_psm(gxp, psm, PSM_REG_STATUS_OFFSET);
 	u32 state;
 
 	if (!(status & PSM_STATE_VALID_MASK))
@@ -76,7 +74,7 @@ bool gxp_lpm_is_powered(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 
 uint gxp_lpm_get_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 {
-	u32 status = lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET);
+	u32 status = lpm_read_32_psm(gxp, psm, PSM_REG_STATUS_OFFSET);
 
 	return status & PSM_CURR_STATE_MASK;
 }
@@ -89,13 +87,13 @@ static int set_state_internal(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint ta
 	/* Set SW sequencing mode and PS target */
 	val = LPM_SW_PSM_MODE;
 	val |= target_state << LPM_CFG_SW_PS_TARGET_OFFSET;
-	lpm_write_32_psm(gxp, psm, PSM_CFG_OFFSET, val);
+	lpm_write_32_psm(gxp, psm, PSM_REG_CFG_OFFSET, val);
 
 	/* Start the SW sequence */
-	lpm_write_32_psm(gxp, psm, PSM_START_OFFSET, 0x1);
+	lpm_write_32_psm(gxp, psm, PSM_REG_START_OFFSET, 0x1);
 
 	/* Wait for LPM init done (0x60041688) */
-	while (i && !(lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET)
+	while (i && !(lpm_read_32_psm(gxp, psm, PSM_REG_STATUS_OFFSET)
 		      & PSM_INIT_DONE_MASK)) {
 		udelay(1 * GXP_TIME_DELAY_FACTOR);
 		i--;
@@ -121,7 +119,7 @@ int gxp_lpm_set_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint target_sta
 		dev_warn(gxp->dev,
 			 "Forcing a transition to PS%u on core%u, status: %x\n",
 			 target_state, psm,
-			 lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET));
+			 lpm_read_32_psm(gxp, psm, PSM_REG_STATUS_OFFSET));
 
 	gxp_lpm_enable_state(gxp, psm, target_state);
 
@@ -138,10 +136,10 @@ int gxp_lpm_set_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint target_sta
 			gxp->dev,
 			"Finished forced transition on core %u.  target: PS%u, actual: PS%u, status: %x\n",
 			psm, target_state, gxp_lpm_get_state(gxp, psm),
-			lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET));
+			lpm_read_32_psm(gxp, psm, PSM_REG_STATUS_OFFSET));
 
 	/* Set HW sequencing mode */
-	lpm_write_32_psm(gxp, psm, PSM_CFG_OFFSET, LPM_HW_MODE);
+	lpm_write_32_psm(gxp, psm, PSM_REG_CFG_OFFSET, LPM_HW_MODE);
 
 	return 0;
 }
@@ -162,10 +160,10 @@ static int psm_enable(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 	}
 
 	/* Write PSM start bit */
-	lpm_write_32_psm(gxp, psm, PSM_START_OFFSET, PSM_START);
+	lpm_write_32_psm(gxp, psm, PSM_REG_START_OFFSET, PSM_START);
 
 	/* Wait for LPM init done (0x60041688) */
-	while (i && !(lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET)
+	while (i && !(lpm_read_32_psm(gxp, psm, PSM_REG_STATUS_OFFSET)
 		      & PSM_INIT_DONE_MASK)) {
 		udelay(1 * GXP_TIME_DELAY_FACTOR);
 		i--;
@@ -175,7 +173,7 @@ static int psm_enable(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 		return 1;
 
 	/* Set PSM to HW mode (0x60041680) */
-	lpm_write_32_psm(gxp, psm, PSM_CFG_OFFSET, PSM_HW_MODE);
+	lpm_write_32_psm(gxp, psm, PSM_REG_CFG_OFFSET, PSM_HW_MODE);
 
 	return 0;
 }
@@ -193,8 +191,8 @@ void gxp_lpm_destroy(struct gxp_dev *gxp)
 	dev_dbg(gxp->dev, "Kicking Top PSM out of ACG\n");
 
 	/* Disable all low-power states for TOP */
-	lpm_write_32_psm(gxp, LPM_PSM_TOP, LPM_REG_ENABLE_STATE_1, 0x0);
-	lpm_write_32_psm(gxp, LPM_PSM_TOP, LPM_REG_ENABLE_STATE_2, 0x0);
+	lpm_write_32_psm(gxp, LPM_PSM_TOP, PSM_REG_ENABLE_STATE1_OFFSET, 0x0);
+	lpm_write_32_psm(gxp, LPM_PSM_TOP, PSM_REG_ENABLE_STATE2_OFFSET, 0x0);
 }
 
 int gxp_lpm_up(struct gxp_dev *gxp, uint core)
@@ -220,7 +218,7 @@ int gxp_lpm_up(struct gxp_dev *gxp, uint core)
 
 void gxp_lpm_down(struct gxp_dev *gxp, uint core)
 {
-	if (gxp_lpm_get_state(gxp, core) == LPM_PG_STATE)
+	if (gxp_lpm_get_state(gxp, CORE_TO_PSM(core)) == LPM_PG_STATE)
 		return;
 	/* Enable PS3 (Pwr Gated) */
 	gxp_lpm_enable_state(gxp, CORE_TO_PSM(core), LPM_PG_STATE);

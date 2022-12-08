@@ -45,6 +45,7 @@ gxp-objs += \
 		gxp-dci.o \
 		gxp-kci.o \
 		gxp-mcu-firmware.o \
+		gxp-mcu-fs.o \
 		gxp-mcu-telemetry.o \
 		gxp-mcu.o \
 		gxp-uci.o \

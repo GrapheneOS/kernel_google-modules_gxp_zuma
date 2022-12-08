@@ -55,6 +55,8 @@ struct gxp_firmware_manager {
 	 * header after @firmwares have been fetched.
 	 */
 	dma_addr_t rw_boundaries[GXP_NUM_CORES];
+	/* Store the entry point of the DSP core firmware. */
+	u32 entry_points[GXP_NUM_CORES];
 };
 
 enum aurora_msg {

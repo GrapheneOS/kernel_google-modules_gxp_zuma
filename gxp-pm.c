@@ -669,6 +669,11 @@ out:
 	return ret;
 }
 
+int gxp_pm_update_pm_qos(struct gxp_dev *gxp, s32 int_val, s32 mif_val)
+{
+	return gxp_pm_req_pm_qos(gxp, int_val, mif_val);
+}
+
 int gxp_pm_init(struct gxp_dev *gxp)
 {
 	struct gxp_power_manager *mgr;

@@ -30,6 +30,14 @@
 #define MBOX_CMD_QUEUE_NUM_ENTRIES 1024
 #define MBOX_RESP_QUEUE_NUM_ENTRIES 1024
 
+/*
+ * Encode INT/MIF values as a 16 bit pair in the 32-bit return value
+ * (in units of MHz, to provide enough range)
+ */
+#define PM_QOS_INT_SHIFT (16)
+#define PM_QOS_MIF_MASK (0xFFFF)
+#define PM_QOS_FACTOR (1000)
+
 /* Callback functions for struct gcip_kci. */
 
 static u32 gxp_kci_get_cmd_queue_head(struct gcip_kci *kci)
@@ -83,6 +91,49 @@ static void gxp_kci_inc_resp_queue_head(struct gcip_kci *kci, u32 inc)
 					       CIRCULAR_QUEUE_WRAP_BIT);
 }
 
+static void gxp_kci_set_pm_qos(struct gxp_dev *gxp, u32 pm_qos_val)
+{
+	s32 int_val = (pm_qos_val >> PM_QOS_INT_SHIFT) * PM_QOS_FACTOR;
+	s32 mif_val = (pm_qos_val & PM_QOS_MIF_MASK) * PM_QOS_FACTOR;
+
+	dev_dbg(gxp->dev, "%s: pm_qos request - int = %d mif = %d\n", __func__,
+		int_val, mif_val);
+
+	gxp_pm_update_pm_qos(gxp, int_val, mif_val);
+}
+
+static void gxp_kci_handle_rkci(struct gxp_kci *gkci,
+				struct gcip_kci_response_element *resp)
+{
+	struct gxp_dev *gxp = gkci->gxp;
+
+	switch (resp->code) {
+	case GXP_RKCI_CODE_PM_QOS_BTS:
+		/* FW indicates to ignore the request by setting them to undefined values. */
+		if (resp->retval != (typeof(resp->retval))~0ull)
+			gxp_kci_set_pm_qos(gxp, resp->retval);
+		if (resp->status != (typeof(resp->status))~0ull)
+			dev_warn_once(gxp->dev, "BTS is not supported");
+		gxp_kci_resp_rkci_ack(gkci, resp);
+		break;
+	case GXP_RKCI_CODE_CORE_TELEMETRY_READ: {
+		uint core;
+		uint core_list = (uint)(resp->status);
+
+		for (core = 0; core < GXP_NUM_CORES; core++) {
+			if (BIT(core) & core_list) {
+				gxp_core_telemetry_status_notify(gxp, core);
+			}
+		}
+		gxp_kci_resp_rkci_ack(gkci, resp);
+		break;
+	}
+	default:
+		dev_warn(gxp->dev, "Unrecognized reverse KCI request: %#x",
+			 resp->code);
+	}
+}
+
 /* Handle one incoming request from firmware. */
 static void
 gxp_reverse_kci_handle_response(struct gcip_kci *kci,
@@ -93,25 +144,7 @@ gxp_reverse_kci_handle_response(struct gcip_kci *kci,
 	struct gxp_kci *gxp_kci = mbx->data;
 
 	if (resp->code <= GCIP_RKCI_CHIP_CODE_LAST) {
-		/* TODO(b/239638427): Handle reverse kci */
-		switch (resp->code) {
-		case GXP_RKCI_CODE_CORE_TELEMETRY_READ: {
-			uint core;
-			uint core_list = (uint)(resp->status);
-
-			for (core = 0; core < GXP_NUM_CORES; core++) {
-				if (BIT(core) & core_list) {
-					gxp_core_telemetry_status_notify(gxp,
-									 core);
-				}
-			}
-			gxp_kci_resp_rkci_ack(gxp_kci, resp);
-			break;
-		}
-		default:
-			dev_dbg(gxp->dev, "Reverse KCI received: %#x",
-				resp->code);
-		}
+		gxp_kci_handle_rkci(gxp_kci, resp);
 		return;
 	}
 
@@ -200,7 +233,8 @@ static int gxp_kci_allocate_resources(struct gxp_mailbox *mailbox,
 
 	mailbox->descriptor_buf.vaddr = gkci->descriptor_mem.vaddr;
 	mailbox->descriptor_buf.dsp_addr = gkci->descriptor_mem.daddr;
-	mailbox->descriptor = (struct gxp_mailbox_descriptor *)mailbox->descriptor_buf.vaddr;
+	mailbox->descriptor =
+		(struct gxp_mailbox_descriptor *)mailbox->descriptor_buf.vaddr;
 	mailbox->descriptor->cmd_queue_device_addr =
 		mailbox->cmd_queue_buf.dsp_addr;
 	mailbox->descriptor->resp_queue_device_addr =

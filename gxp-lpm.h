@@ -13,13 +13,6 @@
 #include "gxp-config.h"
 #include "gxp.h"
 
-enum lpm_psm_csrs {
-	LPM_REG_ENABLE_STATE_0 = 0x080,
-	LPM_REG_ENABLE_STATE_1 = 0x180,
-	LPM_REG_ENABLE_STATE_2 = 0x280,
-	LPM_REG_ENABLE_STATE_3 = 0x380,
-};
-
 enum lpm_state {
 	LPM_ACTIVE_STATE = 0,
 	LPM_CG_STATE = 1,
@@ -27,7 +20,15 @@ enum lpm_state {
 	LPM_PG_STATE = 3,
 };
 
-#define LPM_STATE_TABLE_SIZE (LPM_REG_ENABLE_STATE_1 - LPM_REG_ENABLE_STATE_0)
+enum psm_reg_offset {
+	PSM_REG_ENABLE_STATE0_OFFSET,
+	PSM_REG_ENABLE_STATE1_OFFSET,
+	PSM_REG_ENABLE_STATE2_OFFSET,
+	PSM_REG_ENABLE_STATE3_OFFSET,
+	PSM_REG_START_OFFSET,
+	PSM_REG_STATUS_OFFSET,
+	PSM_REG_CFG_OFFSET,
+};
 
 #define LPM_INSTRUCTION_OFFSET 0x00000944
 #define LPM_INSTRUCTION_MASK 0x03000000
@@ -105,34 +106,47 @@ void gxp_lpm_enable_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state)
 
 static inline u32 lpm_read_32(struct gxp_dev *gxp, uint reg_offset)
 {
-	uint offset = GXP_LPM_BASE + reg_offset;
-
-	return gxp_read_32(gxp, offset);
+	return readl(gxp->lpm_regs.vaddr + reg_offset);
 }
 
 static inline void lpm_write_32(struct gxp_dev *gxp, uint reg_offset, u32 value)
 {
-	uint offset = GXP_LPM_BASE + reg_offset;
+	writel(value, gxp->lpm_regs.vaddr + reg_offset);
+}
 
-	gxp_write_32(gxp, offset, value);
+static u32 get_reg_offset(struct gxp_dev *gxp, enum psm_reg_offset reg_offset, enum gxp_lpm_psm psm)
+{
+	switch (reg_offset) {
+	case PSM_REG_ENABLE_STATE0_OFFSET:
+	case PSM_REG_ENABLE_STATE1_OFFSET:
+	case PSM_REG_ENABLE_STATE2_OFFSET:
+	case PSM_REG_ENABLE_STATE3_OFFSET:
+		return gxp_lpm_psm_get_state_offset(psm, (uint)reg_offset);
+	case PSM_REG_START_OFFSET:
+		return gxp_lpm_psm_get_start_offset(psm);
+	case PSM_REG_STATUS_OFFSET:
+		return gxp_lpm_psm_get_status_offset(psm);
+	case PSM_REG_CFG_OFFSET:
+		return gxp_lpm_psm_get_cfg_offset(psm);
+	}
+
+	return 0;
 }
 
 static inline u32 lpm_read_32_psm(struct gxp_dev *gxp, enum gxp_lpm_psm psm,
-				  uint reg_offset)
+				  enum psm_reg_offset reg_offset)
 {
-	uint offset =
-		GXP_LPM_PSM_0_BASE + (GXP_LPM_PSM_SIZE * psm) + reg_offset;
+	uint offset = get_reg_offset(gxp, reg_offset, psm);
 
-	return gxp_read_32(gxp, offset);
+	return lpm_read_32(gxp, offset);
 }
 
 static inline void lpm_write_32_psm(struct gxp_dev *gxp, enum gxp_lpm_psm psm,
-				    uint reg_offset, u32 value)
+				    enum psm_reg_offset reg_offset, u32 value)
 {
-	uint offset =
-		GXP_LPM_PSM_0_BASE + (GXP_LPM_PSM_SIZE * psm) + reg_offset;
+	u32 offset = get_reg_offset(gxp, reg_offset, psm);
 
-	gxp_write_32(gxp, offset, value);
+	lpm_write_32(gxp, offset, value);
 }
 
 #endif /* __GXP_LPM_H__ */
