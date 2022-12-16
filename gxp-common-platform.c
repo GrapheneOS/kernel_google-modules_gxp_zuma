@@ -518,10 +518,26 @@ out:
 static int gxp_get_specs(struct gxp_client *client,
 			 struct gxp_specs_ioctl __user *argp)
 {
+	struct buffer_data *logging_buff_data;
+	struct gxp_dev *gxp = client->gxp;
 	struct gxp_specs_ioctl ibuf = {
 		.core_count = GXP_NUM_CORES,
+		.features = !gxp_is_direct_mode(client->gxp),
+		.telemetry_buffer_size = 0,
+		.secure_telemetry_buffer_size =
+			(u8)(SECURE_CORE_TELEMETRY_BUFFER_SIZE /
+			     GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE),
 		.memory_per_core = client->gxp->memory_per_core,
 	};
+
+	if (!IS_ERR_OR_NULL(gxp->core_telemetry_mgr)) {
+		logging_buff_data = gxp->core_telemetry_mgr->logging_buff_data;
+		if (!IS_ERR_OR_NULL(logging_buff_data)) {
+			ibuf.telemetry_buffer_size =
+				(u8)(logging_buff_data->size /
+				     GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE);
+		}
+	}
 
 	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
 		return -EFAULT;
@@ -855,11 +871,6 @@ static int map_tpu_mbx_queue(struct gxp_client *client,
 	u32 core_count;
 	int ret = 0;
 
-	if (client->mbx_desc.mapped) {
-		dev_err(gxp->dev, "Mappings already exist for TPU mailboxes");
-		return -EBUSY;
-	}
-
 	down_read(&gxp->vd_semaphore);
 
 	core_count = client->vd->num_cores;
@@ -906,7 +917,6 @@ static int map_tpu_mbx_queue(struct gxp_client *client,
 	client->mbx_desc.phys_core_list = phys_core_list;
 	client->mbx_desc.cmdq_size = mbx_info->cmdq_size;
 	client->mbx_desc.respq_size = mbx_info->respq_size;
-	client->mbx_desc.mapped = true;
 
 	goto out_free;
 
@@ -937,7 +947,6 @@ static void unmap_tpu_mbx_queue(struct gxp_client *client,
 	edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
 			       EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
 			       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info, NULL);
-	client->mbx_desc.mapped = false;
 }
 
 static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
@@ -963,6 +972,12 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 		goto out_unlock_client_semaphore;
 	}
 
+	if (client->tpu_file) {
+		dev_err(gxp->dev, "Mapping/linking TPU mailbox information already exists");
+		ret = -EBUSY;
+		goto out_unlock_client_semaphore;
+	}
+
 	/*
 	 * If someone is attacking us through this interface -
 	 * it's possible that ibuf.tpu_fd here is already a different file from the one passed to
@@ -983,7 +998,7 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 	if (gxp_is_direct_mode(gxp) || 1) {
 		ret = map_tpu_mbx_queue(client, &ibuf);
 		if (ret)
-			goto out_unlock_client_semaphore;
+			goto err_fput_tpu_file;
 	}
 
 	if (gxp->after_map_tpu_mbx_queue) {
@@ -996,6 +1011,9 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 
 err_unmap_tpu_mbx_queue:
 	unmap_tpu_mbx_queue(client, &ibuf);
+err_fput_tpu_file:
+	fput(client->tpu_file);
+	client->tpu_file = NULL;
 out_unlock_client_semaphore:
 	up_write(&client->semaphore);
 
@@ -1619,6 +1637,12 @@ static int gxp_mmap(struct file *file, struct vm_area_struct *vma)
 	}
 
 	switch (vma->vm_pgoff << PAGE_SHIFT) {
+	case GXP_MMAP_CORE_LOG_BUFFER_OFFSET:
+		return gxp_core_telemetry_mmap_buffers(
+			client->gxp, GXP_TELEMETRY_TYPE_LOGGING, vma);
+	case GXP_MMAP_CORE_TRACE_BUFFER_OFFSET:
+		return gxp_core_telemetry_mmap_buffers(
+			client->gxp, GXP_TELEMETRY_TYPE_TRACING, vma);
 	case GXP_MMAP_CORE_LOG_BUFFER_OFFSET_LEGACY:
 		return gxp_core_telemetry_mmap_buffers_legacy(
 			client->gxp, GXP_TELEMETRY_TYPE_LOGGING, vma);

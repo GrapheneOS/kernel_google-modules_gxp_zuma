@@ -30,7 +30,6 @@ struct gxp_client *gxp_client_create(struct gxp_dev *gxp)
 	client->has_vd_wakelock = false;
 	client->requested_states = off_states;
 	client->vd = NULL;
-	client->mbx_desc.mapped = false;
 
 	return client;
 }
@@ -54,13 +53,22 @@ void gxp_client_destroy(struct gxp_client *client)
 			gxp_eventfd_put(client->mb_eventfds[core]);
 	}
 
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
+#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&             \
+	!IS_ENABLED(CONFIG_GXP_GEM5)
 	if (client->tpu_file) {
+		if (client->vd) {
+			if (gxp->before_unmap_tpu_mbx_queue)
+				gxp->before_unmap_tpu_mbx_queue(gxp, client);
+			/*
+			 * TODO(b/237624453): remove '|| 1' once the MCU supports DSP->TPU interop
+			 */
+			if (gxp_is_direct_mode(gxp) || 1)
+				gxp_dma_unmap_tpu_buffer(gxp,
+							 client->vd->domain,
+							 client->mbx_desc);
+		}
 		fput(client->tpu_file);
 		client->tpu_file = NULL;
-		if (client->vd)
-			gxp_dma_unmap_tpu_buffer(gxp, client->vd->domain,
-						 client->mbx_desc);
 	}
 #endif
 

@@ -92,4 +92,10 @@ enum gxp_csrs {
 #define PLL_CON0_PLL_AUR 0x100
 #define PLL_CON0_NOC_USER 0x610
 
+#define GXP_SYSREG_AUR0_SHAREABILITY 0x0
+#define GXP_SYSREG_AUR1_SHAREABILITY 0x4
+#define SHAREABLE_WRITE (1 << 13)
+#define SHAREABLE_READ  (1 << 12)
+#define INNER_SHAREABLE 1
+
 #endif /* __CALLISTO_CSRS_H__ */

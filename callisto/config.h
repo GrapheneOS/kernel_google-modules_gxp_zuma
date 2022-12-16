@@ -44,5 +44,6 @@
 #include "csrs.h"
 #include "iova.h"
 #include "lpm.h"
+#include "mailbox-regs.h"
 
 #endif /* __CALLISTO_CONFIG_H__ */

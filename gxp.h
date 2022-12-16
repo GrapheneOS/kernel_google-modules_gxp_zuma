@@ -45,6 +45,12 @@
 /* Create coherent mappings of the buffer. */
 #define GXP_MAP_COHERENT (1 << 2)
 
+/* To check whether the driver is working in MCU mode. */
+#define GXP_SPEC_FEATURE_MODE_MCU (1 << 0)
+
+/* Core telemetry buffer size is a multiple of 64 kB */
+#define GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE 0x10000u
+
 struct gxp_map_ioctl {
 	/*
 	 * Deprecated. All virtual cores will be mapped.
@@ -184,11 +190,27 @@ struct gxp_mailbox_response_ioctl {
 struct gxp_specs_ioctl {
 	/* Maximum number of cores that can be allocated to a virtual device */
 	__u8 core_count;
+	/*
+	 * A field to indicate the features or modes the device supports.
+	 * Bitfields:
+	 *   [0:0]   - Mode:
+	 *               0 = direct mode
+	 *               1 = MCU mode
+	 *   [7:1]   - RESERVED
+	 */
+	__u8 features;
+	/*
+	 * Size of per core allocated telemetry buffer represented in units
+	 * of GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE.
+	 */
+	__u8 telemetry_buffer_size;
+	/*
+	 * Size of per core reserved secure telemetry buffer represented in
+	 * units of GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE.
+	 */
+	__u8 secure_telemetry_buffer_size;
 	/* Deprecated fields that should be ignored */
-	__u16 reserved_0;
-	__u16 reserved_1;
-	__u16 reserved_2;
-	__u8 reserved_3;
+	__u8 reserved[8];
 	/*
 	 * Amount of "tightly-coupled memory" or TCM available to each core.
 	 * The value returned will be in kB, or 0 if the value was not

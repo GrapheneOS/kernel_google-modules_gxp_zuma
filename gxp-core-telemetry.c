@@ -86,7 +86,7 @@ int gxp_core_telemetry_init(struct gxp_dev *gxp)
 
 	gxp->core_telemetry_mgr = mgr;
 	gxp_core_telemetry_buffer_size = ALIGN(gxp_core_telemetry_buffer_size,
-					       CORE_TELEMETRY_BUFFER_UNIT_SIZE);
+					       GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE);
 	if ((gxp_core_telemetry_buffer_size < CORE_TELEMETRY_DEFAULT_BUFFER_SIZE) ||
 	    (gxp_core_telemetry_buffer_size > CORE_TELEMETRY_MAX_BUFFER_SIZE)) {
 		dev_warn(gxp->dev,
@@ -136,10 +136,18 @@ struct telemetry_vma_data {
 
 static void telemetry_vma_open(struct vm_area_struct *vma)
 {
+	struct gxp_dev *gxp;
 	struct telemetry_vma_data *vma_data =
 		(struct telemetry_vma_data *)vma->vm_private_data;
-	struct gxp_dev *gxp = vma_data->gxp;
+	/*
+	 * vma_ops are required only for legacy telemetry flow
+	 * to keep track of buffer allocation during mmap and
+	 * buffer free during munmap.
+	 */
+	if (IS_ERR_OR_NULL(vma_data))
+		return;
 
+	gxp = vma_data->gxp;
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
 	refcount_inc(&vma_data->ref_count);
@@ -149,11 +157,22 @@ static void telemetry_vma_open(struct vm_area_struct *vma)
 
 static void telemetry_vma_close(struct vm_area_struct *vma)
 {
+	struct gxp_dev *gxp;
+	struct buffer_data *buff_data;
+	u8 type;
 	struct telemetry_vma_data *vma_data =
 		(struct telemetry_vma_data *)vma->vm_private_data;
-	struct gxp_dev *gxp = vma_data->gxp;
-	struct buffer_data *buff_data = vma_data->buff_data;
-	u8 type = vma_data->type;
+	/*
+	 * vma_ops are required only for legacy telemetry flow
+	 * to keep track of buffer allocation during mmap and
+	 * buffer free during munmap.
+	 */
+	if (IS_ERR_OR_NULL(vma_data))
+		return;
+
+	gxp = vma_data->gxp;
+	buff_data = vma_data->buff_data;
+	type = vma_data->type;
 
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
@@ -192,6 +211,7 @@ out:
 	mutex_unlock(&gxp->core_telemetry_mgr->lock);
 }
 
+/* TODO(b/260959553): Remove vma ops during legacy telemetry removal */
 static const struct vm_operations_struct telemetry_vma_ops = {
 	.open = telemetry_vma_open,
 	.close = telemetry_vma_close,
@@ -361,8 +381,61 @@ static int remap_telemetry_buffers(struct gxp_dev *gxp,
 
 out:
 	vma->vm_pgoff = orig_pgoff;
+	/* TODO(b/260959553): Remove vma ops during legacy telemetry removal */
 	vma->vm_ops = &telemetry_vma_ops;
 
+	return ret;
+}
+
+int gxp_core_telemetry_mmap_buffers(struct gxp_dev *gxp, u8 type,
+				    struct vm_area_struct *vma)
+{
+	int ret = 0;
+	struct buffer_data *buff_data;
+	size_t total_size = vma->vm_end - vma->vm_start;
+	size_t size = total_size / GXP_NUM_CORES;
+
+	if (!gxp->core_telemetry_mgr)
+		return -ENODEV;
+
+	if (type == GXP_TELEMETRY_TYPE_LOGGING)
+		buff_data = gxp->core_telemetry_mgr->logging_buff_data;
+	else if (type == GXP_TELEMETRY_TYPE_TRACING)
+		buff_data = gxp->core_telemetry_mgr->tracing_buff_data;
+	else
+		return -EINVAL;
+	/*
+	 * Total size must divide evenly into a GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE
+	 * aligned buffer per core.
+	 */
+	if (!total_size ||
+	    total_size % (GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE * GXP_NUM_CORES)) {
+		dev_warn(
+			gxp->dev,
+			"Invalid vma size(%lu bytes) requested for telemetry\n",
+			total_size);
+		return -EINVAL;
+	}
+	/*
+	 * Per core log buffer size should be equal to pre allocated
+	 * aligned buffer per core.
+	 */
+	if (size != buff_data->size) {
+		dev_warn(
+			gxp->dev,
+			"Invalid per core requested telemetry buffer size(%lu bytes)\n",
+			size);
+		return -EINVAL;
+	}
+	mutex_lock(&gxp->core_telemetry_mgr->lock);
+	ret = remap_telemetry_buffers(gxp, vma, buff_data);
+	if (ret)
+		goto err;
+	vma->vm_private_data = NULL;
+	mutex_unlock(&gxp->core_telemetry_mgr->lock);
+	return 0;
+err:
+	mutex_unlock(&gxp->core_telemetry_mgr->lock);
 	return ret;
 }
 

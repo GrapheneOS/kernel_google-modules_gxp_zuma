@@ -11,29 +11,38 @@
 #include <linux/platform_device.h>
 
 #include "callisto-platform.h"
-
-#include "gxp-common-platform.c"
 #include "gxp-kci.h"
 #include "gxp-mcu-fs.h"
 #include "gxp-uci.h"
-#include "gxp-usage-stats.h"
 
-#if IS_ENABLED(CONFIG_GXP_TEST)
-char *callisto_work_mode_name = "direct";
-#else
-static char *callisto_work_mode_name = "direct";
-#endif
+#include "gxp-common-platform.c"
 
-module_param_named(work_mode, callisto_work_mode_name, charp, 0660);
+static int gxp_mmu_set_shareability(struct device *dev, u32 reg_base)
+{
+	void __iomem *addr = ioremap(reg_base, PAGE_SIZE);
 
-static char *zuma_revision = "a0";
-module_param_named(chip_rev, zuma_revision, charp, 0660);
+	if (!addr) {
+		dev_err(dev, "sysreg ioremap failed\n");
+		return -ENOMEM;
+	}
+
+	writel_relaxed(SHAREABLE_WRITE | SHAREABLE_READ | INNER_SHAREABLE,
+		       addr + GXP_SYSREG_AUR0_SHAREABILITY);
+	writel_relaxed(SHAREABLE_WRITE | SHAREABLE_READ | INNER_SHAREABLE,
+		       addr + GXP_SYSREG_AUR1_SHAREABILITY);
+	iounmap(addr);
+
+	return 0;
+}
 
 static int callisto_platform_parse_dt(struct platform_device *pdev,
 				      struct gxp_dev *gxp)
 {
 	struct resource *r;
 	void *addr;
+	int ret;
+	u32 reg;
+	struct device *dev = gxp->dev;
 
 	/*
 	 * Setting BAAW is required for having correct base for CSR accesses.
@@ -43,7 +52,7 @@ static int callisto_platform_parse_dt(struct platform_device *pdev,
 	 */
 	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "baaw");
 	if (!IS_ERR_OR_NULL(r)) {
-		addr = devm_ioremap_resource(gxp->dev, r);
+		addr = devm_ioremap_resource(dev, r);
 		/* start address */
 		writel(0x0, addr + 0x0);
 		/* Window - size */
@@ -53,36 +62,28 @@ static int callisto_platform_parse_dt(struct platform_device *pdev,
 		/* Window - enable */
 		writel(0x80000003, addr + 0xc);
 	}
+
+	if (!of_find_property(dev->of_node, "gxp,shareability", NULL)) {
+		ret = -ENODEV;
+		goto err;
+	}
+	ret = of_property_read_u32_index(dev->of_node,
+					 "gxp,shareability", 0, &reg);
+	if (ret)
+		goto err;
+	ret = gxp_mmu_set_shareability(dev, reg);
+err:
+	if (ret)
+		dev_warn(dev, "Failed to enable shareability: %d\n", ret);
+
 	return 0;
-}
-
-static int callisto_platform_after_probe(struct gxp_dev *gxp)
-{
-	struct callisto_dev *callisto = to_callisto_dev(gxp);
-
-	if (gxp_is_direct_mode(gxp))
-		return 0;
-
-	gxp_usage_stats_init(gxp);
-	return gxp_mcu_init(gxp, &callisto->mcu);
-}
-
-static void callisto_platform_before_remove(struct gxp_dev *gxp)
-{
-	struct callisto_dev *callisto = to_callisto_dev(gxp);
-
-	if (gxp_is_direct_mode(gxp))
-		return;
-
-	gxp_mcu_exit(&callisto->mcu);
-	gxp_usage_stats_exit(gxp);
 }
 
 static int callisto_request_power_states(struct gxp_client *client,
 					 struct gxp_power_states power_states)
 {
 	struct gxp_dev *gxp = client->gxp;
-	struct callisto_dev *callisto = to_callisto_dev(gxp);
+	struct gxp_mcu *mcu = gxp_mcu_of(gxp);
 	struct gxp_uci_command cmd;
 	int ret;
 
@@ -97,7 +98,7 @@ static int callisto_request_power_states(struct gxp_client *client,
 	cmd.client_id = client->vd->client_id;
 
 	ret = gxp_uci_send_command(
-		&callisto->mcu.uci, client->vd, &cmd,
+		&mcu->uci, client->vd, &cmd,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].queue,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
@@ -105,24 +106,15 @@ static int callisto_request_power_states(struct gxp_client *client,
 	return ret;
 }
 
-static int callisto_platform_after_vd_block_ready(struct gxp_dev *gxp,
-						  struct gxp_virtual_device *vd)
+static int allocate_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
-	struct gxp_kci *kci = &(to_callisto_dev(gxp)->mcu.kci);
+	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
 	int pasid, ret;
-	u8 operation = KCI_ALLOCATE_VMBOX_OP_ALLOCATE_VMBOX;
-
-	if (gxp_is_direct_mode(gxp))
-		return 0;
-
-	if (vd->tpu_client_id >= 0)
-		operation |= KCI_ALLOCATE_VMBOX_OP_LINK_OFFLOAD_VMBOX;
 
 	pasid = gxp_iommu_aux_get_pasid(gxp, vd->domain);
 	/* TODO(b/255706432): Adopt vd->slice_index after the firmware supports this. */
 	ret = gxp_kci_allocate_vmbox(kci, pasid, vd->num_cores,
-				     /*slice_index=*/0, vd->tpu_client_id,
-				     operation);
+				     /*slice_index=*/0);
 	if (ret) {
 		if (ret != GCIP_KCI_ERROR_UNIMPLEMENTED) {
 			dev_err(gxp->dev,
@@ -145,15 +137,10 @@ static int callisto_platform_after_vd_block_ready(struct gxp_dev *gxp,
 	return 0;
 }
 
-static void
-callisto_platform_before_vd_block_unready(struct gxp_dev *gxp,
-					  struct gxp_virtual_device *vd)
+static void release_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
-	struct gxp_kci *kci = &(to_callisto_dev(gxp)->mcu.kci);
+	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
 	int ret;
-
-	if (gxp_is_direct_mode(gxp))
-		return;
 
 	if (vd->client_id < 0)
 		return;
@@ -177,6 +164,103 @@ callisto_platform_before_vd_block_unready(struct gxp_dev *gxp,
 	vd->client_id = -1;
 }
 
+static int link_offload_vmbox(struct gxp_dev *gxp,
+			      struct gxp_virtual_device *vd,
+			      u32 offload_client_id, u8 offload_chip_type)
+{
+	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
+	int ret;
+
+	ret = gxp_kci_link_unlink_offload_vmbox(
+		kci, vd->client_id, offload_client_id, offload_chip_type, true);
+	if (ret) {
+		if (ret != GCIP_KCI_ERROR_UNIMPLEMENTED) {
+			dev_err(gxp->dev,
+				"Failed to link offload VMBox for client %d, offload client %u, offload chip type %d: %d",
+				vd->client_id, offload_client_id,
+				offload_chip_type, ret);
+			return ret;
+		}
+
+		/*
+		 * TODO(241057541): Remove this conditional branch after the firmware side
+		 * implements handling link_offload_vmbox command.
+		 */
+		dev_info(
+			gxp->dev,
+			"Linking offload VMBox is not implemented from the firmware side");
+	}
+
+	return 0;
+}
+
+static void unlink_offload_vmbox(struct gxp_dev *gxp,
+				 struct gxp_virtual_device *vd,
+				 u32 offload_client_id, u8 offload_chip_type)
+{
+	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
+	int ret;
+
+	ret = gxp_kci_link_unlink_offload_vmbox(kci, vd->client_id,
+						offload_client_id,
+						offload_chip_type, false);
+	if (ret) {
+		/*
+		 * TODO(241057541): Remove this conditional branch after the firmware side
+		 * implements handling allocate_vmbox command.
+		 */
+		if (ret == GCIP_KCI_ERROR_UNIMPLEMENTED)
+			dev_info(
+				gxp->dev,
+				"Unlinking offload VMBox is not implemented from the firmware side");
+		else
+			dev_err(gxp->dev,
+				"Failed to unlink offload VMBox for client %d, offload client %u, offload chip type %d: %d",
+				vd->client_id, offload_client_id,
+				offload_chip_type, ret);
+	}
+}
+
+static int callisto_platform_after_vd_block_ready(struct gxp_dev *gxp,
+						  struct gxp_virtual_device *vd)
+{
+	int ret;
+
+	if (gxp_is_direct_mode(gxp))
+		return 0;
+
+	ret = allocate_vmbox(gxp, vd);
+	if (ret)
+		return ret;
+
+	if (vd->tpu_client_id >= 0) {
+		ret = link_offload_vmbox(gxp, vd, vd->tpu_client_id,
+					 GCIP_KCI_OFFLOAD_CHIP_TYPE_TPU);
+		if (ret)
+			goto err_release_vmbox;
+	}
+
+	return 0;
+
+err_release_vmbox:
+	release_vmbox(gxp, vd);
+	return ret;
+}
+
+static void
+callisto_platform_before_vd_block_unready(struct gxp_dev *gxp,
+					  struct gxp_virtual_device *vd)
+{
+	if (gxp_is_direct_mode(gxp))
+		return;
+	if (vd->client_id < 0)
+		return;
+	if (vd->tpu_client_id >= 0)
+		unlink_offload_vmbox(gxp, vd, vd->tpu_client_id,
+				     GCIP_KCI_OFFLOAD_CHIP_TYPE_TPU);
+	release_vmbox(gxp, vd);
+}
+
 static int callisto_wakelock_after_blk_on(struct gxp_dev *gxp)
 {
 	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
@@ -195,43 +279,49 @@ static void callisto_wakelock_before_blk_off(struct gxp_dev *gxp)
 	gxp_mcu_firmware_stop(mcu_fw);
 }
 
+#ifdef HAS_TPU_EXT
+
+static int get_tpu_client_id(struct gxp_client *client)
+{
+	struct gxp_dev *gxp = client->gxp;
+	struct edgetpu_ext_offload_info offload_info;
+	struct edgetpu_ext_client_info tpu_info;
+	int ret;
+
+	tpu_info.tpu_file = client->tpu_file;
+	ret = edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
+				     EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
+				     START_OFFLOAD, &tpu_info, &offload_info);
+	if (ret)
+		return ret;
+
+	return offload_info.client_id;
+}
+
 static int callisto_after_map_tpu_mbx_queue(struct gxp_dev *gxp,
 					    struct gxp_client *client)
 {
-	struct gxp_kci *kci = &(to_callisto_dev(gxp)->mcu.kci);
+	struct gxp_virtual_device *vd = client->vd;
 	int tpu_client_id = -1, ret;
 
-	/*
-	 * TODO(b/247923533): Get a client ID from the TPU kernel driver and remove this workaround
-	 * condition.
-	 */
-	if (tpu_client_id < 0)
+	if (gxp_is_direct_mode(gxp))
 		return 0;
 
-	if (client->vd->client_id >= 0) {
-		ret = gxp_kci_allocate_vmbox(
-			kci, client->vd->client_id, 0, 0, tpu_client_id,
-			KCI_ALLOCATE_VMBOX_OP_LINK_OFFLOAD_VMBOX);
-		if (ret) {
-			if (ret != GCIP_KCI_ERROR_UNIMPLEMENTED) {
-				dev_err(gxp->dev,
-					"Failed to link TPU VMbox client %d, TPU client %d: %d",
-					client->vd->client_id, tpu_client_id,
-					ret);
-				return ret;
-			}
-
-			/*
-			 * TODO(241057541): Remove this conditional branch after the firmware side
-			 * implements handling allocate_vmbox command.
-			 */
-			dev_info(
-				gxp->dev,
-				"Linking TPU VNMBox is not implemented from the firmware side");
-		}
+	tpu_client_id = get_tpu_client_id(client);
+	if (tpu_client_id < 0) {
+		dev_err(gxp->dev, "Failed to get a TPU client ID: %d",
+			tpu_client_id);
+		return tpu_client_id;
 	}
 
-	client->vd->tpu_client_id = tpu_client_id;
+	if (vd->client_id >= 0) {
+		ret = link_offload_vmbox(gxp, vd, tpu_client_id,
+					 GCIP_KCI_OFFLOAD_CHIP_TYPE_TPU);
+		if (ret)
+			return ret;
+	}
+
+	vd->tpu_client_id = tpu_client_id;
 
 	return 0;
 }
@@ -239,47 +329,42 @@ static int callisto_after_map_tpu_mbx_queue(struct gxp_dev *gxp,
 static void callisto_before_unmap_tpu_mbx_queue(struct gxp_dev *gxp,
 						struct gxp_client *client)
 {
-	/*
-	 * We don't have to care about the case that the client releases a TPU vmbox which is
-	 * linked to the DSP client without notifying the DSP MCU firmware because the client will
-	 * always release the DSP vmbox earlier than the TPU vmbox. (i.e, the `release_vmbox` KCI
-	 * command will be always sent to the DSP MCU firmware to release the DSP vmbox before
-	 * releasing the TPU vmbox and the firmware will stop TPU offloading.) Also, from Callisto,
-	 * we don't have to care about mapping/unmapping the TPU mailbox buffer here neither.
-	 * Therefore, just unset the TPU client ID here.
-	 */
-	client->vd->tpu_client_id = -1;
+	struct gxp_virtual_device *vd = client->vd;
+
+	if (vd->client_id >= 0 && vd->tpu_client_id >= 0)
+		unlink_offload_vmbox(gxp, vd, vd->tpu_client_id,
+				     GCIP_KCI_OFFLOAD_CHIP_TYPE_TPU);
+	vd->tpu_client_id = -1;
 }
+
+#endif /* HAS_TPU_EXT */
 
 static int gxp_platform_probe(struct platform_device *pdev)
 {
 	struct callisto_dev *callisto =
 		devm_kzalloc(&pdev->dev, sizeof(*callisto), GFP_KERNEL);
+	struct gxp_mcu_dev *mcu_dev = &callisto->mcu_dev;
+	struct gxp_dev *gxp;
 
 	if (!callisto)
 		return -ENOMEM;
 
-	callisto->mode = callisto_dev_parse_work_mode(callisto_work_mode_name);
+	gxp_mcu_dev_init(mcu_dev);
 
-	callisto->gxp.parse_dt = callisto_platform_parse_dt;
-	callisto->gxp.after_probe = callisto_platform_after_probe;
-	callisto->gxp.before_remove = callisto_platform_before_remove;
-	callisto->gxp.handle_ioctl = gxp_mcu_ioctl;
-	callisto->gxp.handle_mmap = gxp_mcu_mmap;
-	callisto->gxp.after_vd_block_ready =
-		callisto_platform_after_vd_block_ready;
-	callisto->gxp.before_vd_block_unready =
+	gxp = &mcu_dev->gxp;
+	gxp->parse_dt = callisto_platform_parse_dt;
+	gxp->after_vd_block_ready = callisto_platform_after_vd_block_ready;
+	gxp->before_vd_block_unready =
 		callisto_platform_before_vd_block_unready;
-	callisto->gxp.request_power_states = callisto_request_power_states;
-	callisto->gxp.wakelock_after_blk_on = callisto_wakelock_after_blk_on;
-	callisto->gxp.wakelock_before_blk_off =
-		callisto_wakelock_before_blk_off;
-	callisto->gxp.after_map_tpu_mbx_queue =
-		callisto_after_map_tpu_mbx_queue;
-	callisto->gxp.before_unmap_tpu_mbx_queue =
-		callisto_before_unmap_tpu_mbx_queue;
+	gxp->request_power_states = callisto_request_power_states;
+	gxp->wakelock_after_blk_on = callisto_wakelock_after_blk_on;
+	gxp->wakelock_before_blk_off = callisto_wakelock_before_blk_off;
+#ifdef HAS_TPU_EXT
+	gxp->after_map_tpu_mbx_queue = callisto_after_map_tpu_mbx_queue;
+	gxp->before_unmap_tpu_mbx_queue = callisto_before_unmap_tpu_mbx_queue;
+#endif
 
-	return gxp_common_platform_probe(pdev, &callisto->gxp);
+	return gxp_common_platform_probe(pdev, gxp);
 }
 
 static int gxp_platform_remove(struct platform_device *pdev)
@@ -316,39 +401,6 @@ static void __exit gxp_platform_exit(void)
 {
 	platform_driver_unregister(&gxp_platform_driver);
 	gxp_common_platform_unreg_sscd();
-}
-
-struct gxp_mcu *gxp_mcu_of(struct gxp_dev *gxp)
-{
-	return &(to_callisto_dev(gxp)->mcu);
-}
-
-struct gxp_mcu_firmware *gxp_mcu_firmware_of(struct gxp_dev *gxp)
-{
-	return &(to_callisto_dev(gxp)->mcu.fw);
-}
-
-bool gxp_is_direct_mode(struct gxp_dev *gxp)
-{
-	struct callisto_dev *callisto = to_callisto_dev(gxp);
-
-	return callisto->mode == DIRECT;
-}
-
-enum gxp_chip_revision gxp_get_chip_revision(struct gxp_dev *gxp)
-{
-	if (!strcmp(zuma_revision, "a0"))
-		return GXP_CHIP_A0;
-	if (!strcmp(zuma_revision, "b0"))
-		return GXP_CHIP_B0;
-	return GXP_CHIP_ANY;
-}
-
-enum callisto_work_mode callisto_dev_parse_work_mode(const char *work_mode)
-{
-	if (!strcmp(work_mode, "mcu"))
-		return MCU;
-	return DIRECT;
 }
 
 MODULE_DESCRIPTION("Google GXP platform driver");

@@ -16,15 +16,16 @@
 #include "gxp-internal.h"
 #include "gxp.h"
 
-/* Core telemetry buffer size is a multiple of 64 kB */
-#define CORE_TELEMETRY_BUFFER_UNIT_SIZE SZ_64K
-#define CORE_TELEMETRY_DEFAULT_BUFFER_SIZE CORE_TELEMETRY_BUFFER_UNIT_SIZE
+/* Default telemetry buffer size per core */
+#define CORE_TELEMETRY_DEFAULT_BUFFER_SIZE GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE
 /**
  * Maximum core telemetry buffer size that can be represented by GXP_GET_SPECS
  * ioctl. 8 bits are reserved to represent telemetry buffer size in GXP_GET_SPECS
- * ioctl and the size is represented in unit of CORE_TELEMETRY_BUFFER_UNIT_SIZE.
+ * ioctl and the size is represented in unit of GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE.
  */
-#define CORE_TELEMETRY_MAX_BUFFER_SIZE (U8_MAX * CORE_TELEMETRY_BUFFER_UNIT_SIZE)
+#define CORE_TELEMETRY_MAX_BUFFER_SIZE (U8_MAX * GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE)
+/* Secure telemetry buffer size per core */
+#define SECURE_CORE_TELEMETRY_BUFFER_SIZE GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE
 
 struct gxp_core_telemetry_work {
 	struct work_struct work;
@@ -58,6 +59,22 @@ struct gxp_core_telemetry_manager {
  * * -ENOMEM - Insufficient memory is available to initialize support
  */
 int gxp_core_telemetry_init(struct gxp_dev *gxp);
+
+/**
+ * gxp_core_telemetry_mmap_buffers() - Maps the preallocated telemetry
+ *                                     buffers to the user-space vma.
+ * @gxp: The GXP device to create the buffers for.
+ * @type: Either `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`.
+ * @vma: The vma from user-space which all cores' buffers will be mapped into.
+ *
+ * Return:
+ * * 0       - Success.
+ * * -ENODEV - Core telemetry support has not been initialized. Must explicitly
+ *             check this, since this function is called based on user-input.
+ * * -EINVAL - Either the vma size is not aligned or @type is not valid.
+ */
+int gxp_core_telemetry_mmap_buffers(struct gxp_dev *gxp, u8 type,
+				    struct vm_area_struct *vma);
 
 /**
  * gxp_core_telemetry_mmap_buffers_legacy() - Allocate a telemetry buffer for
