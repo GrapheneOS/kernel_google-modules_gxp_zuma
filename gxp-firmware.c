@@ -867,9 +867,9 @@ static int gxp_firmware_setup(struct gxp_dev *gxp,
 			gxp_firmware_unload(gxp, core);
 			return ret;
 		}
+		enable_core_interrupts(gxp, phys_core);
 	}
 
-	enable_core_interrupts(gxp, phys_core);
 	return ret;
 }
 

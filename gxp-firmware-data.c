@@ -595,23 +595,23 @@ static void set_system_cfg_region(struct gxp_dev *gxp, void *sys_cfg)
 	else
 		des_ro->debug_dump_dev_addr = 0;
 
-#define COPY_FIELDS                                                            \
+#define COPY_FIELDS(des, ro, rw)                                               \
 	do {                                                                   \
-		tel_ro->host_status = tel_des->host_status;                    \
-		tel_ro->buffer_addr = tel_des->buffer_addr;                    \
-		tel_ro->buffer_size = tel_des->buffer_size;                    \
-		tel_rw->device_status = tel_des->device_status;                \
-		tel_rw->data_available = tel_des->watermark_level;             \
+		ro->host_status = des->host_status;                            \
+		ro->buffer_addr = des->buffer_addr;                            \
+		ro->buffer_size = des->buffer_size;                            \
+		rw->device_status = des->device_status;                        \
+		rw->data_available = des->watermark_level;                     \
 	} while (0)
 	for (i = 0; i < GXP_NUM_CORES; i++) {
 		tel_ro = &des_ro->telemetry_desc.per_core_loggers[i];
 		tel_rw = &des_rw->telemetry_desc.per_core_loggers[i];
 		tel_des = &descriptor->per_core_loggers[i];
-		COPY_FIELDS;
+		COPY_FIELDS(tel_des, tel_ro, tel_rw);
 		tel_ro = &des_ro->telemetry_desc.per_core_tracers[i];
 		tel_rw = &des_rw->telemetry_desc.per_core_tracers[i];
 		tel_des = &descriptor->per_core_tracers[i];
-		COPY_FIELDS;
+		COPY_FIELDS(tel_des, tel_ro, tel_rw);
 	}
 #undef COPY_FIELDS
 }

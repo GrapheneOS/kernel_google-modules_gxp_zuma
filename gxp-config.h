@@ -18,8 +18,6 @@
 
 #endif /* unknown */
 
-#define GXP_NUM_PREALLOCATED_DOMAINS GXP_NUM_CORES
-
 #if defined(CONFIG_GXP_ZEBU) || defined(CONFIG_GXP_IP_ZEBU)
 #define GXP_TIME_DELAY_FACTOR 20
 #else

@@ -34,8 +34,8 @@
 #define GXP_SHARED_BUFFER_SIZE SZ_512K
 /* Size of slice per VD. */
 #define GXP_SHARED_SLICE_SIZE SZ_32K
-/* TODO(b/265730182): set to 7 */
-#define GXP_NUM_SHARED_SLICES 16
+/* The max number of active virtual devices. */
+#define GXP_NUM_SHARED_SLICES 7
 
 /* TODO(b/234098135): remove this when FW supports suspend / resume */
 #define DISABLE_VD_SUSPEND_RESUME_SUPPORT

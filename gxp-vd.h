@@ -10,6 +10,7 @@
 
 #include <linux/iommu.h>
 #include <linux/list.h>
+#include <linux/mutex.h>
 #include <linux/rbtree.h>
 #include <linux/refcount.h>
 #include <linux/rwsem.h>
@@ -139,6 +140,10 @@ struct gxp_virtual_device {
 	struct gcip_image_config_parser cfg_parser;
 	/* The config version specified in firmware's image config. */
 	u32 config_version;
+	/* Protects @dma_fence_list. */
+	struct mutex fence_list_lock;
+	/* List of GXP DMA fences owned by this VD. */
+	struct list_head gxp_fence_list;
 };
 
 /*

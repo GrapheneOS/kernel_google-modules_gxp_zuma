@@ -167,13 +167,6 @@ static int gxp_firmware_run_set(void *data, u64 val)
 		}
 		up_write(&gxp->vd_semaphore);
 
-		/*
-		 * Cleanup any bad state or corruption the device might've
-		 * caused
-		 */
-		gxp_fw_data_destroy(gxp);
-		gxp_fw_data_init(gxp);
-
 		client = gxp_client_create(gxp);
 		if (IS_ERR(client)) {
 			dev_err(gxp->dev, "Failed to create client\n");

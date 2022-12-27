@@ -29,6 +29,7 @@
 #include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
 #include "gxp-debugfs.h"
+#include "gxp-dma-fence.h"
 #include "gxp-dma.h"
 #include "gxp-dmabuf.h"
 #include "gxp-domain-pool.h"
@@ -1539,6 +1540,57 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
+static int
+gxp_create_sync_fence(struct gxp_client *client,
+		      struct gxp_create_sync_fence_data __user *datap)
+{
+	struct gxp_dev *gxp = client->gxp;
+	struct gxp_create_sync_fence_data data;
+	int ret;
+
+	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
+		return -EFAULT;
+	down_read(&client->semaphore);
+	if (client->vd) {
+		ret = gxp_dma_fence_create(gxp, client->vd, &data);
+	} else {
+		dev_warn(gxp->dev, "client creating sync fence has no VD");
+		ret = -EINVAL;
+	}
+	up_read(&client->semaphore);
+	if (ret)
+		return ret;
+
+	if (copy_to_user((void __user *)datap, &data, sizeof(data)))
+		ret = -EFAULT;
+	return ret;
+}
+
+static int
+gxp_signal_sync_fence(struct gxp_signal_sync_fence_data __user *datap)
+{
+	struct gxp_signal_sync_fence_data data;
+
+	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
+		return -EFAULT;
+	return gcip_dma_fence_signal(data.fence, data.error, false);
+}
+
+static int gxp_sync_fence_status(struct gxp_sync_fence_status __user *datap)
+{
+	struct gxp_sync_fence_status data;
+	int ret;
+
+	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
+		return -EFAULT;
+	ret = gcip_dma_fence_status(data.fence, &data.status);
+	if (ret)
+		return ret;
+	if (copy_to_user((void __user *)datap, &data, sizeof(data)))
+		ret = -EFAULT;
+	return ret;
+}
+
 static int gxp_register_invalidated_eventfd(
 	struct gxp_client *client,
 	struct gxp_register_invalidated_eventfd_ioctl __user *argp)
@@ -1671,6 +1723,15 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 		break;
 	case GXP_TRIGGER_DEBUG_DUMP:
 		ret = gxp_trigger_debug_dump(client, argp);
+		break;
+	case GXP_CREATE_SYNC_FENCE:
+		ret = gxp_create_sync_fence(client, argp);
+		break;
+	case GXP_SIGNAL_SYNC_FENCE:
+		ret = gxp_signal_sync_fence(argp);
+		break;
+	case GXP_SYNC_FENCE_STATUS:
+		ret = gxp_sync_fence_status(argp);
 		break;
 	case GXP_REGISTER_INVALIDATED_EVENTFD:
 		ret = gxp_register_invalidated_eventfd(client, argp);
@@ -1960,8 +2021,12 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		ret = -ENOMEM;
 		goto err_debug_dump_exit;
 	}
-	ret = gxp_domain_pool_init(gxp, gxp->domain_pool,
-				   GXP_NUM_PREALLOCATED_DOMAINS);
+	if (gxp_is_direct_mode(gxp))
+		ret = gxp_domain_pool_init(gxp, gxp->domain_pool,
+					   GXP_NUM_CORES);
+	else
+		ret = gxp_domain_pool_init(gxp, gxp->domain_pool,
+					   GXP_NUM_SHARED_SLICES);
 	if (ret) {
 		dev_err(dev,
 			"Failed to initialize IOMMU domain pool (ret=%d)\n",

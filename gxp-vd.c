@@ -683,6 +683,8 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	vd->credit = GXP_COMMAND_CREDIT_PER_VD;
 	vd->first_open = true;
 	vd->vdid = atomic_inc_return(&gxp->next_vdid);
+	mutex_init(&vd->fence_list_lock);
+	INIT_LIST_HEAD(&vd->gxp_fence_list);
 
 	vd->domain = gxp_domain_pool_alloc(gxp->domain_pool);
 	if (!vd->domain) {
@@ -928,7 +930,8 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 	uint lpm_state;
 
 	lockdep_assert_held(&gxp->vd_semaphore);
-	if ((vd->state == GXP_VD_OFF || vd->state == GXP_VD_READY ||
+	if (gxp_core_boot &&
+	    (vd->state == GXP_VD_OFF || vd->state == GXP_VD_READY ||
 	     vd->state == GXP_VD_RUNNING) &&
 	    gxp_pm_get_blk_state(gxp) != AUR_OFF) {
 		/*

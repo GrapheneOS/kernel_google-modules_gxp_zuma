@@ -216,8 +216,12 @@ static int gxp_mcu_firmware_power_up(struct gxp_mcu_firmware *mcu_fw,
 	struct gxp_dev *gxp = mcu_fw->gxp;
 	int ret;
 
-	if (!gxp->gsa_dev)
-		program_iremap_csr(gxp, &mcu_fw->image_buf);
+	/*
+	 * TODO(267723984): call this only if GSA device is not found after the GSA
+	 * firmware hanles this.
+	 */
+	program_iremap_csr(gxp, &mcu_fw->image_buf);
+
 	gxp_bpm_configure(gxp, GXP_MCU_CORE_ID, INST_BPM_OFFSET,
 			  BPM_EVENT_READ_XFER);
 
