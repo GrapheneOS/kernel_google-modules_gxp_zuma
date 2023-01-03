@@ -77,8 +77,10 @@ struct gxp_kci_allocate_vmbox_detail {
 	 * used for MCU<->core mailbox.
 	 */
 	u8 slice_index;
+	/* Whether it's the first time allocating a VMBox for this VD. */
+	bool first_open;
 	/* Reserved */
-	u8 reserved[58];
+	u8 reserved[57];
 } __packed;
 
 /* Used when sending the details about release_vmbox KCI command. */
@@ -197,7 +199,7 @@ int gxp_kci_notify_throttling(struct gxp_kci *gkci, u32 rate);
  * Returns the code of response, or a negative errno on error.
  */
 int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u32 client_id, u8 num_cores,
-			   u8 slice_index);
+			   u8 slice_index, bool first_open);
 
 /*
  * Releases a virtual mailbox which is allocated by `gxp_kci_allocate_vmbox`.

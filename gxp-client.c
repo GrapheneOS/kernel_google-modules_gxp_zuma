@@ -87,8 +87,27 @@ void gxp_client_destroy(struct gxp_client *client)
 	kfree(client);
 }
 
+static int gxp_set_secure_vd(struct gxp_virtual_device *vd)
+{
+	struct gxp_dev *gxp = vd->gxp;
+
+	if (gxp_is_direct_mode(gxp))
+		return 0;
+
+	mutex_lock(&gxp->secure_vd_lock);
+	if (gxp->secure_vd) {
+		mutex_unlock(&gxp->secure_vd_lock);
+		return -EEXIST;
+	}
+	vd->is_secure = true;
+	gxp->secure_vd = vd;
+	mutex_unlock(&gxp->secure_vd_lock);
+
+	return 0;
+}
+
 int gxp_client_allocate_virtual_device(struct gxp_client *client,
-				       uint core_count)
+				       uint core_count, u8 flags)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_virtual_device *vd;
@@ -110,18 +129,23 @@ int gxp_client_allocate_virtual_device(struct gxp_client *client,
 			ret);
 		goto error;
 	}
-
+	if (flags & GXP_ALLOCATE_VD_SECURE) {
+		ret = gxp_set_secure_vd(vd);
+		if (ret)
+			goto error_vd_release;
+	}
 	if (client->has_block_wakelock) {
 		ret = gxp_vd_block_ready(vd);
-		if (ret) {
-			gxp_vd_release(vd);
-			goto error;
-		}
+		if (ret)
+			goto error_vd_release;
 	}
 	up_write(&gxp->vd_semaphore);
 
 	client->vd = vd;
 	return 0;
+
+error_vd_release:
+	gxp_vd_release(vd);
 error:
 	up_write(&gxp->vd_semaphore);
 	return ret;

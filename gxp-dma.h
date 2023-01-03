@@ -258,6 +258,30 @@ void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
 		      enum dma_data_direction direction, unsigned long attrs);
 
 /**
+ * gxp_dma_map_iova_sgt() - Create a mapping for a scatter-gather list, with specific IOVA.
+ * @gxp: The GXP device to map the scatter-gather list for
+ * @gdomain: The IOMMU domain to be mapped
+ * @iova: The IOVA to be mapped.
+ * @sgt: The scatter-gather list table of the buffer to be mapped
+ * @prot: The protection bits to be passed to IOMMU API
+ *
+ * Return: 0 on success. Negative errno otherwise.
+ */
+int gxp_dma_map_iova_sgt(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
+			 dma_addr_t iova, struct sg_table *sgt, int prot);
+/**
+ * gxp_dma_unmap_iova_sgt() - Revert gxp_dma_map_iova_sgt()
+ * @gxp: The GXP device the scatter-gather list was mapped for
+ * @gdomain: The IOMMU domain mapping was mapped on
+ * @iova: The IOVA to be un-mapped.
+ * @sgt: The scatter-gather list to unmap; The same one passed to
+ *      `gxp_dma_map_iova_sgt()`
+ */
+void gxp_dma_unmap_iova_sgt(struct gxp_dev *gxp,
+			    struct gxp_iommu_domain *gdomain, dma_addr_t iova,
+			    struct sg_table *sgt);
+
+/**
  * gxp_dma_sync_sg_for_cpu() - Sync sg list for reading by the  CPU
  * @gxp: The GXP device the mapping was created for
  * @sg: The mapped scatter-gather list to be synced
@@ -325,5 +349,12 @@ struct gxp_iommu_domain *gxp_iommu_get_domain_for_dev(struct gxp_dev *gxp);
  */
 uint gxp_iommu_aux_get_pasid(struct gxp_dev *gxp,
 			     struct gxp_iommu_domain *gdomain);
+
+/**
+ * gxp_iommu_setup_shareability() - Set shareability to enable IO-Coherency.
+ * @gxp: The GXP device to set shareability for
+ */
+void gxp_iommu_setup_shareability(struct gxp_dev *gxp);
+
 
 #endif /* __GXP_DMA_H__ */

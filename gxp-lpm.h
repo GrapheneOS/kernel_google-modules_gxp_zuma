@@ -106,11 +106,17 @@ void gxp_lpm_enable_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state)
 
 static inline u32 lpm_read_32(struct gxp_dev *gxp, uint reg_offset)
 {
+#ifndef GXP_SEPARATE_LPM_OFFSET
+	reg_offset = GXP_LPM_BASE + reg_offset;
+#endif
 	return readl(gxp->lpm_regs.vaddr + reg_offset);
 }
 
 static inline void lpm_write_32(struct gxp_dev *gxp, uint reg_offset, u32 value)
 {
+#ifndef GXP_SEPARATE_LPM_OFFSET
+	reg_offset = GXP_LPM_BASE + reg_offset;
+#endif
 	writel(value, gxp->lpm_regs.vaddr + reg_offset);
 }
 

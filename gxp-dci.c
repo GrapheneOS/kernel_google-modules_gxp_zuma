@@ -20,11 +20,11 @@
 #define MBOX_CMD_QUEUE_NUM_ENTRIES 1024
 #define MBOX_RESP_QUEUE_NUM_ENTRIES 1024
 
-static int gxp_dci_mailbox_manager_execute_cmd(struct gxp_mailbox *mailbox,
-					       u16 cmd_code, u8 cmd_priority,
-					       u64 cmd_daddr, u32 cmd_size,
-					       u32 cmd_flags, u64 *resp_seq,
-					       u16 *resp_status)
+static int gxp_dci_mailbox_manager_execute_cmd(
+	struct gxp_client *client, struct gxp_mailbox *mailbox, int virt_core,
+	u16 cmd_code, u8 cmd_priority, u64 cmd_daddr, u32 cmd_size,
+	u32 cmd_flags, u8 num_cores, struct gxp_power_states power_states,
+	u64 *resp_seq, u16 *resp_status)
 {
 	struct gxp_dci_command cmd;
 	struct gxp_dci_response resp;
@@ -72,7 +72,7 @@ static int gxp_dci_mailbox_manager_execute_cmd_async(
 	cmd.priority = cmd_priority; /* currently unused */
 	cmd.buffer_descriptor = buffer;
 
-	ret = gxp_dci_execute_cmd_async(mailbox, &cmd, &resp_queue->queue,
+	ret = gxp_dci_execute_cmd_async(mailbox, &cmd, &resp_queue->dest_queue,
 					&resp_queue->lock, &resp_queue->waitq,
 					requested_states, eventfd);
 
@@ -102,14 +102,14 @@ static int gxp_dci_mailbox_manager_wait_async_resp(struct gxp_client *client,
 	 * proceed per wake event.
 	 */
 	timeout = wait_event_interruptible_lock_irq_timeout_exclusive(
-		resp_queue->waitq, !list_empty(&resp_queue->queue),
+		resp_queue->waitq, !list_empty(&resp_queue->dest_queue),
 		resp_queue->lock, msecs_to_jiffies(MAILBOX_TIMEOUT));
 	if (timeout <= 0) {
 		spin_unlock_irq(&resp_queue->lock);
 		/* unusual case - this only happens when there is no command pushed */
 		return timeout ? -ETIMEDOUT : timeout;
 	}
-	resp_ptr = list_first_entry(&resp_queue->queue,
+	resp_ptr = list_first_entry(&resp_queue->dest_queue,
 				    struct gxp_dci_async_response, list_entry);
 
 	/* Pop the front of the response list */
@@ -177,9 +177,9 @@ static void gxp_dci_mailbox_manager_release_unconsumed_async_resps(
 		 * Do it anyway for consistency.
 		 */
 		spin_lock_irqsave(&vd->mailbox_resp_queues[i].lock, flags);
-		list_for_each_entry_safe (cur, nxt,
-					  &vd->mailbox_resp_queues[i].queue,
-					  list_entry) {
+		list_for_each_entry_safe (
+			cur, nxt, &vd->mailbox_resp_queues[i].dest_queue,
+			list_entry) {
 			list_del(&cur->list_entry);
 			gcip_mailbox_release_awaiter(cur->awaiter);
 		}

@@ -40,6 +40,9 @@
 static int gxp_dsp_fw_auth_disable;
 module_param_named(dsp_fw_auth_disable, gxp_dsp_fw_auth_disable, int, 0660);
 
+static bool gxp_core_boot = true;
+module_param_named(core_boot, gxp_core_boot, bool, 0660);
+
 static int
 request_dsp_firmware(struct gxp_dev *gxp, char *name_prefix,
 		     const struct firmware *out_firmwares[GXP_NUM_CORES])
@@ -828,7 +831,9 @@ static int gxp_firmware_setup(struct gxp_dev *gxp, uint core)
 	}
 
 	/* Mark this as a cold boot */
-	gxp_firmware_set_boot_mode(gxp, core, GXP_BOOT_MODE_REQUEST_COLD_BOOT);
+	if (gxp_core_boot)
+		gxp_firmware_set_boot_mode(gxp, core,
+					   GXP_BOOT_MODE_REQUEST_COLD_BOOT);
 
 	ret = gxp_firmware_setup_hw_after_block_off(gxp, core,
 						    /*verbose=*/true);
@@ -862,31 +867,34 @@ static int gxp_firmware_finish_startup(struct gxp_dev *gxp,
 				       struct gxp_virtual_device *vd,
 				       uint virt_core, uint core)
 {
-	int ret;
 	struct work_struct *work;
 	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
+	int ret = 0;
 
-	ret = gxp_firmware_handshake(gxp, core);
-	if (ret) {
-		dev_err(gxp->dev, "Firmware handshake failed on core %u\n",
-			core);
-		gxp_pm_core_off(gxp, core);
-		goto out_firmware_unload;
-	}
-
-	/* Initialize mailbox */
-	if (gxp->mailbox_mgr->allocate_mailbox) {
-		gxp->mailbox_mgr->mailboxes[core] =
-			gxp->mailbox_mgr->allocate_mailbox(gxp->mailbox_mgr, vd,
-							   virt_core, core);
-		if (IS_ERR(gxp->mailbox_mgr->mailboxes[core])) {
+	if (gxp_core_boot) {
+		ret = gxp_firmware_handshake(gxp, core);
+		if (ret) {
 			dev_err(gxp->dev,
-				"Unable to allocate mailbox (core=%u, ret=%ld)\n",
-				core,
-				PTR_ERR(gxp->mailbox_mgr->mailboxes[core]));
-			ret = PTR_ERR(gxp->mailbox_mgr->mailboxes[core]);
-			gxp->mailbox_mgr->mailboxes[core] = NULL;
-			goto out_firmware_unload;
+				"Firmware handshake failed on core %u\n", core);
+			goto err_firmware_off;
+		}
+
+		/* Initialize mailbox */
+		if (gxp->mailbox_mgr->allocate_mailbox) {
+			gxp->mailbox_mgr->mailboxes[core] =
+				gxp->mailbox_mgr->allocate_mailbox(
+					gxp->mailbox_mgr, vd, virt_core, core);
+			if (IS_ERR(gxp->mailbox_mgr->mailboxes[core])) {
+				dev_err(gxp->dev,
+					"Unable to allocate mailbox (core=%u, ret=%ld)\n",
+					core,
+					PTR_ERR(gxp->mailbox_mgr
+							->mailboxes[core]));
+				ret = PTR_ERR(
+					gxp->mailbox_mgr->mailboxes[core]);
+				gxp->mailbox_mgr->mailboxes[core] = NULL;
+				goto err_firmware_off;
+			}
 		}
 	}
 
@@ -904,7 +912,9 @@ static int gxp_firmware_finish_startup(struct gxp_dev *gxp,
 
 	return ret;
 
-out_firmware_unload:
+err_firmware_off:
+	if (gxp_core_boot)
+		gxp_pm_core_off(gxp, core);
 	gxp_firmware_unload(gxp, core);
 	return ret;
 }
@@ -925,21 +935,24 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 	gxp_notification_unregister_handler(gxp, core,
 					    HOST_NOTIF_CORE_TELEMETRY_STATUS);
 
-	if (gxp->mailbox_mgr->release_mailbox) {
-		gxp->mailbox_mgr->release_mailbox(
-			gxp->mailbox_mgr, vd, virt_core,
-			gxp->mailbox_mgr->mailboxes[core]);
-		dev_notice(gxp->dev, "Mailbox %u released\n", core);
+	if (gxp_core_boot) {
+		if (gxp->mailbox_mgr->release_mailbox) {
+			gxp->mailbox_mgr->release_mailbox(
+				gxp->mailbox_mgr, vd, virt_core,
+				gxp->mailbox_mgr->mailboxes[core]);
+			dev_notice(gxp->dev, "Mailbox %u released\n", core);
+		}
+
+		if (vd->state == GXP_VD_RUNNING) {
+			/*
+			 * Disable interrupts to prevent cores from being woken up
+			 * unexpectedly.
+			 */
+			disable_core_interrupts(gxp, core);
+			gxp_pm_core_off(gxp, core);
+		}
 	}
 
-	if (vd->state == GXP_VD_RUNNING) {
-		/*
-		 * Disable interrupts to prevent cores from being woken up
-		 * unexpectedly.
-		 */
-		disable_core_interrupts(gxp, core);
-		gxp_pm_core_off(gxp, core);
-	}
 	gxp_firmware_unload(gxp, core);
 }
 
@@ -970,7 +983,8 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 		for (core = 0; core < GXP_NUM_CORES; core++) {
 			if (core_list & BIT(core)) {
 				if (!(failed_cores & BIT(core))) {
-					gxp_pm_core_off(gxp, core);
+					if (gxp_core_boot)
+						gxp_pm_core_off(gxp, core);
 					gxp_firmware_unload(gxp, core);
 				}
 			}
@@ -991,8 +1005,11 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 	}
 #endif
 	/* Switch clock mux to the normal state to guarantee LPM works */
-	gxp_pm_force_clkmux_normal(gxp);
-	gxp_firmware_wakeup_cores(gxp, core_list);
+	if (gxp_core_boot) {
+		gxp_pm_force_clkmux_normal(gxp);
+		gxp_firmware_wakeup_cores(gxp, core_list);
+	}
+
 	virt_core = 0;
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (core_list & BIT(core)) {
@@ -1021,7 +1038,8 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 		}
 	}
 	/* Check if we need to set clock mux to low state as requested */
-	gxp_pm_resume_clkmux(gxp);
+	if (gxp_core_boot)
+		gxp_pm_resume_clkmux(gxp);
 
 	return ret;
 }
@@ -1030,7 +1048,8 @@ int gxp_firmware_setup_hw_after_block_off(struct gxp_dev *gxp, uint core,
 					  bool verbose)
 {
 	gxp_program_reset_vector(gxp, core, verbose);
-	return gxp_pm_core_on(gxp, core, verbose);
+
+	return gxp_core_boot ? gxp_pm_core_on(gxp, core, verbose) : 0;
 }
 
 

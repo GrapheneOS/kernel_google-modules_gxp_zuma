@@ -52,19 +52,19 @@ struct gxp_uci_core_command_params {
 struct gxp_uci_command {
 	/* sequence number, should match the corresponding response */
 	uint64_t seq;
-	/* unique ID for each client that identifies client VM & security realm*/
+	/* unique ID for each client that identifies client VM & security realm */
 	uint32_t client_id;
 	/* type of the command */
 	enum gxp_uci_type type;
-	/* priority level for this command */
-	uint8_t priority;
+	/* hint for which core the job should be assigned to */
+	uint8_t core_id;
 	/* reserved field */
 	uint8_t reserved[2];
 	/* All possible command parameters */
 	union {
 		struct gxp_uci_core_command_params core_command_params;
 		struct gxp_uci_wakelock_command_params wakelock_command_params;
-		uint8_t max_param_size[16];
+		uint8_t opaque[48];
 	};
 };
 
@@ -77,8 +77,7 @@ struct gxp_uci_response {
 	uint16_t code;
 	/* reserved field */
 	uint8_t reserved[2];
-	/* returned payload field */
-	uint64_t payload;
+	uint8_t opaque[16];
 };
 
 /*
@@ -86,18 +85,32 @@ struct gxp_uci_response {
  * sent the command.
  */
 struct gxp_uci_async_response {
-	struct list_head list_entry;
+	/*
+	 * List entry which will be inserted to the waiting queue of the vd.
+	 * It will be pushed into the waiting queue when the response is sent.
+	 * (i.e, the `gxp_uci_send_command` function is called)
+	 * It will be poped when the response is consumed by the vd.
+	 */
+	struct list_head wait_list_entry;
+	/*
+	 * List entry which will be inserted to the dest_queue of the vd.
+	 * It will be pushed into the dest_queue when the response is arrived or timed out.
+	 * It will be poped when the response is consumed by the vd.
+	 */
+	struct list_head dest_list_entry;
 	/* Stores the response. */
 	struct gxp_uci_response resp;
 	struct gxp_uci *uci;
+	/* Queue where to be removed from once it is complete or timed out. */
+	struct list_head *wait_queue;
 	/* Queue to add the response to once it is complete or timed out. */
 	struct list_head *dest_queue;
 	/*
-	 * The lock that protects queue pointed to by `dest_queue`.
-	 * The mailbox code also uses this lock to protect changes to the
-	 * `dest_queue` pointer itself when processing this response.
+	 * The lock that protects queues pointed to by `dest_queue` and `wait_queue`.
+	 * The mailbox code also uses this lock to protect changes to the `wait_queue` pointer
+	 * itself when processing this response.
 	 */
-	spinlock_t *dest_queue_lock;
+	spinlock_t *queue_lock;
 	/* Queue of clients to notify when this response is processed. */
 	wait_queue_head_t *dest_queue_waitq;
 	/* gxp_eventfd to signal when the response completes. May be NULL. */
@@ -151,6 +164,7 @@ void gxp_uci_exit(struct gxp_uci *uci);
  */
 int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 			 struct gxp_uci_command *cmd,
+			 struct list_head *wait_queue,
 			 struct list_head *resp_queue, spinlock_t *queue_lock,
 			 wait_queue_head_t *queue_waitq,
 			 struct gxp_eventfd *eventfd);
@@ -162,7 +176,6 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
  * Returns 0 on success, a negative errno on failure.
  */
 int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
-				u64 *resp_seq, u32 *resp_retval,
-				u16 *error_code);
+				u64 *resp_seq, u16 *error_code, u8 *opaque);
 
 #endif /* __GXP_UCI_H__ */

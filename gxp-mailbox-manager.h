@@ -54,11 +54,14 @@ typedef void (*reset_mailbox_t)(struct gxp_mailbox *mailbox);
  * Returns the value `retval` of `struct gxp_response` when the request succeeds. Otherwise,
  * returns a negative value as an error.
  *
- * This callback is required if the device is in direct mode, otherwise it is optional.
+ * This callback is always required regardless of the mode of device.
  */
-typedef int (*execute_cmd_t)(struct gxp_mailbox *mailbox, u16 cmd_code,
-			     u8 cmd_priority, u64 cmd_daddr, u32 cmd_size,
-			     u32 cmd_flags, u64 *resp_seq, u16 *resp_status);
+typedef int (*execute_cmd_t)(struct gxp_client *client,
+			     struct gxp_mailbox *mailbox, int virt_core,
+			     u16 cmd_code, u8 cmd_priority, u64 cmd_daddr,
+			     u32 cmd_size, u32 cmd_flags, u8 num_cores,
+			     struct gxp_power_states power_states,
+			     u64 *resp_seq, u16 *resp_status);
 
 /*
  * Called when requests asynchronous commands. This callback will be called when
@@ -75,7 +78,8 @@ typedef int (*execute_cmd_async_t)(struct gxp_client *client,
 				   struct gxp_mailbox *mailbox, int virt_core,
 				   u16 cmd_code, u8 cmd_priority, u64 cmd_daddr,
 				   u32 cmd_size, u32 cmd_flags,
-				   struct gxp_power_states power_states, u64 *cmd_seq);
+				   struct gxp_power_states power_states,
+				   u64 *cmd_seq);
 
 /*
  * Called when waiting for an asynchronous response which is requested by `execute_cmd_async`.
@@ -96,7 +100,7 @@ typedef int (*wait_async_resp_t)(struct gxp_client *client, int virt_core,
  * Called when cleans up unconsumed async responses in the queue which arrived or timed out.
  * This callback will be called when the @vd is released.
  *
- * This callback is always required regardless of whether the device is in direct mode.
+ * This callback is always required regardless of the mode of device.
  */
 typedef void (*release_unconsumed_async_resps_t)(struct gxp_virtual_device *vd);
 

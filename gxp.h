@@ -13,7 +13,7 @@
 
 /* Interface Version */
 #define GXP_INTERFACE_VERSION_MAJOR 1
-#define GXP_INTERFACE_VERSION_MINOR 5
+#define GXP_INTERFACE_VERSION_MINOR 6
 #define GXP_INTERFACE_VERSION_BUILD 0
 
 /*
@@ -48,8 +48,15 @@
 /* To check whether the driver is working in MCU mode. */
 #define GXP_SPEC_FEATURE_MODE_MCU (1 << 0)
 
+/* To specify the secureness of the virtual device. */
+#define GXP_ALLOCATE_VD_SECURE BIT(0)
+
 /* Core telemetry buffer size is a multiple of 64 kB */
 #define GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE 0x10000u
+/* Magic code used to indicate the validity of telemetry buffer contents */
+#define GXP_TELEMETRY_BUFFER_VALID_MAGIC_CODE 0xC0DEC0DEu
+/* Magic code used to indicate the validity of secure telemetry buffer contents */
+#define GXP_TELEMETRY_SECURE_BUFFER_VALID_MAGIC_CODE 0xA0B0C0D0u
 
 struct gxp_map_ioctl {
 	/*
@@ -179,7 +186,7 @@ struct gxp_mailbox_response_ioctl {
 };
 
 /*
- * Pop element from the mailbox response queue. Blocks until mailbox response
+ * Pop an element from the mailbox response queue. Blocks until mailbox response
  * is available.
  *
  * The client must hold a VIRTUAL_DEVICE wakelock.
@@ -228,6 +235,16 @@ struct gxp_virtual_device_ioctl {
 	 * The number of cores requested for the virtual device.
 	 */
 	__u8 core_count;
+	/*
+	 * Set RESERVED bits to 0 to ensure backwards compatibility.
+	 *
+	 * Bitfields:
+	 *   [0:0]   - GXP_ALLOCATE_VD_SECURE setting for vd secureness
+	 *		 0 = Non-secure, default value
+	 *		 1 = Secure
+	 *   [31:1]  - RESERVED
+	 */
+	__u8 flags;
 	/*
 	 * Input:
 	 * The number of threads requested per core.
@@ -649,7 +666,7 @@ struct gxp_mailbox_command_ioctl {
 };
 
 /*
- * Push element to the mailbox commmand queue.
+ * Push an element to the mailbox command queue.
  *
  * The client must hold a VIRTUAL_DEVICE wakelock.
  */
@@ -856,5 +873,63 @@ struct gxp_interface_version_ioctl {
 
 #define GXP_UNREGISTER_MCU_TELEMETRY_EVENTFD                                   \
 	_IOW(GXP_IOCTL_BASE, 29, struct gxp_register_telemetry_eventfd_ioctl)
+
+struct gxp_mailbox_uci_command_ioctl {
+	/*
+	 * Output:
+	 * The sequence number assigned to this command. The caller can use
+	 * this value to match responses fetched via `GXP_MAILBOX_UCI_RESPONSE`
+	 * with this command.
+	 */
+	__u64 sequence_number;
+	/* reserved fields */
+	__u8 reserved[8];
+	/*
+	 * Input:
+	 * Will be copied to the UCI command without modification.
+	 */
+	__u8 opaque[48];
+};
+
+/*
+ * Push an element to the UCI command queue.
+ *
+ * The client must hold a BLOCK wakelock.
+ */
+#define GXP_MAILBOX_UCI_COMMAND                                                \
+	_IOWR(GXP_IOCTL_BASE, 30, struct gxp_mailbox_uci_command_ioctl)
+
+struct gxp_mailbox_uci_response_ioctl {
+	/*
+	 * Output:
+	 * Sequence number indicating which command this response is for.
+	 */
+	__u64 sequence_number;
+	/*
+	 * Output:
+	 * Driver error code.
+	 * Indicates if the response was obtained successfully,
+	 * `GXP_RESPONSE_ERROR_NONE`, or what error prevented the command
+	 * from completing successfully.
+	 */
+	__u16 error_code;
+	/* reserved fields */
+	__u8 reserved[6];
+	/*
+	 * Output:
+	 * Is copied from the UCI response without modification.
+	 * Only valid if `error_code` == GXP_RESPONSE_ERROR_NONE
+	 */
+	__u8 opaque[16];
+};
+
+/*
+ * Pop an element from the UCI response queue. Blocks until mailbox response
+ * is available.
+ *
+ * The client must hold a BLOCK wakelock.
+ */
+#define GXP_MAILBOX_UCI_RESPONSE                                               \
+	_IOR(GXP_IOCTL_BASE, 31, struct gxp_mailbox_uci_response_ioctl)
 
 #endif /* __GXP_H__ */

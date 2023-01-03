@@ -567,7 +567,8 @@ static int gxp_allocate_vd(struct gxp_client *client,
 	}
 
 	down_write(&client->semaphore);
-	ret = gxp_client_allocate_virtual_device(client, ibuf.core_count);
+	ret = gxp_client_allocate_virtual_device(client, ibuf.core_count,
+						 ibuf.flags);
 	up_write(&client->semaphore);
 
 	return ret;
@@ -1663,30 +1664,11 @@ static const struct file_operations gxp_fops = {
 	.unlocked_ioctl = gxp_ioctl,
 };
 
-static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_dev *gxp)
+static int gxp_set_reg_resources(struct platform_device *pdev, struct gxp_dev *gxp)
 {
-	struct device *dev = &pdev->dev;
+	struct device *dev = gxp->dev;
 	struct resource *r;
-	phys_addr_t offset, base_addr;
-	struct device_node *np;
-	struct platform_device *tpu_pdev;
-	struct platform_device *gsa_pdev;
-	int ret;
 	int i;
-	bool tpu_found;
-	u64 prop;
-
-	dev_notice(dev, "Probing gxp driver with commit %s\n", GIT_REPO_TAG);
-
-	platform_set_drvdata(pdev, gxp);
-	gxp->dev = dev;
-	if (gxp->parse_dt) {
-		ret = gxp->parse_dt(pdev, gxp);
-		if (ret)
-			return ret;
-	}
-
-	gxp_wakelock_init(gxp);
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (IS_ERR_OR_NULL(r)) {
@@ -1716,7 +1698,8 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	if (IS_ERR_OR_NULL(r) || IS_ERR_OR_NULL(gxp->cmu.vaddr)) {
 		gxp->cmu.paddr = gxp->regs.paddr - GXP_CMU_OFFSET;
 		gxp->cmu.size = GXP_CMU_SIZE;
-		gxp->cmu.vaddr = devm_ioremap(dev, gxp->cmu.paddr, gxp->cmu.size);
+		gxp->cmu.vaddr =
+			devm_ioremap(dev, gxp->cmu.paddr, gxp->cmu.size);
 		if (IS_ERR_OR_NULL(gxp->cmu.vaddr))
 			dev_warn(dev, "Failed to map CMU registers\n");
 	}
@@ -1740,64 +1723,143 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	gxp->lpm_regs.size = gxp->regs.size;
 	gxp->lpm_regs.paddr = gxp->regs.paddr;
 #endif
-	ret = gxp_pm_init(gxp);
-	if (ret) {
-		dev_err(dev, "Failed to init power management (ret=%d)\n", ret);
-		return ret;
-	}
 
 	for (i = 0; i < GXP_NUM_MAILBOXES; i++) {
 		r = platform_get_resource(pdev, IORESOURCE_MEM, i + 1);
 		if (IS_ERR_OR_NULL(r)) {
-			dev_err(dev, "Failed to get mailbox%d resource\n", i);
-			ret = -ENODEV;
-			goto err_pm_destroy;
+			dev_err(dev, "Failed to get mailbox%d resource", i);
+			return -ENODEV;
 		}
 
 		gxp->mbx[i].paddr = r->start;
 		gxp->mbx[i].size = resource_size(r);
 		gxp->mbx[i].vaddr = devm_ioremap_resource(dev, r);
 		if (IS_ERR_OR_NULL(gxp->mbx[i].vaddr)) {
-			dev_err(dev, "Failed to map mailbox%d registers\n", i);
-			ret = -ENODEV;
-			goto err_pm_destroy;
+			dev_err(dev, "Failed to map mailbox%d's register", i);
+			return -ENODEV;
 		}
 	}
 
-	tpu_found = true;
+	return 0;
+}
+
+/*
+ * Get TPU device from the device tree. Warnings are shown when any expected
+ * device tree entry is missing.
+ */
+static void gxp_get_tpu_dev(struct gxp_dev *gxp)
+{
+	struct device *dev = gxp->dev;
+	struct platform_device *tpu_pdev;
+	struct device_node *np;
+	phys_addr_t offset, base_addr;
+	int ret;
+
 	/* Get TPU device from device tree */
 	np = of_parse_phandle(dev->of_node, "tpu-device", 0);
 	if (IS_ERR_OR_NULL(np)) {
 		dev_warn(dev, "No tpu-device in device tree\n");
-		tpu_found = false;
+		goto out_not_found;
 	}
 	tpu_pdev = of_find_device_by_node(np);
 	if (!tpu_pdev) {
 		dev_err(dev, "TPU device not found\n");
-		tpu_found = false;
+		goto out_not_found;
 	}
 	/* get tpu mailbox register base */
 	ret = of_property_read_u64_index(np, "reg", 0, &base_addr);
 	of_node_put(np);
 	if (ret) {
 		dev_warn(dev, "Unable to get tpu-device base address\n");
-		tpu_found = false;
+		goto out_not_found;
 	}
 	/* get gxp-tpu mailbox register offset */
-	ret = of_property_read_u64(dev->of_node, "gxp-tpu-mbx-offset",
-				   &offset);
+	ret = of_property_read_u64(dev->of_node, "gxp-tpu-mbx-offset", &offset);
 	if (ret) {
 		dev_warn(dev, "Unable to get tpu-device mailbox offset\n");
-		tpu_found = false;
+		goto out_not_found;
 	}
-	if (tpu_found) {
-		gxp->tpu_dev.dev = &tpu_pdev->dev;
-		get_device(gxp->tpu_dev.dev);
-		gxp->tpu_dev.mbx_paddr = base_addr + offset;
-	} else {
-		dev_warn(dev, "TPU will not be available for interop\n");
-		gxp->tpu_dev.mbx_paddr = 0;
+	gxp->tpu_dev.dev = get_device(&tpu_pdev->dev);
+	gxp->tpu_dev.mbx_paddr = base_addr + offset;
+	return;
+
+out_not_found:
+	dev_warn(dev, "TPU will not be available for interop\n");
+	gxp->tpu_dev.dev = NULL;
+	gxp->tpu_dev.mbx_paddr = 0;
+}
+
+static void gxp_put_tpu_dev(struct gxp_dev *gxp)
+{
+	/* put_device is no-op on !dev */
+	put_device(gxp->tpu_dev.dev);
+}
+
+/* Get GSA device from device tree. */
+static void gxp_get_gsa_dev(struct gxp_dev *gxp)
+{
+	struct device *dev = gxp->dev;
+	struct device_node *np;
+	struct platform_device *gsa_pdev;
+
+	gxp->gsa_dev = NULL;
+	np = of_parse_phandle(dev->of_node, "gsa-device", 0);
+	if (!np) {
+		dev_warn(
+			dev,
+			"No gsa-device in device tree. Firmware authentication not available\n");
+		return;
 	}
+	gsa_pdev = of_find_device_by_node(np);
+	if (!gsa_pdev) {
+		dev_err(dev, "GSA device not found\n");
+		of_node_put(np);
+		return;
+	}
+	gxp->gsa_dev = get_device(&gsa_pdev->dev);
+	of_node_put(np);
+	dev_info(dev, "GSA device found, Firmware authentication available\n");
+}
+
+static void gxp_put_gsa_dev(struct gxp_dev *gxp)
+{
+	put_device(gxp->gsa_dev);
+}
+
+static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_dev *gxp)
+{
+	struct device *dev = &pdev->dev;
+	int ret;
+	u64 prop;
+
+	dev_notice(dev, "Probing gxp driver with commit %s\n", GIT_REPO_TAG);
+
+	platform_set_drvdata(pdev, gxp);
+	gxp->dev = dev;
+	if (gxp->parse_dt) {
+		ret = gxp->parse_dt(pdev, gxp);
+		if (ret)
+			return ret;
+	}
+
+	ret = gxp_set_reg_resources(pdev, gxp);
+	if (ret)
+		return ret;
+
+	ret = gxp_wakelock_init(gxp);
+	if (ret) {
+		dev_err(dev, "failed to init wakelock: %d", ret);
+		return ret;
+	}
+
+	ret = gxp_pm_init(gxp);
+	if (ret) {
+		dev_err(dev, "Failed to init power management (ret=%d)\n", ret);
+		goto err_wakelock_destroy;
+	}
+
+	gxp_get_gsa_dev(gxp);
+	gxp_get_tpu_dev(gxp);
 
 	ret = gxp_dma_init(gxp);
 	if (ret) {
@@ -1806,12 +1868,11 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	}
 
 	gxp->mailbox_mgr = gxp_mailbox_create_manager(gxp, GXP_NUM_MAILBOXES);
-	if (IS_ERR_OR_NULL(gxp->mailbox_mgr)) {
-		dev_err(dev, "Failed to create mailbox manager\n");
-		ret = -ENOMEM;
+	if (IS_ERR(gxp->mailbox_mgr)) {
+		ret = PTR_ERR(gxp->mailbox_mgr);
+		dev_err(dev, "Failed to create mailbox manager: %d\n", ret);
 		goto err_dma_exit;
 	}
-
 	if (gxp_is_direct_mode(gxp)) {
 #if GXP_USE_LEGACY_MAILBOX
 		gxp_mailbox_init(gxp->mailbox_mgr);
@@ -1825,12 +1886,11 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 #else
 	ret = gxp_debug_dump_init(gxp, NULL, NULL);
 #endif  // !CONFIG_SUBSYSTEM_COREDUMP
-	if (ret) {
-		dev_err(dev, "Failed to initialize debug dump\n");
-		gxp_debug_dump_exit(gxp);
-	}
+	if (ret)
+		dev_warn(dev, "Failed to initialize debug dump\n");
 
 	mutex_init(&gxp->pin_user_pages_lock);
+	mutex_init(&gxp->secure_vd_lock);
 
 	gxp->domain_pool = kmalloc(sizeof(*gxp->domain_pool), GFP_KERNEL);
 	if (!gxp->domain_pool) {
@@ -1845,6 +1905,7 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 			ret);
 		goto err_free_domain_pool;
 	}
+
 	ret = gxp_fw_init(gxp);
 	if (ret) {
 		dev_err(dev,
@@ -1852,29 +1913,9 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 			ret);
 		goto err_domain_pool_destroy;
 	}
-	gxp_vd_init(gxp);
-	gxp_dma_init_default_resources(gxp);
 
-	/* Get GSA device from device tree */
-	np = of_parse_phandle(dev->of_node, "gsa-device", 0);
-	if (!np) {
-		dev_warn(
-			dev,
-			"No gsa-device in device tree. Firmware authentication not available\n");
-	} else {
-		gsa_pdev = of_find_device_by_node(np);
-		if (!gsa_pdev) {
-			dev_err(dev, "GSA device not found\n");
-			of_node_put(np);
-			ret = -ENODEV;
-			goto err_vd_destroy;
-		}
-		gxp->gsa_dev = get_device(&gsa_pdev->dev);
-		of_node_put(np);
-		dev_info(
-			dev,
-			"GSA device found, Firmware authentication available\n");
-	}
+	gxp_dma_init_default_resources(gxp);
+	gxp_vd_init(gxp);
 
 	ret = of_property_read_u64(dev->of_node, "gxp-memory-per-core",
 				   &prop);
@@ -1885,23 +1926,29 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		gxp->memory_per_core = (u32)prop;
 	}
 
-	gxp_fw_data_init(gxp);
+	ret = gxp_fw_data_init(gxp);
+	if (ret) {
+		dev_err(dev, "Failed to initialize firmware data: %d\n", ret);
+		goto err_vd_destroy;
+	}
+
 	ret = gxp_core_telemetry_init(gxp);
 	if (ret) {
 		dev_err(dev, "Failed to initialize core telemetry (ret=%d)", ret);
 		goto err_fw_data_destroy;
 	}
-	gxp_create_debugfs(gxp);
 	gxp->thermal_mgr = gxp_thermal_init(gxp);
-	if (!gxp->thermal_mgr)
-		dev_err(dev, "Failed to init thermal driver\n");
+	if (IS_ERR(gxp->thermal_mgr)) {
+		ret = PTR_ERR(gxp->thermal_mgr);
+		dev_warn(dev, "Failed to init thermal driver: %d\n", ret);
+	}
 
 	INIT_LIST_HEAD(&gxp->client_list);
 	mutex_init(&gxp->client_list_lock);
 	if (gxp->after_probe) {
 		ret = gxp->after_probe(gxp);
 		if (ret)
-			goto err_vd_destroy;
+			goto err_thermal_destroy;
 	}
 
 	gxp->misc_dev.minor = MISC_DYNAMIC_MINOR;
@@ -1913,6 +1960,7 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		goto err_before_remove;
 	}
 
+	gxp_create_debugfs(gxp);
 	gxp_debug_pointer = gxp;
 
 	dev_info(dev, "Probe finished");
@@ -1921,12 +1969,12 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 err_before_remove:
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);
-err_vd_destroy:
-	gxp_remove_debugfs(gxp);
+err_thermal_destroy:
+	/* thermal init doesn't need revert */
 	gxp_core_telemetry_exit(gxp);
 err_fw_data_destroy:
 	gxp_fw_data_destroy(gxp);
-	put_device(gxp->gsa_dev);
+err_vd_destroy:
 	gxp_vd_destroy(gxp);
 	gxp_fw_destroy(gxp);
 err_domain_pool_destroy:
@@ -1935,12 +1983,15 @@ err_free_domain_pool:
 	kfree(gxp->domain_pool);
 err_debug_dump_exit:
 	gxp_debug_dump_exit(gxp);
+	/* mailbox manager init doesn't need revert */
 err_dma_exit:
 	gxp_dma_exit(gxp);
 err_put_tpu_dev:
-	put_device(gxp->tpu_dev.dev);
-err_pm_destroy:
+	gxp_put_tpu_dev(gxp);
+	gxp_put_gsa_dev(gxp);
 	gxp_pm_destroy(gxp);
+err_wakelock_destroy:
+	/* wakelock init doesn't need revert */
 	return ret;
 }
 
@@ -1948,21 +1999,20 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 {
 	struct gxp_dev *gxp = platform_get_drvdata(pdev);
 
+	gxp_remove_debugfs(gxp);
 	misc_deregister(&gxp->misc_dev);
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);
-	gxp_remove_debugfs(gxp);
 	gxp_core_telemetry_exit(gxp);
 	gxp_fw_data_destroy(gxp);
-	if (gxp->gsa_dev)
-		put_device(gxp->gsa_dev);
 	gxp_vd_destroy(gxp);
 	gxp_fw_destroy(gxp);
 	gxp_domain_pool_destroy(gxp->domain_pool);
 	kfree(gxp->domain_pool);
 	gxp_debug_dump_exit(gxp);
 	gxp_dma_exit(gxp);
-	put_device(gxp->tpu_dev.dev);
+	gxp_put_tpu_dev(gxp);
+	gxp_put_gsa_dev(gxp);
 	gxp_pm_destroy(gxp);
 
 	gxp_debug_pointer = NULL;

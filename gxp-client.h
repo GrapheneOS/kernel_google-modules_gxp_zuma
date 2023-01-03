@@ -70,6 +70,7 @@ void gxp_client_destroy(struct gxp_client *client);
  *
  * @client: The client to allocate a virtual device
  * @core_count: The requested core count of the virtual device.
+ * @flags: The flags passed from the runtime's request.
  *
  * The caller must have locked client->semaphore.
  *
@@ -78,7 +79,8 @@ void gxp_client_destroy(struct gxp_client *client);
  * * -EINVAL    - A virtual device of the client has been allocated
  * * Otherwise  - Errno returned by virtual device allocation
  */
-int gxp_client_allocate_virtual_device(struct gxp_client *client, uint core_count);
+int gxp_client_allocate_virtual_device(struct gxp_client *client,
+				       uint core_count, u8 flags);
 /**
  * gxp_client_acquire_block_wakelock() - Acquires a block wakelock.
  *

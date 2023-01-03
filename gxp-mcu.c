@@ -21,7 +21,7 @@
 /* Allocates the MCU <-> cores shared buffer region. */
 static int gxp_alloc_shared_buffer(struct gxp_dev *gxp, struct gxp_mcu *mcu)
 {
-	const size_t size = GXP_SHARED_BUFFER_SIZE * GXP_NUM_CORES;
+	const size_t size = GXP_SHARED_BUFFER_SIZE;
 	phys_addr_t paddr;
 	struct gxp_mapped_resource *res = &mcu->gxp->shared_buf;
 	size_t offset;

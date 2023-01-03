@@ -118,6 +118,9 @@ struct gxp_dev {
 	struct gcip_domain_pool *domain_pool;
 	struct list_head client_list;
 	struct mutex client_list_lock;
+	/* Pointer and mutex of secure virtual device */
+	struct gxp_virtual_device *secure_vd;
+	struct mutex secure_vd_lock;
 	/*
 	 * Buffer shared across firmware.
 	 * Its paddr is 0 if the shared buffer is not available.
@@ -137,6 +140,8 @@ struct gxp_dev {
 	 */
 	unsigned int num_shared_slices;
 	struct gxp_usage_stats *usage_stats; /* Stores the usage stats */
+
+	void __iomem *sysreg_shareability; /* sysreg shareability csr base */
 
 	/* callbacks for chip-dependent implementations */
 

@@ -32,16 +32,13 @@
 
 #define SSCD_MSG_LENGTH 64
 
-#define SYNC_BARRIER_BLOCK	0x00100000
-#define SYNC_BARRIER_BASE(_x_)	((_x_) << 12)
+#define SYNC_BARRIER_BLOCK 0x00100000
+#define SYNC_BARRIER_BASE(_x_) ((_x_) << 12)
 
 #define DEBUG_DUMP_MEMORY_SIZE 0x400000 /* size in bytes */
 
 /* Enum indicating the debug dump request reason. */
-enum gxp_debug_dump_init_type {
-	DEBUG_DUMP_FW_INIT,
-	DEBUG_DUMP_KERNEL_INIT
-};
+enum gxp_debug_dump_init_type { DEBUG_DUMP_FW_INIT, DEBUG_DUMP_KERNEL_INIT };
 
 enum gxp_common_segments_idx {
 	GXP_COMMON_REGISTERS_IDX,
@@ -85,9 +82,9 @@ static u32 gxp_read_sync_barrier_shadow(struct gxp_dev *gxp, uint index)
 	return gxp_read_32(gxp, barrier_reg_offset);
 }
 
-static void
-gxp_get_common_registers(struct gxp_dev *gxp, struct gxp_seg_header *seg_header,
-			 struct gxp_common_registers *common_regs)
+static void gxp_get_common_registers(struct gxp_dev *gxp,
+				     struct gxp_seg_header *seg_header,
+				     struct gxp_common_registers *common_regs)
 {
 	int i;
 	u32 addr;
@@ -149,7 +146,13 @@ static void gxp_get_lpm_psm_registers(struct gxp_dev *gxp,
 {
 	struct gxp_lpm_state_table_registers *state_table_regs;
 	int i, j;
-	uint offset;
+	uint offset, lpm_psm_offset;
+
+#ifdef GXP_SEPARATE_LPM_OFFSET
+	lpm_psm_offset = 0;
+#else
+	lpm_psm_offset = GXP_LPM_PSM_0_BASE + (GXP_LPM_PSM_SIZE * psm);
+#endif
 
 	/* Get State Table registers */
 	for (i = 0; i < PSM_STATE_TABLE_COUNT; i++) {
@@ -157,57 +160,56 @@ static void gxp_get_lpm_psm_registers(struct gxp_dev *gxp,
 
 		/* Get Trans registers */
 		for (j = 0; j < PSM_TRANS_COUNT; j++) {
-			offset = PSM_STATE_TABLE_BASE(i) + PSM_TRANS_BASE(j);
-			state_table_regs->trans[j].next_state =
-				lpm_read_32_psm(gxp, psm, offset +
-						PSM_NEXT_STATE_OFFSET);
+			offset = PSM_STATE_TABLE_BASE(i) + PSM_TRANS_BASE(j) +
+				 lpm_psm_offset;
+			state_table_regs->trans[j].next_state = lpm_read_32(
+				gxp, offset + PSM_NEXT_STATE_OFFSET);
 			state_table_regs->trans[j].seq_addr =
-				lpm_read_32_psm(gxp, psm, offset +
-						PSM_SEQ_ADDR_OFFSET);
+				lpm_read_32(gxp, offset + PSM_SEQ_ADDR_OFFSET);
 			state_table_regs->trans[j].timer_val =
-				lpm_read_32_psm(gxp, psm, offset +
-						PSM_TIMER_VAL_OFFSET);
+				lpm_read_32(gxp, offset + PSM_TIMER_VAL_OFFSET);
 			state_table_regs->trans[j].timer_en =
-				lpm_read_32_psm(gxp, psm, offset +
-						PSM_TIMER_EN_OFFSET);
-			state_table_regs->trans[j].trigger_num =
-				lpm_read_32_psm(gxp, psm, offset +
-						PSM_TRIGGER_NUM_OFFSET);
-			state_table_regs->trans[j].trigger_en =
-				lpm_read_32_psm(gxp, psm, offset +
-						PSM_TRIGGER_EN_OFFSET);
+				lpm_read_32(gxp, offset + PSM_TIMER_EN_OFFSET);
+			state_table_regs->trans[j].trigger_num = lpm_read_32(
+				gxp, offset + PSM_TRIGGER_NUM_OFFSET);
+			state_table_regs->trans[j].trigger_en = lpm_read_32(
+				gxp, offset + PSM_TRIGGER_EN_OFFSET);
 		}
 
-		state_table_regs->enable_state =
-			lpm_read_32_psm(gxp, psm, PSM_STATE_TABLE_BASE(i) +
-					PSM_ENABLE_STATE_OFFSET);
+		state_table_regs->enable_state = lpm_read_32(
+			gxp, lpm_psm_offset + PSM_STATE_TABLE_BASE(i) +
+				     PSM_ENABLE_STATE_OFFSET);
 	}
 
 	/* Get DMEM registers */
 	for (i = 0; i < PSM_DATA_COUNT; i++) {
-		offset = PSM_DMEM_BASE(i) + PSM_DATA_OFFSET;
-		psm_regs->data[i] = lpm_read_32_psm(gxp, psm, offset);
+		offset = PSM_DMEM_BASE(i) + PSM_DATA_OFFSET + lpm_psm_offset;
+		psm_regs->data[i] = lpm_read_32(gxp, offset);
 	}
 
-	psm_regs->cfg = lpm_read_32_psm(gxp, psm, PSM_CFG_OFFSET);
-	psm_regs->status = lpm_read_32_psm(gxp, psm, PSM_STATUS_OFFSET);
+	psm_regs->cfg = lpm_read_32(gxp, lpm_psm_offset + PSM_CFG_OFFSET);
+	psm_regs->status = lpm_read_32(gxp, lpm_psm_offset + PSM_STATUS_OFFSET);
 
 	/* Get Debug CSR registers */
-	psm_regs->debug_cfg = lpm_read_32_psm(gxp, psm, PSM_DEBUG_CFG_OFFSET);
-	psm_regs->break_addr = lpm_read_32_psm(gxp, psm, PSM_BREAK_ADDR_OFFSET);
-	psm_regs->gpin_lo_rd = lpm_read_32_psm(gxp, psm, PSM_GPIN_LO_RD_OFFSET);
-	psm_regs->gpin_hi_rd = lpm_read_32_psm(gxp, psm, PSM_GPIN_HI_RD_OFFSET);
+	psm_regs->debug_cfg =
+		lpm_read_32(gxp, lpm_psm_offset + PSM_DEBUG_CFG_OFFSET);
+	psm_regs->break_addr =
+		lpm_read_32(gxp, lpm_psm_offset + PSM_BREAK_ADDR_OFFSET);
+	psm_regs->gpin_lo_rd =
+		lpm_read_32(gxp, lpm_psm_offset + PSM_GPIN_LO_RD_OFFSET);
+	psm_regs->gpin_hi_rd =
+		lpm_read_32(gxp, lpm_psm_offset + PSM_GPIN_HI_RD_OFFSET);
 	psm_regs->gpout_lo_rd =
-		lpm_read_32_psm(gxp, psm, PSM_GPOUT_LO_RD_OFFSET);
+		lpm_read_32(gxp, lpm_psm_offset + PSM_GPOUT_LO_RD_OFFSET);
 	psm_regs->gpout_hi_rd =
-		lpm_read_32_psm(gxp, psm, PSM_GPOUT_HI_RD_OFFSET);
+		lpm_read_32(gxp, lpm_psm_offset + PSM_GPOUT_HI_RD_OFFSET);
 	psm_regs->debug_status =
-		lpm_read_32_psm(gxp, psm, PSM_DEBUG_STATUS_OFFSET);
+		lpm_read_32(gxp, lpm_psm_offset + PSM_DEBUG_STATUS_OFFSET);
 }
 
-static void
-gxp_get_lpm_registers(struct gxp_dev *gxp, struct gxp_seg_header *seg_header,
-		      struct gxp_lpm_registers *lpm_regs)
+static void gxp_get_lpm_registers(struct gxp_dev *gxp,
+				  struct gxp_seg_header *seg_header,
+				  struct gxp_lpm_registers *lpm_regs)
 {
 	int i;
 	uint offset;
@@ -366,7 +368,8 @@ static void gxp_user_buffers_vunmap(struct gxp_dev *gxp,
 	 */
 	vd = gxp->core_to_vd[core_header->core_id];
 	if (!vd) {
-		dev_err(gxp->dev, "Virtual device is not available for vunmap\n");
+		dev_err(gxp->dev,
+			"Virtual device is not available for vunmap\n");
 		return;
 	}
 
@@ -553,9 +556,9 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp, uint32_t core_id)
 	mgr->segs[core_id][seg_idx].size = sizeof(struct gxp_core_header);
 	seg_idx++;
 
-	data_addr = &core_dump->dump_data[core_id *
-					  core_header->core_dump_size /
-					  sizeof(u32)];
+	data_addr =
+		&core_dump->dump_data[core_id * core_header->core_dump_size /
+				      sizeof(u32)];
 
 	for (i = 0; i < GXP_NUM_CORE_SEGMENTS - 1; i++) {
 		if (seg_idx >= GXP_NUM_SEGMENTS_PER_CORE) {

@@ -19,6 +19,101 @@
 #include "gxp-uci.h"
 #include "gxp.h"
 
+static int
+gxp_ioctl_uci_command(struct gxp_client *client,
+		      struct gxp_mailbox_uci_command_ioctl __user *argp)
+{
+	struct gxp_mailbox_uci_command_ioctl ibuf;
+	struct gxp_dev *gxp = client->gxp;
+	struct gxp_mcu *mcu = gxp_mcu_of(gxp);
+	struct gxp_uci_command cmd = {};
+	int ret;
+
+	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
+		return -EFAULT;
+
+	down_read(&client->semaphore);
+
+	if (!gxp_client_has_available_vd(client, "GXP_MAILBOX_UCI_COMMAND")) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	/* Caller must hold BLOCK wakelock */
+	if (!client->has_block_wakelock) {
+		dev_err(gxp->dev,
+			"GXP_MAILBOX_UCI_COMMAND requires the client hold a BLOCK wakelock\n");
+		ret = -ENODEV;
+		goto out;
+	}
+
+	memcpy(cmd.opaque, ibuf.opaque, sizeof(cmd.opaque));
+
+	cmd.client_id = client->vd->client_id;
+
+	ret = gxp_uci_send_command(
+		&mcu->uci, client->vd, &cmd,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
+		client->mb_eventfds[UCI_RESOURCE_ID]);
+	if (ret) {
+		dev_err(gxp->dev,
+			"Failed to enqueue mailbox command (ret=%d)\n", ret);
+		goto out;
+	}
+	ibuf.sequence_number = cmd.seq;
+
+	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
+		return -EFAULT;
+
+	return 0;
+out:
+	up_read(&client->semaphore);
+	return ret;
+}
+
+static int
+gxp_ioctl_uci_response(struct gxp_client *client,
+		       struct gxp_mailbox_uci_response_ioctl __user *argp)
+{
+	struct gxp_mailbox_uci_response_ioctl ibuf;
+	int ret = 0;
+
+	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
+		return -EFAULT;
+
+	down_read(&client->semaphore);
+
+	if (!gxp_client_has_available_vd(client, "GXP_MAILBOX_UCI_RESPONSE")) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	/* Caller must hold BLOCK wakelock */
+	if (!client->has_block_wakelock) {
+		dev_err(client->gxp->dev,
+			"GXP_MAILBOX_UCI_RESPONSE requires the client hold a BLOCK wakelock\n");
+		ret = -ENODEV;
+		goto out;
+	}
+
+	ret = gxp_uci_wait_async_response(
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID],
+		&ibuf.sequence_number, &ibuf.error_code, ibuf.opaque);
+	if (ret)
+		goto out;
+
+	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
+		ret = -EFAULT;
+
+out:
+	up_read(&client->semaphore);
+
+	return ret;
+}
+
 static int gxp_ioctl_uci_command_helper(struct gxp_client *client,
 					struct gxp_mailbox_command_ioctl *ibuf)
 {
@@ -74,7 +169,7 @@ static int gxp_ioctl_uci_command_helper(struct gxp_client *client,
 			ret = -EINVAL;
 			goto out;
 		}
-		cmd.priority = core;
+		cmd.core_id = core;
 	}
 
 	cmd.client_id = client->vd->client_id;
@@ -85,7 +180,8 @@ static int gxp_ioctl_uci_command_helper(struct gxp_client *client,
 	 */
 	ret = gxp_uci_send_command(
 		&mcu->uci, client->vd, &cmd,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].queue,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
 		client->mb_eventfds[ibuf->virtual_core_id]);
@@ -101,8 +197,9 @@ out:
 	return ret;
 }
 
-static int gxp_ioctl_uci_command(struct gxp_client *client,
-				 struct gxp_mailbox_command_ioctl __user *argp)
+static int
+gxp_ioctl_uci_command_legacy(struct gxp_client *client,
+			     struct gxp_mailbox_command_ioctl __user *argp)
 {
 	struct gxp_mailbox_command_ioctl ibuf;
 	int ret;
@@ -121,8 +218,8 @@ static int gxp_ioctl_uci_command(struct gxp_client *client,
 }
 
 static int
-gxp_ioctl_uci_response(struct gxp_client *client,
-		       struct gxp_mailbox_response_ioctl __user *argp)
+gxp_ioctl_uci_response_legacy(struct gxp_client *client,
+			      struct gxp_mailbox_response_ioctl __user *argp)
 {
 	struct gxp_mailbox_response_ioctl ibuf;
 	int ret = 0;
@@ -147,10 +244,11 @@ gxp_ioctl_uci_response(struct gxp_client *client,
 
 	ret = gxp_uci_wait_async_response(
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID],
-		&ibuf.sequence_number, &ibuf.cmd_retval, &ibuf.error_code);
+		&ibuf.sequence_number, &ibuf.error_code, NULL);
 	if (ret)
 		goto out;
 
+	ibuf.cmd_retval = 0;
 	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
 		ret = -EFAULT;
 
@@ -206,16 +304,22 @@ long gxp_mcu_ioctl(struct file *file, uint cmd, ulong arg)
 		return -ENOTTY;
 	switch (cmd) {
 	case GXP_MAILBOX_COMMAND:
-		ret = gxp_ioctl_uci_command(client, argp);
+		ret = gxp_ioctl_uci_command_legacy(client, argp);
 		break;
 	case GXP_MAILBOX_RESPONSE:
-		ret = gxp_ioctl_uci_response(client, argp);
+		ret = gxp_ioctl_uci_response_legacy(client, argp);
 		break;
 	case GXP_REGISTER_MCU_TELEMETRY_EVENTFD:
 		ret = gxp_register_mcu_telemetry_eventfd(client, argp);
 		break;
 	case GXP_UNREGISTER_MCU_TELEMETRY_EVENTFD:
 		ret = gxp_unregister_mcu_telemetry_eventfd(client, argp);
+		break;
+	case GXP_MAILBOX_UCI_COMMAND:
+		ret = gxp_ioctl_uci_command(client, argp);
+		break;
+	case GXP_MAILBOX_UCI_RESPONSE:
+		ret = gxp_ioctl_uci_response(client, argp);
 		break;
 	default:
 		ret = -ENOTTY; /* unknown command */

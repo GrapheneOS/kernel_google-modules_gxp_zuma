@@ -64,11 +64,55 @@ static struct buffer_data *allocate_telemetry_buffers(struct gxp_dev *gxp,
 						      size_t size);
 static void free_telemetry_buffers(struct gxp_dev *gxp, struct buffer_data *data);
 
+/**
+ * enable_telemetry_buffers() - enable the telemetry buffers from host.
+ *
+ * @gxp: The GXP device the buffers were allocated for.
+ * @data: The data describing a set of core telemetry buffers to be enabled.
+ * @type: Either `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`.
+ *
+ * Return:
+ * * 0         - Success
+ * * otherwise - Error returned by `gxp_fw_data_set_core_telemetry_descriptors()`
+ */
+static int enable_telemetry_buffers(struct gxp_dev *gxp,
+				    struct buffer_data *data, u8 type)
+{
+	int i, ret;
+
+	/* Initialize the per core telemetry buffers header with magic code. */
+	for (i = 0; i < GXP_NUM_CORES; i++) {
+		/*
+		 * First 64 bytes of per core telemetry buffers are reserved
+		 * for buffer metadata header.  We don't need to explicitly
+		 * reset the header fields as during buffer allocation the
+		 * entire buffer is zeroed out. First 4 bytes of buffer
+		 * metadata header are reserved for valid_magic field.
+		 */
+		*((uint *)data->buffers[i].vaddr) =
+			GXP_TELEMETRY_BUFFER_VALID_MAGIC_CODE;
+	}
+
+	data->host_status |= GXP_CORE_TELEMETRY_HOST_STATUS_ENABLED;
+	ret = gxp_fw_data_set_core_telemetry_descriptors(
+		gxp, type, data->host_status, data->buffers, data->size);
+
+	if (ret) {
+		dev_err(gxp->dev,
+			"setting telemetry buffers in scratchpad region failed (ret=%d).",
+			ret);
+		return ret;
+	}
+
+	data->is_enabled = true;
+	return 0;
+}
+
 int gxp_core_telemetry_init(struct gxp_dev *gxp)
 {
 	struct gxp_core_telemetry_manager *mgr;
 	struct buffer_data *log_buff_data, *trace_buff_data;
-	uint i;
+	int i, ret;
 
 	mgr = devm_kzalloc(gxp->dev, sizeof(*mgr), GFP_KERNEL);
 	if (!mgr)
@@ -102,6 +146,7 @@ int gxp_core_telemetry_init(struct gxp_dev *gxp)
 		dev_warn(gxp->dev,
 			 "Failed to allocate per core log buffer of %u bytes\n",
 			 gxp_core_telemetry_buffer_size);
+		ret = -ENOMEM;
 		goto err_free_buffers;
 	}
 
@@ -111,19 +156,39 @@ int gxp_core_telemetry_init(struct gxp_dev *gxp)
 			 "Failed to allocate per core trace buffer of %u bytes\n",
 			 gxp_core_telemetry_buffer_size);
 		free_telemetry_buffers(gxp, log_buff_data);
+		ret = -ENOMEM;
 		goto err_free_buffers;
 	}
+
+	ret = enable_telemetry_buffers(gxp, log_buff_data,
+				       GXP_TELEMETRY_TYPE_LOGGING);
+	if (ret) {
+		dev_warn(gxp->dev, "enable telemetry buffer failed (ret=%d)",
+			 ret);
+		goto err_free;
+	}
+	ret = enable_telemetry_buffers(gxp, trace_buff_data,
+				       GXP_TELEMETRY_TYPE_TRACING);
+	if (ret) {
+		dev_warn(gxp->dev, "enable telemetry buffer failed (ret=%d)",
+			 ret);
+		goto err_free;
+	}
+
 	gxp->core_telemetry_mgr->logging_buff_data = log_buff_data;
 	gxp->core_telemetry_mgr->tracing_buff_data = trace_buff_data;
 	mutex_unlock(&mgr->lock);
 	return 0;
 
+err_free:
+	free_telemetry_buffers(gxp, log_buff_data);
+	free_telemetry_buffers(gxp, trace_buff_data);
 err_free_buffers:
 	mutex_unlock(&mgr->lock);
 	mutex_destroy(&mgr->lock);
 	devm_kfree(gxp->dev, mgr);
 	gxp->core_telemetry_mgr = NULL;
-	return -ENOMEM;
+	return ret;
 }
 
 /* Wrapper struct to be used by the core telemetry vma_ops. */

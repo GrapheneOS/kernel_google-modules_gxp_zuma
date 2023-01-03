@@ -17,22 +17,17 @@
 
 #include "gxp-common-platform.c"
 
-static int gxp_mmu_set_shareability(struct device *dev, u32 reg_base)
+void gxp_iommu_setup_shareability(struct gxp_dev *gxp)
 {
-	void __iomem *addr = ioremap(reg_base, PAGE_SIZE);
+	void __iomem *addr = gxp->sysreg_shareability;
 
-	if (!addr) {
-		dev_err(dev, "sysreg ioremap failed\n");
-		return -ENOMEM;
-	}
+	if (IS_ERR_OR_NULL(addr))
+		return;
 
 	writel_relaxed(SHAREABLE_WRITE | SHAREABLE_READ | INNER_SHAREABLE,
 		       addr + GXP_SYSREG_AUR0_SHAREABILITY);
 	writel_relaxed(SHAREABLE_WRITE | SHAREABLE_READ | INNER_SHAREABLE,
 		       addr + GXP_SYSREG_AUR1_SHAREABILITY);
-	iounmap(addr);
-
-	return 0;
 }
 
 static int callisto_platform_parse_dt(struct platform_device *pdev,
@@ -40,9 +35,9 @@ static int callisto_platform_parse_dt(struct platform_device *pdev,
 {
 	struct resource *r;
 	void *addr;
+	struct device *dev = gxp->dev;
 	int ret;
 	u32 reg;
-	struct device *dev = gxp->dev;
 
 	/*
 	 * Setting BAAW is required for having correct base for CSR accesses.
@@ -71,7 +66,9 @@ static int callisto_platform_parse_dt(struct platform_device *pdev,
 					 "gxp,shareability", 0, &reg);
 	if (ret)
 		goto err;
-	ret = gxp_mmu_set_shareability(dev, reg);
+	gxp->sysreg_shareability = devm_ioremap(dev, reg, PAGE_SIZE);
+	if (!gxp->sysreg_shareability)
+		ret = -ENOMEM;
 err:
 	if (ret)
 		dev_warn(dev, "Failed to enable shareability: %d\n", ret);
@@ -94,12 +91,12 @@ static int callisto_request_power_states(struct gxp_client *client,
 	cmd.wakelock_command_params.dsp_operating_point = power_states.power + 1;
 	cmd.wakelock_command_params.memory_operating_point = power_states.memory;
 	cmd.type = WAKELOCK_COMMAND;
-	cmd.priority = 0; /* currently unused */
 	cmd.client_id = client->vd->client_id;
 
 	ret = gxp_uci_send_command(
 		&mcu->uci, client->vd, &cmd,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].queue,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
 		client->mb_eventfds[UCI_RESOURCE_ID]);
@@ -109,17 +106,20 @@ static int callisto_request_power_states(struct gxp_client *client,
 static int allocate_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
 	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
-	int pasid, ret;
+	int client_id, ret;
 
-	pasid = gxp_iommu_aux_get_pasid(gxp, vd->domain);
-	/* TODO(b/255706432): Adopt vd->slice_index after the firmware supports this. */
-	ret = gxp_kci_allocate_vmbox(kci, pasid, vd->num_cores,
-				     /*slice_index=*/0);
+	if (vd->is_secure)
+		client_id = SECURE_CLIENT_ID;
+	else
+		client_id = gxp_iommu_aux_get_pasid(gxp, vd->domain);
+
+	ret = gxp_kci_allocate_vmbox(kci, client_id, vd->num_cores,
+				     vd->slice_index, vd->first_open);
 	if (ret) {
 		if (ret != GCIP_KCI_ERROR_UNIMPLEMENTED) {
 			dev_err(gxp->dev,
 				"Failed to allocate VMBox for client %d, TPU client %d: %d",
-				pasid, vd->tpu_client_id, ret);
+				client_id, vd->tpu_client_id, ret);
 			return ret;
 		}
 
@@ -132,7 +132,8 @@ static int allocate_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 			"Allocating VMBox is not implemented from the firmware side");
 	}
 
-	vd->client_id = pasid;
+	vd->client_id = client_id;
+	vd->first_open = false;
 
 	return 0;
 }

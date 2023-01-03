@@ -16,10 +16,15 @@
 #include "gxp-bpm.h"
 #include "gxp-client.h"
 #include "gxp-config.h"
+#include "gxp-dma.h"
 #include "gxp-doorbell.h"
 #include "gxp-internal.h"
 #include "gxp-lpm.h"
 #include "gxp-pm.h"
+
+#define SHUTDOWN_DELAY_US_MIN 200
+#define SHUTDOWN_DELAY_US_MAX 400
+#define SHUTDOWN_MAX_DELAY_COUNT 20
 
 /*
  * The order of this array decides the voting priority, should be increasing in
@@ -34,17 +39,20 @@ static const uint aur_memory_state_array[] = {
 	AUR_MEM_HIGH,	   AUR_MEM_VERY_HIGH, AUR_MEM_MAX
 };
 
-/*
- * TODO(b/177692488): move frequency values into chip-specific config.
- * TODO(b/221168126): survey how these value are derived from. Below
- * values are copied from the implementation in TPU firmware for PRO,
- * i.e. google3/third_party/darwinn/firmware/janeiro/power_manager.cc.
- */
-static const s32 aur_memory_state2int_table[] = { 0,	  0,	  0,	 200000,
-						  332000, 465000, 533000 };
-static const s32 aur_memory_state2mif_table[] = { 0,	   0,	    0,
-						  1014000, 1352000, 2028000,
-						  3172000 };
+static const s32 aur_memory_state2int_table[] = { 0,
+						  AUR_MEM_INT_MIN,
+						  AUR_MEM_INT_VERY_LOW,
+						  AUR_MEM_INT_LOW,
+						  AUR_MEM_INT_HIGH,
+						  AUR_MEM_INT_VERY_HIGH,
+						  AUR_MEM_INT_MAX };
+static const s32 aur_memory_state2mif_table[] = { 0,
+						  AUR_MEM_MIF_MIN,
+						  AUR_MEM_MIF_VERY_LOW,
+						  AUR_MEM_MIF_LOW,
+						  AUR_MEM_MIF_HIGH,
+						  AUR_MEM_MIF_VERY_HIGH,
+						  AUR_MEM_MIF_MAX };
 
 static struct gxp_pm_device_ops gxp_aur_ops = {
 	.pre_blk_powerup = NULL,
@@ -219,15 +227,15 @@ int gxp_pm_blk_on(struct gxp_dev *gxp)
 	dev_info(gxp->dev, "Powering on BLK ...\n");
 	mutex_lock(&gxp->power_mgr->pm_lock);
 	ret = gxp_pm_blkpwr_up(gxp);
-	if (!ret) {
-		gxp_pm_blk_set_state_acpm(gxp, AUR_INIT_DVFS_STATE);
-		gxp->power_mgr->curr_state = AUR_INIT_DVFS_STATE;
-	}
-
+	if (ret)
+		goto out;
+	gxp_pm_blk_set_state_acpm(gxp, AUR_INIT_DVFS_STATE);
+	gxp->power_mgr->curr_state = AUR_INIT_DVFS_STATE;
+	gxp_iommu_setup_shareability(gxp);
 	/* Startup TOP's PSM */
 	gxp_lpm_init(gxp);
 	gxp->power_mgr->blk_switch_count++;
-
+out:
 	mutex_unlock(&gxp->power_mgr->pm_lock);
 
 	return ret;
@@ -258,6 +266,26 @@ int gxp_pm_blk_off(struct gxp_dev *gxp)
 		gxp->power_mgr->curr_state = AUR_OFF;
 	mutex_unlock(&gxp->power_mgr->pm_lock);
 	return ret;
+}
+
+bool gxp_pm_is_blk_down(struct gxp_dev *gxp)
+{
+	int timeout_cnt = 0;
+	int curr_state;
+
+	if (!gxp->power_mgr->aur_status)
+		return gxp->power_mgr->curr_state == AUR_OFF;
+
+	do {
+		/* Delay 200~400us per retry till blk shutdown finished */
+		usleep_range(SHUTDOWN_DELAY_US_MIN, SHUTDOWN_DELAY_US_MAX);
+		curr_state = readl(gxp->power_mgr->aur_status);
+		if (!curr_state)
+			return true;
+		timeout_cnt++;
+	} while (timeout_cnt < SHUTDOWN_MAX_DELAY_COUNT);
+
+	return false;
 }
 
 int gxp_pm_get_blk_switch_count(struct gxp_dev *gxp)
@@ -677,6 +705,9 @@ int gxp_pm_update_pm_qos(struct gxp_dev *gxp, s32 int_val, s32 mif_val)
 int gxp_pm_init(struct gxp_dev *gxp)
 {
 	struct gxp_power_manager *mgr;
+	struct platform_device *pdev =
+		container_of(gxp->dev, struct platform_device, dev);
+	struct resource *r;
 	uint i;
 
 	mgr = devm_kzalloc(gxp->dev, sizeof(*mgr), GFP_KERNEL);
@@ -706,6 +737,20 @@ int gxp_pm_init(struct gxp_dev *gxp)
 		create_singlethread_workqueue("gxp_power_work_queue");
 	gxp->power_mgr->force_mux_normal_count = 0;
 	gxp->power_mgr->blk_switch_count = 0l;
+
+	r = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+					 "pmu_aur_status");
+	if (!r) {
+		dev_warn(gxp->dev, "Failed to find PMU register base\n");
+	} else {
+		gxp->power_mgr->aur_status = devm_ioremap_resource(gxp->dev, r);
+		if (IS_ERR(gxp->power_mgr->aur_status)) {
+			dev_err(gxp->dev,
+				"Failed to map PMU register base, ret=%ld\n",
+				PTR_ERR(gxp->power_mgr->aur_status));
+			gxp->power_mgr->aur_status = NULL;
+		}
+	}
 
 	pm_runtime_enable(gxp->dev);
 	exynos_pm_qos_add_request(&mgr->int_min, PM_QOS_DEVICE_THROUGHPUT, 0);

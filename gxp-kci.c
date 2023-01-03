@@ -518,7 +518,7 @@ int gxp_kci_shutdown(struct gxp_kci *gkci)
 }
 
 int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u32 client_id, u8 num_cores,
-			   u8 slice_index)
+			   u8 slice_index, bool first_open)
 {
 	struct gcip_kci_command_element cmd = {
 		.code = GCIP_KCI_CODE_ALLOCATE_VMBOX,
@@ -538,6 +538,7 @@ int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u32 client_id, u8 num_cores,
 	detail->client_id = client_id;
 	detail->num_cores = num_cores;
 	detail->slice_index = slice_index;
+	detail->first_open = first_open;
 
 	cmd.dma.address = buf.daddr;
 	cmd.dma.size = sizeof(*detail);

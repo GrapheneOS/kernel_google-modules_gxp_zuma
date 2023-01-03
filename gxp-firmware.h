@@ -8,6 +8,7 @@
 #define __GXP_FIRMWARE_H__
 
 #include <linux/bitops.h>
+#include <linux/sizes.h>
 
 #include "gxp-config.h"
 #include "gxp-internal.h"
@@ -36,6 +37,9 @@
 #define Q7_ALIVE_MAGIC	0x55555555
 
 #define SCRATCHPAD_MSG_OFFSET(_msg_) (_msg_  <<  2)
+
+#define PRIVATE_FW_DATA_SIZE SZ_2M
+#define SHARED_FW_DATA_SIZE SZ_1M
 
 struct gxp_firmware_manager {
 	const struct firmware *firmwares[GXP_NUM_CORES];

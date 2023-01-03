@@ -172,7 +172,7 @@ static int gxp_map_core_shared_buffer(struct gxp_dev *gxp,
 				      struct iommu_domain *domain,
 				      u8 slice_index)
 {
-	size_t shared_size = GXP_NUM_CORES * gxp->shared_slice_size;
+	size_t shared_size = gxp->shared_slice_size;
 
 	if (!gxp->shared_buf.paddr)
 		return 0;
@@ -185,7 +185,7 @@ static int gxp_map_core_shared_buffer(struct gxp_dev *gxp,
 static void gxp_unmap_core_shared_buffer(struct gxp_dev *gxp,
 					 struct iommu_domain *domain)
 {
-	size_t shared_size = GXP_NUM_CORES * gxp->shared_slice_size;
+	size_t shared_size = gxp->shared_slice_size;
 
 	if (!gxp->shared_buf.paddr)
 		return;
@@ -694,6 +694,39 @@ void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
 		dev_warn(gxp->dev, "Failed to unmap sg\n");
 
 	dma_unmap_sg_attrs(gxp->dev, sg, nents, direction, attrs);
+}
+
+int gxp_dma_map_iova_sgt(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
+			 dma_addr_t iova, struct sg_table *sgt, int prot)
+{
+	ssize_t size_mapped;
+
+	size_mapped = (ssize_t)iommu_map_sg(gdomain->domain, iova, sgt->sgl,
+					    sgt->orig_nents, prot);
+	if (size_mapped <= 0) {
+		dev_err(gxp->dev, "map IOVA %pad to SG table failed: %d", &iova,
+			(int)size_mapped);
+		if (size_mapped == 0)
+			return -EINVAL;
+		return size_mapped;
+	}
+
+	return 0;
+}
+
+void gxp_dma_unmap_iova_sgt(struct gxp_dev *gxp,
+			    struct gxp_iommu_domain *gdomain, dma_addr_t iova,
+			    struct sg_table *sgt)
+{
+	struct scatterlist *s;
+	int i;
+	size_t size = 0;
+
+	for_each_sg (sgt->sgl, s, sgt->orig_nents, i)
+		size += s->length;
+
+	if (!iommu_unmap(gdomain->domain, iova, size))
+		dev_warn(gxp->dev, "Failed to unmap sgt");
 }
 
 void gxp_dma_sync_sg_for_cpu(struct gxp_dev *gxp, struct scatterlist *sg,

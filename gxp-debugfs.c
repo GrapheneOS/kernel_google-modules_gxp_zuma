@@ -23,9 +23,13 @@
 #include "gxp-wakelock.h"
 #include "gxp.h"
 
+#if GXP_HAS_MCU
+#include "gxp-mcu-platform.h"
+#endif
+
 static int gxp_debugfs_lpm_test(void *data, u64 val)
 {
-	struct gxp_dev *gxp = (struct gxp_dev *) data;
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
 
 	dev_info(gxp->dev, "%llu\n", val);
 
@@ -36,45 +40,85 @@ DEFINE_DEBUGFS_ATTRIBUTE(gxp_lpm_test_fops, NULL, gxp_debugfs_lpm_test,
 
 static int gxp_debugfs_mailbox(void *data, u64 val)
 {
-	int core, retval;
+	int core = 0, retval;
 	u16 status;
 	struct gxp_dev *gxp = (struct gxp_dev *)data;
+	struct gxp_mailbox *mbx;
+	struct gxp_power_states power_states = {
+		.power = GXP_POWER_STATE_NOM,
+		.memory = MEMORY_POWER_STATE_UNDEFINED,
+	};
+	u16 cmd_code;
+	int ret;
 
-	core = val / 1000;
-	if (core >= GXP_NUM_CORES) {
-		dev_notice(gxp->dev,
-			   "Mailbox for core %d doesn't exist.\n", core);
-		return -EINVAL;
-	}
+	mutex_lock(&gxp->debugfs_client_lock);
 
-	if (gxp->mailbox_mgr->mailboxes[core] == NULL) {
-		dev_notice(
-			gxp->dev,
-			"Unable to send mailbox command -- mailbox %d not ready\n",
-			core);
-		return -EINVAL;
+	if (gxp_is_direct_mode(gxp)) {
+		core = val / 1000;
+		if (core >= GXP_NUM_CORES) {
+			dev_notice(gxp->dev,
+				   "Mailbox for core %d doesn't exist.\n",
+				   core);
+			ret = -EINVAL;
+			goto out;
+		}
+
+		if (gxp->mailbox_mgr->mailboxes[core] == NULL) {
+			dev_notice(
+				gxp->dev,
+				"Unable to send mailbox command -- mailbox %d not ready\n",
+				core);
+			ret = -EINVAL;
+			goto out;
+		}
+
+		mbx = gxp->mailbox_mgr->mailboxes[core];
+		cmd_code = GXP_MBOX_CODE_DISPATCH;
+#if GXP_HAS_MCU
+	} else {
+		if (!gxp->debugfs_client) {
+			dev_err(gxp->dev,
+				"You should load firmwares via gxp/firmware_run first\n");
+			ret = -EIO;
+			goto out;
+		}
+
+		mbx = to_mcu_dev(gxp)->mcu.uci.mbx;
+		if (!mbx) {
+			dev_err(gxp->dev, "UCI is not initialized.\n");
+			ret = -EIO;
+			goto out;
+		}
+
+		cmd_code = CORE_COMMAND;
+#endif
 	}
 
 	down_read(&gxp->vd_semaphore);
-	retval =
-		gxp->mailbox_mgr->execute_cmd(gxp->mailbox_mgr->mailboxes[core],
-					      val, 0, 0, 0, 0, NULL, &status);
+	/* In direct mode, gxp->debugfs_client and core will be ignored. */
+	retval = gxp->mailbox_mgr->execute_cmd(gxp->debugfs_client, mbx, core,
+					       cmd_code, 0, 0, 0, 0, 1,
+					       power_states, NULL, &status);
 	up_read(&gxp->vd_semaphore);
 
 	dev_info(
 		gxp->dev,
-		"Mailbox Command Sent: cmd.code=%d, resp.status=%d, resp.retval=%d\n",
-		(u16)val, status, retval);
-	return 0;
+		"Mailbox Command Sent: core=%d, resp.status=%d, resp.retval=%d\n",
+		core, status, retval);
+	ret = 0;
+out:
+	mutex_unlock(&gxp->debugfs_client_lock);
+	return ret;
 }
 DEFINE_DEBUGFS_ATTRIBUTE(gxp_mailbox_fops, NULL, gxp_debugfs_mailbox, "%llu\n");
 
 static int gxp_firmware_run_set(void *data, u64 val)
 {
-	struct gxp_dev *gxp = (struct gxp_dev *) data;
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
 	struct gxp_client *client;
 	int ret = 0;
 	uint core;
+	bool acquired_block_wakelock;
 
 	ret = gxp_firmware_request_if_needed(gxp);
 	if (ret) {
@@ -86,7 +130,7 @@ static int gxp_firmware_run_set(void *data, u64 val)
 
 	if (val) {
 		if (gxp->debugfs_client) {
-			dev_err(gxp->dev, "Firmware already running!\n");
+			dev_err(gxp->dev, "Firmware is already running!\n");
 			ret = -EIO;
 			goto out;
 		}
@@ -106,6 +150,7 @@ static int gxp_firmware_run_set(void *data, u64 val)
 				goto out;
 			}
 		}
+		up_write(&gxp->vd_semaphore);
 
 		/*
 		 * Cleanup any bad state or corruption the device might've
@@ -121,31 +166,31 @@ static int gxp_firmware_run_set(void *data, u64 val)
 		}
 		gxp->debugfs_client = client;
 
-		gxp->debugfs_client->vd = gxp_vd_allocate(gxp, GXP_NUM_CORES);
-		if (IS_ERR(gxp->debugfs_client->vd)) {
+		down_write(&client->semaphore);
+
+		ret = gxp_client_allocate_virtual_device(client, GXP_NUM_CORES, 0);
+		if (ret) {
 			dev_err(gxp->dev, "Failed to allocate VD\n");
-			ret = PTR_ERR(gxp->debugfs_client->vd);
-			goto err_wakelock;
+			goto err_destroy_client;
 		}
 
-		ret = gxp_wakelock_acquire(gxp);
+		ret = gxp_client_acquire_block_wakelock(
+			client, &acquired_block_wakelock);
 		if (ret) {
 			dev_err(gxp->dev, "Failed to acquire BLOCK wakelock\n");
-			goto err_wakelock;
+			goto err_destroy_client;
 		}
-		gxp->debugfs_client->has_block_wakelock = true;
-		gxp_pm_update_requested_power_states(gxp, off_states, uud_states);
 
-		ret = gxp_vd_run(gxp->debugfs_client->vd);
-		up_write(&gxp->vd_semaphore);
+		ret = gxp_client_acquire_vd_wakelock(client, uud_states);
 		if (ret) {
-			dev_err(gxp->dev, "Failed to start VD\n");
-			goto err_start;
+			dev_err(gxp->dev, "Failed to acquire VD wakelock\n");
+			goto err_release_block_wakelock;
 		}
-		gxp->debugfs_client->has_vd_wakelock = true;
+
+		up_write(&client->semaphore);
 	} else {
 		if (!gxp->debugfs_client) {
-			dev_err(gxp->dev, "Firmware not running!\n");
+			dev_err(gxp->dev, "Firmware is not running!\n");
 			ret = -EIO;
 			goto out;
 		}
@@ -156,7 +201,6 @@ static int gxp_firmware_run_set(void *data, u64 val)
 		 */
 		gxp_client_destroy(gxp->debugfs_client);
 		gxp->debugfs_client = NULL;
-		gxp_pm_update_requested_power_states(gxp, uud_states, off_states);
 	}
 
 out:
@@ -164,12 +208,12 @@ out:
 
 	return ret;
 
-err_start:
-	gxp_wakelock_release(gxp);
-	gxp_pm_update_requested_power_states(gxp, uud_states, off_states);
-err_wakelock:
+err_release_block_wakelock:
+	gxp_client_release_block_wakelock(client);
+err_destroy_client:
+	up_write(&client->semaphore);
 	/* Destroying a client cleans up any VDss or wakelocks it held. */
-	gxp_client_destroy(gxp->debugfs_client);
+	gxp_client_destroy(client);
 	gxp->debugfs_client = NULL;
 	mutex_unlock(&gxp->debugfs_client_lock);
 	return ret;
@@ -177,7 +221,7 @@ err_wakelock:
 
 static int gxp_firmware_run_get(void *data, u64 *val)
 {
-	struct gxp_dev *gxp = (struct gxp_dev *) data;
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
 
 	down_read(&gxp->vd_semaphore);
 	*val = gxp->firmware_mgr->firmware_running;
@@ -213,7 +257,8 @@ static int gxp_wakelock_set(void *data, u64 val)
 			goto out;
 		}
 		gxp->debugfs_wakelock_held = true;
-		gxp_pm_update_requested_power_states(gxp, off_states, uud_states);
+		gxp_pm_update_requested_power_states(gxp, off_states,
+						     uud_states);
 	} else {
 		/* Wakelock Release */
 		if (!gxp->debugfs_wakelock_held) {
@@ -224,7 +269,8 @@ static int gxp_wakelock_set(void *data, u64 val)
 
 		gxp_wakelock_release(gxp);
 		gxp->debugfs_wakelock_held = false;
-		gxp_pm_update_requested_power_states(gxp, uud_states, off_states);
+		gxp_pm_update_requested_power_states(gxp, uud_states,
+						     off_states);
 	}
 
 out:
@@ -383,7 +429,8 @@ static int gxp_cmu_mux1_set(void *data, u64 val)
 		return -ENODEV;
 	}
 	if (val > 1) {
-		dev_err(gxp->dev, "Incorrect val for cmu_mux1, only 0 and 1 allowed\n");
+		dev_err(gxp->dev,
+			"Incorrect val for cmu_mux1, only 0 and 1 allowed\n");
 		return -EINVAL;
 	}
 
@@ -415,7 +462,8 @@ static int gxp_cmu_mux2_set(void *data, u64 val)
 		return -ENODEV;
 	}
 	if (val > 1) {
-		dev_err(gxp->dev, "Incorrect val for cmu_mux2, only 0 and 1 allowed\n");
+		dev_err(gxp->dev,
+			"Incorrect val for cmu_mux2, only 0 and 1 allowed\n");
 		return -EINVAL;
 	}
 

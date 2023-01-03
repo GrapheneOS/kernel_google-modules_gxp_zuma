@@ -138,6 +138,8 @@ struct gxp_power_manager {
 	/* Max frequency that the thermal driver/ACPM will allow in Hz */
 	unsigned long thermal_limit;
 	u64 blk_switch_count;
+	/* PMU AUR_STATUS base address for block status, maybe NULL */
+	void __iomem *aur_status;
 };
 
 /**
@@ -161,6 +163,15 @@ int gxp_pm_blk_on(struct gxp_dev *gxp);
  * * 0       - BLK OFF successfully
  */
 int gxp_pm_blk_off(struct gxp_dev *gxp);
+
+/**
+ * gxp_pm_is_blk_down() - Check weather the blk is turned off or not.
+ * @gxp: The GXP device to check
+ *
+ * Return:
+ * * true       - blk is turned off.
+ */
+bool gxp_pm_is_blk_down(struct gxp_dev *gxp);
 
 /**
  * gxp_pm_get_blk_state() - Get the blk power state

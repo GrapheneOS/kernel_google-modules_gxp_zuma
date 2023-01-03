@@ -12,6 +12,7 @@
 #include <linux/list.h>
 #include <linux/rbtree.h>
 #include <linux/rwsem.h>
+#include <linux/scatterlist.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/wait.h>
@@ -22,9 +23,14 @@
 /* TODO(b/259192112): set to 8 once the runtime has added the credit limit. */
 #define GXP_COMMAND_CREDIT_PER_VD 256
 
+/* A special client ID for secure workloads pre-agreed with MCU firmware. */
+#define SECURE_CLIENT_ID (3 << 10)
+
 struct mailbox_resp_queue {
-	/* Queue of async responses */
-	struct list_head queue;
+	/* Queue of waiting async responses */
+	struct list_head wait_queue;
+	/* Queue of arrived async responses */
+	struct list_head dest_queue;
 	/* Lock protecting access to the `queue` */
 	spinlock_t lock;
 	/* Waitqueue to wait on if the queue is empty */
@@ -65,6 +71,10 @@ struct gxp_virtual_device {
 	 * of slice is used by this VD.
 	 */
 	int slice_index;
+	/*
+	 * The SG table that holds the firmware data region.
+	 */
+	struct sg_table *fwdata_sgt;
 	uint core_list;
 	/*
 	 * The ID of DSP client. -1 if it is not allocated.
@@ -93,6 +103,9 @@ struct gxp_virtual_device {
 	 * Only used in MCU mode.
 	 */
 	uint credit;
+	/* Whether it's the first time allocating a VMBox for this VD. */
+	bool first_open;
+	bool is_secure;
 };
 
 /*
@@ -128,7 +141,8 @@ void gxp_vd_destroy(struct gxp_dev *gxp);
  *	       cores to be assigned to @vd
  * * -ENOSPC - There is no more available shared slices
  */
-struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp, u16 requested_cores);
+struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
+					   u16 requested_cores);
 
 /**
  * gxp_vd_release() - Cleanup and free a struct gxp_virtual_device

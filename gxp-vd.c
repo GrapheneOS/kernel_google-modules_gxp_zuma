@@ -10,6 +10,8 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 
+#include <gcip/gcip-alloc-helper.h>
+
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
@@ -59,8 +61,8 @@ static int map_core_telemetry_buffers(struct gxp_dev *gxp,
 		return 0;
 
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
-	data[0] = gxp->core_telemetry_mgr->logging_buff_data_legacy;
-	data[1] = gxp->core_telemetry_mgr->tracing_buff_data_legacy;
+	data[0] = gxp->core_telemetry_mgr->logging_buff_data;
+	data[1] = gxp->core_telemetry_mgr->tracing_buff_data;
 
 	for (i = 0; i < ARRAY_SIZE(data); i++) {
 		if (!data[i] || !data[i]->is_enabled)
@@ -111,8 +113,8 @@ static void unmap_core_telemetry_buffers(struct gxp_dev *gxp,
 	if (!gxp->core_telemetry_mgr)
 		return;
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
-	data[0] = gxp->core_telemetry_mgr->logging_buff_data_legacy;
-	data[1] = gxp->core_telemetry_mgr->tracing_buff_data_legacy;
+	data[0] = gxp->core_telemetry_mgr->logging_buff_data;
+	data[1] = gxp->core_telemetry_mgr->tracing_buff_data;
 
 	for (i = 0; i < ARRAY_SIZE(data); i++) {
 		if (!data[i] || !data[i]->is_enabled)
@@ -187,6 +189,7 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 					   u16 requested_cores)
 {
 	struct gxp_virtual_device *vd;
+	unsigned int size;
 	int i;
 	int err;
 
@@ -207,6 +210,7 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	vd->tpu_client_id = -1;
 	spin_lock_init(&vd->credit_lock);
 	vd->credit = GXP_COMMAND_CREDIT_PER_VD;
+	vd->first_open = true;
 
 	vd->domain = gxp_domain_pool_alloc(gxp->domain_pool);
 	if (!vd->domain) {
@@ -224,15 +228,25 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 		}
 	}
 
-	vd->mailbox_resp_queues = kcalloc(
-		vd->num_cores, sizeof(*vd->mailbox_resp_queues), GFP_KERNEL);
-	if (!vd->mailbox_resp_queues) {
+	size = GXP_NUM_CORES * PRIVATE_FW_DATA_SIZE;
+	vd->fwdata_sgt = gcip_alloc_noncontiguous(gxp->dev, size, GFP_KERNEL);
+	if (!vd->fwdata_sgt) {
+		dev_err(gxp->dev, "allocate firmware data size=%x failed",
+			size);
 		err = -ENOMEM;
 		goto error_free_slice_index;
 	}
 
+	vd->mailbox_resp_queues = kcalloc(
+		vd->num_cores, sizeof(*vd->mailbox_resp_queues), GFP_KERNEL);
+	if (!vd->mailbox_resp_queues) {
+		err = -ENOMEM;
+		goto error_free_fwdata;
+	}
+
 	for (i = 0; i < vd->num_cores; i++) {
-		INIT_LIST_HEAD(&vd->mailbox_resp_queues[i].queue);
+		INIT_LIST_HEAD(&vd->mailbox_resp_queues[i].wait_queue);
+		INIT_LIST_HEAD(&vd->mailbox_resp_queues[i].dest_queue);
 		spin_lock_init(&vd->mailbox_resp_queues[i].lock);
 		init_waitqueue_head(&vd->mailbox_resp_queues[i].waitq);
 	}
@@ -251,14 +265,17 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 			goto error_unassign_cores;
 		}
 	}
-	/* TODO(b/255706432): Adopt vd->slice_index after the firmware supports this. */
 	err = gxp_dma_map_core_resources(gxp, vd->domain, vd->core_list,
-					 /*slice_index=*/0);
+					 vd->slice_index);
 	if (err)
 		goto error_destroy_fw_data;
-	err = map_core_telemetry_buffers(gxp, vd, vd->core_list);
+	err = gxp_dma_map_iova_sgt(gxp, vd->domain, GXP_IOVA_PRIV_FW_DATA,
+				   vd->fwdata_sgt, IOMMU_READ | IOMMU_WRITE);
 	if (err)
 		goto error_unmap_core_resources;
+	err = map_core_telemetry_buffers(gxp, vd, vd->core_list);
+	if (err)
+		goto error_unmap_fw_data;
 	err = map_debug_dump_buffer(gxp, vd);
 	if (err)
 		goto error_unmap_core_telemetry_buffer;
@@ -267,6 +284,8 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 
 error_unmap_core_telemetry_buffer:
 	unmap_core_telemetry_buffers(gxp, vd, vd->core_list);
+error_unmap_fw_data:
+	gxp_dma_unmap_iova_sgt(gxp, vd->domain, GXP_IOVA_PRIV_FW_DATA, vd->fwdata_sgt);
 error_unmap_core_resources:
 	gxp_dma_unmap_core_resources(gxp, vd->domain, vd->core_list);
 error_destroy_fw_data:
@@ -275,6 +294,8 @@ error_unassign_cores:
 	unassign_cores(vd);
 error_free_resp_queues:
 	kfree(vd->mailbox_resp_queues);
+error_free_fwdata:
+	gcip_free_noncontiguous(vd->fwdata_sgt);
 error_free_slice_index:
 	if (vd->slice_index >= 0)
 		ida_free(&gxp->shared_slice_idp, vd->slice_index);
@@ -294,9 +315,17 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	uint core_list = vd->core_list;
 
 	lockdep_assert_held_write(&gxp->vd_semaphore);
+
+	if (vd->is_secure) {
+		mutex_lock(&gxp->secure_vd_lock);
+		gxp->secure_vd = NULL;
+		mutex_unlock(&gxp->secure_vd_lock);
+	}
+
 	unassign_cores(vd);
 	unmap_debug_dump_buffer(gxp, vd);
 	unmap_core_telemetry_buffers(gxp, vd, core_list);
+	gxp_dma_unmap_iova_sgt(gxp, vd->domain, GXP_IOVA_PRIV_FW_DATA, vd->fwdata_sgt);
 	gxp_dma_unmap_core_resources(gxp, vd->domain, core_list);
 
 	if (!IS_ERR_OR_NULL(vd->fw_app)) {
@@ -320,6 +349,7 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	up_write(&vd->mappings_semaphore);
 
 	kfree(vd->mailbox_resp_queues);
+	gcip_free_noncontiguous(vd->fwdata_sgt);
 	if (vd->slice_index >= 0)
 		ida_free(&vd->gxp->shared_slice_idp, vd->slice_index);
 	gxp_domain_pool_free(vd->gxp->domain_pool, vd->domain);
@@ -450,7 +480,6 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 					      CORE_NOTIF_SUSPEND_REQUEST);
 		}
 	}
-
 	/* Wait for all cores to complete core suspension. */
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (gxp->core_to_vd[core] == vd) {

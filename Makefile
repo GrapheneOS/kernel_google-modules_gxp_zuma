@@ -37,8 +37,6 @@ gxp-objs += \
 
 ifeq ($(GXP_CHIP),CALLISTO)
 
-USE_GCIP := TRUE
-
 gxp-objs += \
 		callisto-platform.o \
 		gsx01-mailbox-driver.o \
@@ -58,11 +56,9 @@ EDGETPU_CHIP := rio
 endif
 
 ifeq ($(CONFIG_$(GXP_CHIP)),m)
-ifeq ($(USE_GCIP),TRUE)
 
 gxp-objs += $(GCIP_DIR)/gcip.o
 
-endif
 endif
 
 KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
@@ -100,11 +96,6 @@ KBUILD_OPTIONS += GXP_CHIP=$(GXP_CHIP) GXP_PLATFORM=$(GXP_PLATFORM)
 # Access TPU driver's exported symbols.
 EXTRA_SYMBOLS += $(OUT_DIR)/../private/google-modules/edgetpu/$(EDGETPU_CHIP)/drivers/edgetpu/Module.symvers
 
-ifneq ($(USE_GCIP),TRUE)
-modules modules_install clean:
-	$(MAKE) -C $(KERNEL_SRC) M=$(M) W=1 $(KBUILD_OPTIONS) \
-	EXTRA_CFLAGS="$(EXTRA_CFLAGS)" KBUILD_EXTRA_SYMBOLS="$(EXTRA_SYMBOLS)" $(@)
-else
 modules modules_install:
 	$(MAKE) -C $(KERNEL_SRC) M=$(M)/$(GCIP_DIR) gcip.o
 	$(MAKE) -C $(KERNEL_SRC) M=$(M) W=1 $(KBUILD_OPTIONS) \
@@ -112,4 +103,3 @@ modules modules_install:
 clean:
 	$(MAKE) -C $(KERNEL_SRC) M=$(M)/$(GCIP_DIR) $(@)
 	$(MAKE) -C $(KERNEL_SRC) M=$(M) W=1 $(KBUILD_OPTIONS) $(@)
-endif

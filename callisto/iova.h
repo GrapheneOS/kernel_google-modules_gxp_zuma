@@ -13,9 +13,10 @@
 #define GXP_IOVA_EXT_TPU_MBX            (0x1A050000)
 #define GXP_IOVA_FIRMWARE(_x_)          (0xFA000000 + (_x_) * 0x00100000)
 #define GXP_IOVA_SHARED_BUFFER          (0xFA3A8000)
-#define GXP_SHARED_BUFFER_SIZE          (0x00010000) /* 64K, per core */
-#define GXP_SHARED_SLICE_SIZE           (0x00001000) /* 4K, per core */
+#define GXP_SHARED_BUFFER_SIZE          (0x00080000) /* 512K */
+#define GXP_SHARED_SLICE_SIZE           (0x00008000) /* 32K, per VD */
 #define GXP_IOVA_FW_DATA                (0xFA400000)
+#define GXP_IOVA_PRIV_FW_DATA           (0xFA500000)
 #define GXP_IOVA_TPU_MBX_BUFFER(_x_)    (0xFE100000 + (_x_) * 0x00040000)
 
 /* IOVAs for MCU firmware */
