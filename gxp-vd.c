@@ -5,8 +5,10 @@
  * Copyright (C) 2021 Google LLC
  */
 
+#include <linux/atomic.h>
 #include <linux/bitops.h>
 #include <linux/idr.h>
+#include <linux/refcount.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 
@@ -43,6 +45,7 @@ void gxp_vd_init(struct gxp_dev *gxp)
 	/* All cores start as free */
 	for (core = 0; core < GXP_NUM_CORES; core++)
 		gxp->core_to_vd[core] = NULL;
+	atomic_set(&gxp->next_vdid, 0);
 }
 
 void gxp_vd_destroy(struct gxp_dev *gxp)
@@ -130,7 +133,7 @@ static void unmap_core_telemetry_buffers(struct gxp_dev *gxp,
 }
 
 static int map_debug_dump_buffer(struct gxp_dev *gxp,
-				  struct gxp_virtual_device *vd)
+				 struct gxp_virtual_device *vd)
 {
 	if (!gxp->debug_dump_mgr)
 		return 0;
@@ -164,7 +167,8 @@ static int assign_cores(struct gxp_virtual_device *vd)
 		}
 	}
 	if (available_cores < vd->num_cores) {
-		dev_err(gxp->dev, "Insufficient available cores. Available: %u. Requested: %u\n",
+		dev_err(gxp->dev,
+			"Insufficient available cores. Available: %u. Requested: %u\n",
 			available_cores, vd->num_cores);
 		return -EBUSY;
 	}
@@ -209,6 +213,7 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	vd->client_id = -1;
 	vd->tpu_client_id = -1;
 	spin_lock_init(&vd->credit_lock);
+	refcount_set(&vd->refcount, 1);
 	vd->credit = GXP_COMMAND_CREDIT_PER_VD;
 	vd->first_open = true;
 
@@ -279,13 +284,15 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	err = map_debug_dump_buffer(gxp, vd);
 	if (err)
 		goto error_unmap_core_telemetry_buffer;
+	vd->vdid = atomic_inc_return(&gxp->next_vdid);
 
 	return vd;
 
 error_unmap_core_telemetry_buffer:
 	unmap_core_telemetry_buffers(gxp, vd, vd->core_list);
 error_unmap_fw_data:
-	gxp_dma_unmap_iova_sgt(gxp, vd->domain, GXP_IOVA_PRIV_FW_DATA, vd->fwdata_sgt);
+	gxp_dma_unmap_iova_sgt(gxp, vd->domain, GXP_IOVA_PRIV_FW_DATA,
+			       vd->fwdata_sgt);
 error_unmap_core_resources:
 	gxp_dma_unmap_core_resources(gxp, vd->domain, vd->core_list);
 error_destroy_fw_data:
@@ -325,7 +332,8 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	unassign_cores(vd);
 	unmap_debug_dump_buffer(gxp, vd);
 	unmap_core_telemetry_buffers(gxp, vd, core_list);
-	gxp_dma_unmap_iova_sgt(gxp, vd->domain, GXP_IOVA_PRIV_FW_DATA, vd->fwdata_sgt);
+	gxp_dma_unmap_iova_sgt(gxp, vd->domain, GXP_IOVA_PRIV_FW_DATA,
+			       vd->fwdata_sgt);
 	gxp_dma_unmap_core_resources(gxp, vd->domain, core_list);
 
 	if (!IS_ERR_OR_NULL(vd->fw_app)) {
@@ -353,13 +361,16 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	if (vd->slice_index >= 0)
 		ida_free(&vd->gxp->shared_slice_idp, vd->slice_index);
 	gxp_domain_pool_free(vd->gxp->domain_pool, vd->domain);
-	kfree(vd);
+	vd->state = GXP_VD_RELEASED;
+	gxp_vd_put(vd);
 }
 
 int gxp_vd_block_ready(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
 	int ret;
+
+	lockdep_assert_held_write(&gxp->vd_semaphore);
 
 	if (vd->state == GXP_VD_SUSPENDED)
 		return 0;
@@ -373,6 +384,7 @@ int gxp_vd_block_ready(struct gxp_virtual_device *vd)
 		ret = gxp->after_vd_block_ready(gxp, vd);
 		if (ret) {
 			gxp_dma_domain_detach_device(gxp, vd->domain);
+			vd->state = GXP_VD_OFF;
 			return ret;
 		}
 	}
@@ -395,17 +407,59 @@ int gxp_vd_run(struct gxp_virtual_device *vd)
 	lockdep_assert_held(&gxp->vd_semaphore);
 	if (vd->state != GXP_VD_READY && vd->state != GXP_VD_OFF)
 		return -EINVAL;
-	if (vd->state == GXP_VD_OFF)
-		gxp_vd_block_ready(vd);
+	if (vd->state == GXP_VD_OFF) {
+		ret = gxp_vd_block_ready(vd);
+		/*
+		 * The failure of `gxp_vd_block_ready` function means following two things:
+		 *
+		 * 1. The MCU firmware is not working for some reason and if it was crash,
+		 *    @vd->state would be set to UNAVAILABLE by the crash handler. However, by the
+		 *    race, if this function holds @gxp->vd_semaphore earlier than that handler,
+		 *    it is reasonable to set @vd->state to UNAVAILABLE from here.
+		 *
+		 * 2. Some information of vd (or client) such as client_id, slice_index are
+		 *    incorrect or not allowed by the MCU firmware for some reasons and the
+		 *    `allocate_vmbox` or `link_offload_vmbox` has been failed. In this case,
+		 *    setting the @vd->state to UNAVAILABLE and letting the runtime close its fd
+		 *    and reallocate a vd would be better than setting @vd->state to OFF.
+		 *
+		 * Therefore, let's set @vd->state to UNAVAILABLE if it returns an error.
+		 */
+		if (ret)
+			goto err_vd_unavailable;
+	}
 	ret = gxp_firmware_run(gxp, vd, vd->core_list);
 	if (ret)
-		vd->state = GXP_VD_UNAVAILABLE;
-	else
-		vd->state = GXP_VD_RUNNING;
+		goto err_vd_block_unready;
+	vd->state = GXP_VD_RUNNING;
+	return ret;
+
+err_vd_block_unready:
+	gxp_vd_block_unready(vd);
+err_vd_unavailable:
+	vd->state = GXP_VD_UNAVAILABLE;
 	return ret;
 }
 
-/* Caller must hold gxp->vd_semaphore */
+/*
+ * Caller must hold gxp->vd_semaphore.
+ *
+ * This function will be called from the `gxp_client_destroy` function if @vd->state is not
+ * GXP_VD_OFF.
+ *
+ * Note for the case of the MCU firmware crahses:
+ *
+ * In the MCU mode, the `gxp_vd_suspend` function will redirect to this function, but it will not
+ * happen when the @vd->state is GXP_VD_UNAVAILABLE. Therefore, if the MCU firmware crashes,
+ * @vd->state will be changed to GXP_VD_UNAVAILABLE and this function will not be called even
+ * though the runtime is going to release the vd wakelock.
+ *
+ * It means @vd->state will not be changed to GXP_VD_OFF when the vd wkelock is released (i.e., the
+ * state will be kept as GXP_VD_UNAVAILABLE) and when the `gxp_vd_block_unready` function is called
+ * by releasing the block wakelock, it will not send `release_vmbox` and `unlink_offload_vmbox` KCI
+ * commands to the crashed MCU firmware. This function will be finally called when the runtime
+ * closes the fd of the device file.
+ */
 void gxp_vd_stop(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
@@ -421,7 +475,8 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 		 */
 		for (core = 0; core < GXP_NUM_CORES; core++) {
 			if (gxp->core_to_vd[core] == vd) {
-				lpm_state = gxp_lpm_get_state(gxp, CORE_TO_PSM(core));
+				lpm_state = gxp_lpm_get_state(
+					gxp, CORE_TO_PSM(core));
 				if (lpm_state != LPM_PG_STATE)
 					hold_core_in_reset(gxp, core);
 			}
@@ -429,13 +484,19 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 	}
 
 	gxp_firmware_stop(gxp, vd, vd->core_list);
-	if (vd->state == GXP_VD_READY || vd->state == GXP_VD_RUNNING)
+	if (vd->state == GXP_VD_READY || vd->state == GXP_VD_RUNNING ||
+	    vd->state == GXP_VD_UNAVAILABLE)
 		gxp_dma_domain_detach_device(gxp, vd->domain);
 	vd->state = GXP_VD_OFF;
 }
 
 /*
  * Caller must have locked `gxp->vd_semaphore` for writing.
+ *
+ * This function will be called from the `gxp_client_release_vd_wakelock` function when the runtime
+ * is going to release the vd wakelock only if the @vd->state is not GXP_VD_UNAVAILABLE.
+ *
+ * In the MCU mode, this function will redirect to the `gxp_vd_stop` function.
  */
 void gxp_vd_suspend(struct gxp_virtual_device *vd)
 {
@@ -462,16 +523,19 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 	 */
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (gxp->core_to_vd[core] == vd) {
-			if (!gxp_lpm_wait_state_ne(gxp, CORE_TO_PSM(core), LPM_ACTIVE_STATE)) {
+			if (!gxp_lpm_wait_state_ne(gxp, CORE_TO_PSM(core),
+						   LPM_ACTIVE_STATE)) {
 				vd->state = GXP_VD_UNAVAILABLE;
 				failed_cores |= BIT(core);
 				hold_core_in_reset(gxp, core);
-				dev_err(gxp->dev, "Core %u stuck at LPM_ACTIVE_STATE", core);
+				dev_err(gxp->dev,
+					"Core %u stuck at LPM_ACTIVE_STATE",
+					core);
 				continue;
 			}
 			/* Mark the boot mode as a suspend event */
-			gxp_firmware_set_boot_mode(gxp, core,
-				GXP_BOOT_MODE_REQUEST_SUSPEND);
+			gxp_firmware_set_boot_mode(
+				gxp, core, GXP_BOOT_MODE_REQUEST_SUSPEND);
 			/*
 			 * Request a suspend event by sending a mailbox
 			 * notification.
@@ -484,10 +548,11 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (gxp->core_to_vd[core] == vd) {
 			if (!(failed_cores & BIT(core))) {
-				if (!gxp_lpm_wait_state_eq(gxp, CORE_TO_PSM(core),
+				if (!gxp_lpm_wait_state_eq(gxp,
+							   CORE_TO_PSM(core),
 							   LPM_PG_STATE)) {
 					boot_state = gxp_firmware_get_boot_mode(
-							gxp, core);
+						gxp, core);
 					if (boot_state !=
 					    GXP_BOOT_MODE_STATUS_SUSPEND_COMPLETED) {
 						dev_err(gxp->dev,
@@ -499,7 +564,8 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 					}
 				} else {
 					/* Re-set PS1 as the default low power state. */
-					gxp_lpm_enable_state(gxp, CORE_TO_PSM(core),
+					gxp_lpm_enable_state(gxp,
+							     CORE_TO_PSM(core),
 							     LPM_CG_STATE);
 				}
 			}
@@ -559,24 +625,28 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 			 * changed. If it's changed, it means the block is rebooted and
 			 * therefore we need to set up the hardware again.
 			 */
-			if (vd->blk_switch_count_when_suspended != curr_blk_switch_count) {
+			if (vd->blk_switch_count_when_suspended !=
+			    curr_blk_switch_count) {
 				ret = gxp_firmware_setup_hw_after_block_off(
 					gxp, core, /*verbose=*/false);
 				if (ret) {
 					vd->state = GXP_VD_UNAVAILABLE;
 					failed_cores |= BIT(core);
-					dev_err(gxp->dev, "Failed to power up core %u\n", core);
+					dev_err(gxp->dev,
+						"Failed to power up core %u\n",
+						core);
 					continue;
 				}
 			}
 			/* Mark this as a resume power-up event. */
-			gxp_firmware_set_boot_mode(gxp, core,
-				GXP_BOOT_MODE_REQUEST_RESUME);
+			gxp_firmware_set_boot_mode(
+				gxp, core, GXP_BOOT_MODE_REQUEST_RESUME);
 			/*
 			 * Power on the core by explicitly switching its PSM to
 			 * PS0 (LPM_ACTIVE_STATE).
 			 */
-			gxp_lpm_set_state(gxp, CORE_TO_PSM(core), LPM_ACTIVE_STATE,
+			gxp_lpm_set_state(gxp, CORE_TO_PSM(core),
+					  LPM_ACTIVE_STATE,
 					  /*verbose=*/false);
 		}
 	}
@@ -657,8 +727,7 @@ uint gxp_vd_phys_core_list(struct gxp_virtual_device *vd)
 	return core_list;
 }
 
-int gxp_vd_mapping_store(struct gxp_virtual_device *vd,
-			 struct gxp_mapping *map)
+int gxp_vd_mapping_store(struct gxp_virtual_device *vd, struct gxp_mapping *map)
 {
 	struct rb_node **link;
 	struct rb_node *parent = NULL;
@@ -823,4 +892,12 @@ void gxp_vd_release_credit(struct gxp_virtual_device *vd)
 	else
 		vd->credit++;
 	spin_unlock_irqrestore(&vd->credit_lock, flags);
+}
+
+void gxp_vd_put(struct gxp_virtual_device *vd)
+{
+	if (!vd)
+		return;
+	if (refcount_dec_and_test(&vd->refcount))
+		kfree(vd);
 }

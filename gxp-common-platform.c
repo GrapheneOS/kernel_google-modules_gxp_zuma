@@ -570,8 +570,20 @@ static int gxp_allocate_vd(struct gxp_client *client,
 	ret = gxp_client_allocate_virtual_device(client, ibuf.core_count,
 						 ibuf.flags);
 	up_write(&client->semaphore);
+	if (ret)
+		return ret;
 
-	return ret;
+	ibuf.vdid = client->vd->vdid;
+	if (copy_to_user(argp, &ibuf, sizeof(ibuf))) {
+		/*
+		 * VD will be released once the client FD has been closed, we
+		 * don't need to release VD here as this branch should never
+		 * happen in usual cases.
+		 */
+		return -EFAULT;
+	}
+
+	return 0;
 }
 
 static int

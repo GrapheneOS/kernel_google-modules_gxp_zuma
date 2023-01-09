@@ -7,6 +7,7 @@
 #ifndef __GXP_INTERNAL_H__
 #define __GXP_INTERNAL_H__
 
+#include <linux/atomic.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
@@ -142,6 +143,8 @@ struct gxp_dev {
 	struct gxp_usage_stats *usage_stats; /* Stores the usage stats */
 
 	void __iomem *sysreg_shareability; /* sysreg shareability csr base */
+	/* Next virtual device ID. */
+	atomic_t next_vdid;
 
 	/* callbacks for chip-dependent implementations */
 

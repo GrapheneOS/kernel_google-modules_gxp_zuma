@@ -26,6 +26,7 @@ static int gxp_dci_mailbox_manager_execute_cmd(
 	u32 cmd_flags, u8 num_cores, struct gxp_power_states power_states,
 	u64 *resp_seq, u16 *resp_status)
 {
+	struct gxp_dev *gxp = client->gxp;
 	struct gxp_dci_command cmd;
 	struct gxp_dci_response resp;
 	struct gxp_dci_buffer_descriptor buffer;
@@ -40,7 +41,9 @@ static int gxp_dci_mailbox_manager_execute_cmd(
 	cmd.priority = cmd_priority; /* currently unused */
 	cmd.buffer_descriptor = buffer;
 
+	down_read(&gxp->vd_semaphore);
 	ret = gxp_dci_execute_cmd(mailbox, &cmd, &resp);
+	up_read(&gxp->vd_semaphore);
 
 	/* resp.seq and resp.status can be updated even though it failed to process the command */
 	if (resp_seq)

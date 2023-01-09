@@ -44,6 +44,7 @@ static int gxp_debugfs_mailbox(void *data, u64 val)
 	u16 status;
 	struct gxp_dev *gxp = (struct gxp_dev *)data;
 	struct gxp_mailbox *mbx;
+	struct gxp_client *client;
 	struct gxp_power_states power_states = {
 		.power = GXP_POWER_STATE_NOM,
 		.memory = MEMORY_POWER_STATE_UNDEFINED,
@@ -52,8 +53,11 @@ static int gxp_debugfs_mailbox(void *data, u64 val)
 	int ret;
 
 	mutex_lock(&gxp->debugfs_client_lock);
+	client = gxp->debugfs_client;
 
+#if GXP_HAS_MCU
 	if (gxp_is_direct_mode(gxp)) {
+#endif
 		core = val / 1000;
 		if (core >= GXP_NUM_CORES) {
 			dev_notice(gxp->dev,
@@ -72,16 +76,27 @@ static int gxp_debugfs_mailbox(void *data, u64 val)
 			goto out;
 		}
 
+		/* Create a dummy client to access @client->gxp from the `execute_cmd` callback. */
+		if (!client)
+			client = gxp_client_create(gxp);
 		mbx = gxp->mailbox_mgr->mailboxes[core];
 		cmd_code = GXP_MBOX_CODE_DISPATCH;
 #if GXP_HAS_MCU
 	} else {
-		if (!gxp->debugfs_client) {
+		if (!client) {
 			dev_err(gxp->dev,
 				"You should load firmwares via gxp/firmware_run first\n");
 			ret = -EIO;
 			goto out;
 		}
+
+		down_read(&gxp->debugfs_client->semaphore);
+		if (!gxp_client_has_available_vd(gxp->debugfs_client,
+						 "GXP_MAILBOX_COMMAND")) {
+			ret = -ENODEV;
+			goto out;
+		}
+		up_read(&gxp->debugfs_client->semaphore);
 
 		mbx = to_mcu_dev(gxp)->mcu.uci.mbx;
 		if (!mbx) {
@@ -91,15 +106,12 @@ static int gxp_debugfs_mailbox(void *data, u64 val)
 		}
 
 		cmd_code = CORE_COMMAND;
-#endif
 	}
+#endif
 
-	down_read(&gxp->vd_semaphore);
-	/* In direct mode, gxp->debugfs_client and core will be ignored. */
-	retval = gxp->mailbox_mgr->execute_cmd(gxp->debugfs_client, mbx, core,
-					       cmd_code, 0, 0, 0, 0, 1,
-					       power_states, NULL, &status);
-	up_read(&gxp->vd_semaphore);
+	retval = gxp->mailbox_mgr->execute_cmd(client, mbx, core, cmd_code, 0,
+					       0, 0, 0, 1, power_states, NULL,
+					       &status);
 
 	dev_info(
 		gxp->dev,
@@ -107,6 +119,8 @@ static int gxp_debugfs_mailbox(void *data, u64 val)
 		core, status, retval);
 	ret = 0;
 out:
+	if (client && client != gxp->debugfs_client)
+		gxp_client_destroy(client);
 	mutex_unlock(&gxp->debugfs_client_lock);
 	return ret;
 }
@@ -166,9 +180,14 @@ static int gxp_firmware_run_set(void *data, u64 val)
 		}
 		gxp->debugfs_client = client;
 
+		mutex_lock(&gxp->client_list_lock);
+		list_add(&client->list_entry, &gxp->client_list);
+		mutex_unlock(&gxp->client_list_lock);
+
 		down_write(&client->semaphore);
 
-		ret = gxp_client_allocate_virtual_device(client, GXP_NUM_CORES, 0);
+		ret = gxp_client_allocate_virtual_device(client, GXP_NUM_CORES,
+							 0);
 		if (ret) {
 			dev_err(gxp->dev, "Failed to allocate VD\n");
 			goto err_destroy_client;
@@ -199,8 +218,7 @@ static int gxp_firmware_run_set(void *data, u64 val)
 		 * Cleaning up the client will stop the VD it owns and release
 		 * the BLOCK wakelock it is holding.
 		 */
-		gxp_client_destroy(gxp->debugfs_client);
-		gxp->debugfs_client = NULL;
+		goto out_destroy_client;
 	}
 
 out:
@@ -212,8 +230,13 @@ err_release_block_wakelock:
 	gxp_client_release_block_wakelock(client);
 err_destroy_client:
 	up_write(&client->semaphore);
+out_destroy_client:
+	mutex_lock(&gxp->client_list_lock);
+	list_del(&gxp->debugfs_client->list_entry);
+	mutex_unlock(&gxp->client_list_lock);
+
 	/* Destroying a client cleans up any VDss or wakelocks it held. */
-	gxp_client_destroy(client);
+	gxp_client_destroy(gxp->debugfs_client);
 	gxp->debugfs_client = NULL;
 	mutex_unlock(&gxp->debugfs_client_lock);
 	return ret;

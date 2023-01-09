@@ -50,6 +50,7 @@ gxp-objs += \
 		gxp-uci.o \
 		gxp-usage-stats.o
 
+GMODULE_PATH := $(OUT_DIR)/../private/google-modules
 EDGETPU_CHIP := rio
 
 
@@ -94,7 +95,7 @@ ccflags-y += $(EXTRA_CFLAGS) $(gxp-flags)
 KBUILD_OPTIONS += GXP_CHIP=$(GXP_CHIP) GXP_PLATFORM=$(GXP_PLATFORM)
 
 # Access TPU driver's exported symbols.
-EXTRA_SYMBOLS += $(OUT_DIR)/../private/google-modules/edgetpu/$(EDGETPU_CHIP)/drivers/edgetpu/Module.symvers
+EXTRA_SYMBOLS += $(GMODULE_PATH)/edgetpu/$(EDGETPU_CHIP)/drivers/edgetpu/Module.symvers
 
 modules modules_install:
 	$(MAKE) -C $(KERNEL_SRC) M=$(M)/$(GCIP_DIR) gcip.o

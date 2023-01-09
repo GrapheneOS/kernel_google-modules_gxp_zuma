@@ -11,6 +11,7 @@
 #include <linux/iommu.h>
 #include <linux/list.h>
 #include <linux/rbtree.h>
+#include <linux/refcount.h>
 #include <linux/rwsem.h>
 #include <linux/scatterlist.h>
 #include <linux/spinlock.h>
@@ -48,6 +49,12 @@ enum gxp_virtual_device_state {
 	 * Note: this state will only be set on suspend/resume failure.
 	 */
 	GXP_VD_UNAVAILABLE,
+	/*
+	 * gxp_vd_release() has been called. VD with this state means it's
+	 * waiting for the last reference to be put(). All fields in VD is
+	 * invalid in this state.
+	 */
+	GXP_VD_RELEASED,
 };
 
 struct gxp_virtual_device {
@@ -106,13 +113,11 @@ struct gxp_virtual_device {
 	/* Whether it's the first time allocating a VMBox for this VD. */
 	bool first_open;
 	bool is_secure;
+	refcount_t refcount;
+	/* A constant ID assigned after VD is allocated. For debug only. */
+	int vdid;
 };
 
-/*
- * TODO(b/193180931) cleanup the relationship between the internal GXP modules.
- * For example, whether or not gxp_vd owns the gxp_fw module, and if so, if
- * other modules are expected to access the gxp_fw directly or only via gxp_vd.
- */
 /*
  * Initializes the device management subsystem and allocates resources for it.
  * This is expected to be called once per driver lifecycle.
@@ -145,12 +150,15 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 					   u16 requested_cores);
 
 /**
- * gxp_vd_release() - Cleanup and free a struct gxp_virtual_device
+ * gxp_vd_release() - Cleanup a struct gxp_virtual_device
  * @vd: The virtual device to be released
  *
  * The caller must have locked gxp->vd_semaphore for writing.
  *
  * A virtual device must be stopped before it can be released.
+ *
+ * If @vd's reference count is 1 before this call, this function frees @vd.
+ * Otherwise @vd's state is set to GXP_VD_RELEASED.
  */
 void gxp_vd_release(struct gxp_virtual_device *vd);
 
@@ -329,5 +337,20 @@ bool gxp_vd_has_and_use_credit(struct gxp_virtual_device *vd);
  * Releases the credit.
  */
 void gxp_vd_release_credit(struct gxp_virtual_device *vd);
+
+/* Increases reference count of @vd by one and returns @vd. */
+static inline struct gxp_virtual_device *
+gxp_vd_get(struct gxp_virtual_device *vd)
+{
+	WARN_ON_ONCE(!refcount_inc_not_zero(&vd->refcount));
+	return vd;
+}
+
+/*
+ * Decreases reference count of @vd by one.
+ *
+ * If @vd->refcount becomes 0, @vd will be freed.
+ */
+void gxp_vd_put(struct gxp_virtual_device *vd);
 
 #endif /* __GXP_VD_H__ */

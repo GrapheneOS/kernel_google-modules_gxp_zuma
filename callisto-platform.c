@@ -254,7 +254,7 @@ callisto_platform_before_vd_block_unready(struct gxp_dev *gxp,
 {
 	if (gxp_is_direct_mode(gxp))
 		return;
-	if (vd->client_id < 0)
+	if (vd->client_id < 0 || vd->state == GXP_VD_UNAVAILABLE)
 		return;
 	if (vd->tpu_client_id >= 0)
 		unlink_offload_vmbox(gxp, vd, vd->tpu_client_id,

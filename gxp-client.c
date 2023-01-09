@@ -181,7 +181,9 @@ int gxp_client_acquire_block_wakelock(struct gxp_client *client,
 			return ret;
 		*acquired_wakelock = true;
 		if (client->vd) {
+			down_write(&gxp->vd_semaphore);
 			ret = gxp_vd_block_ready(client->vd);
+			up_write(&gxp->vd_semaphore);
 			if (ret)
 				goto err_wakelock_release;
 		}
