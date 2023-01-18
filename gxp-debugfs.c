@@ -94,6 +94,7 @@ static int gxp_debugfs_mailbox(void *data, u64 val)
 		if (!gxp_client_has_available_vd(gxp->debugfs_client,
 						 "GXP_MAILBOX_COMMAND")) {
 			ret = -ENODEV;
+			up_read(&gxp->debugfs_client->semaphore);
 			goto out;
 		}
 		up_read(&gxp->debugfs_client->semaphore);
@@ -511,7 +512,7 @@ DEFINE_DEBUGFS_ATTRIBUTE(gxp_cmu_mux2_fops, gxp_cmu_mux2_get, gxp_cmu_mux2_set,
 
 void gxp_create_debugfs(struct gxp_dev *gxp)
 {
-	gxp->d_entry = debugfs_create_dir("gxp", NULL);
+	gxp->d_entry = debugfs_create_dir(GXP_NAME, NULL);
 	if (IS_ERR_OR_NULL(gxp->d_entry))
 		return;
 

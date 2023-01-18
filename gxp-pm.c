@@ -24,7 +24,6 @@
 
 #define SHUTDOWN_DELAY_US_MIN 200
 #define SHUTDOWN_DELAY_US_MAX 400
-#define SHUTDOWN_MAX_DELAY_COUNT 20
 
 /*
  * The order of this array decides the voting priority, should be increasing in
@@ -268,13 +267,15 @@ int gxp_pm_blk_off(struct gxp_dev *gxp)
 	return ret;
 }
 
-bool gxp_pm_is_blk_down(struct gxp_dev *gxp)
+bool gxp_pm_is_blk_down(struct gxp_dev *gxp, uint timeout_ms)
 {
-	int timeout_cnt = 0;
+	int timeout_cnt = 0, max_delay_count;
 	int curr_state;
 
 	if (!gxp->power_mgr->aur_status)
 		return gxp->power_mgr->curr_state == AUR_OFF;
+
+	max_delay_count = (timeout_ms * 1000) / SHUTDOWN_DELAY_US_MIN;
 
 	do {
 		/* Delay 200~400us per retry till blk shutdown finished */
@@ -283,7 +284,7 @@ bool gxp_pm_is_blk_down(struct gxp_dev *gxp)
 		if (!curr_state)
 			return true;
 		timeout_cnt++;
-	} while (timeout_cnt < SHUTDOWN_MAX_DELAY_COUNT);
+	} while (timeout_cnt < max_delay_count);
 
 	return false;
 }

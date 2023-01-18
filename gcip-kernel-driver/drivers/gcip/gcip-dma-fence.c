@@ -84,16 +84,13 @@ bool gcip_dma_fence_always_true(struct dma_fence *fence)
 int gcip_dma_fence_init(struct gcip_dma_fence_manager *mgr, struct gcip_dma_fence *gfence,
 			struct gcip_dma_fence_data *data)
 {
-	size_t timeline_len = strlen(data->timeline_name);
 	unsigned long flags;
 	int fd;
 	struct sync_file *sync_file;
 	int ret;
 
-	if (timeline_len >= GCIP_FENCE_TIMELINE_NAME_LEN)
-		return -EINVAL;
-	memcpy(gfence->timeline_name, data->timeline_name, timeline_len);
-	gfence->timeline_name[timeline_len] = '\0';
+	strscpy(gfence->timeline_name, data->timeline_name, GCIP_FENCE_TIMELINE_NAME_LEN);
+
 	spin_lock_init(&gfence->lock);
 	INIT_LIST_HEAD(&gfence->fence_list);
 	gfence->mgr = mgr;

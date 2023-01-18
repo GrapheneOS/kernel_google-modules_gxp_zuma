@@ -685,7 +685,8 @@ static void gxp_debug_dump_process_dump(struct work_struct *work)
 	 */
 	down_read(&gxp->vd_semaphore);
 
-	boot_mode = gxp_firmware_get_boot_mode(gxp, core_id);
+	/* TODO(b/234172464): pass proper VD */
+	boot_mode = gxp_firmware_get_boot_mode(gxp, NULL, core_id);
 
 	if (gxp_is_fw_running(gxp, core_id) &&
 	    (boot_mode == GXP_BOOT_MODE_STATUS_COLD_BOOT_COMPLETED ||

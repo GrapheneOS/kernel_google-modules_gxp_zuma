@@ -27,6 +27,8 @@
 
 #define IS_GXP_TEST IS_ENABLED(CONFIG_GXP_TEST)
 
+#define GXP_NAME "gxp"
+
 enum gxp_chip_revision {
 	GXP_CHIP_A0,
 	GXP_CHIP_B0,
@@ -125,8 +127,6 @@ struct gxp_dev {
 	/*
 	 * Buffer shared across firmware.
 	 * Its paddr is 0 if the shared buffer is not available.
-	 * Its vaddr is always 0 as this region is not expected to be accessible
-	 * to us.
 	 */
 	struct gxp_mapped_resource shared_buf;
 	/*
@@ -134,17 +134,14 @@ struct gxp_dev {
 	 * which indexes of slices are used by ID allocator.
 	 */
 	struct ida shared_slice_idp;
-	size_t shared_slice_size; /* The size of each slice. */
-	/*
-	 * The total number of slices.
-	 * It can be zero if there is no shared buffer support.
-	 */
-	unsigned int num_shared_slices;
 	struct gxp_usage_stats *usage_stats; /* Stores the usage stats */
 
 	void __iomem *sysreg_shareability; /* sysreg shareability csr base */
 	/* Next virtual device ID. */
 	atomic_t next_vdid;
+
+	/* To manage DMA fences. */
+	struct gcip_dma_fence_manager *gfence_mgr;
 
 	/* callbacks for chip-dependent implementations */
 

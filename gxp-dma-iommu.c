@@ -15,6 +15,7 @@
 
 #include "gxp-config.h"
 #include "gxp-dma.h"
+#include "gxp-firmware.h" /* gxp_core_boot */
 #include "gxp-mailbox.h"
 #include "gxp-mapping.h"
 #include "gxp-pm.h"
@@ -79,13 +80,19 @@ static int gxp_dma_ssmt_program(struct gxp_dev *gxp,
 	int pasid;
 	uint core;
 
-	pasid = iommu_aux_get_pasid(domain, gxp->dev);
-	for (core = 0; core < GXP_NUM_CORES; core++)
-		if (BIT(core) & core_list) {
-			dev_dbg(gxp->dev, "Assign core%u to PASID %d\n", core,
-				pasid);
-			gxp_ssmt_set_core_vid(&mgr->ssmt, core, pasid);
-		}
+	/* Program VID only when cores are managed by us. */
+	if (gxp_is_direct_mode(gxp) || gxp_core_boot) {
+		pasid = iommu_aux_get_pasid(domain, gxp->dev);
+		for (core = 0; core < GXP_NUM_CORES; core++)
+			if (BIT(core) & core_list) {
+				dev_dbg(gxp->dev, "Assign core%u to PASID %d\n",
+					core, pasid);
+				gxp_ssmt_set_core_vid(&mgr->ssmt, core, pasid);
+			}
+	} else {
+		for (core = 0; core < GXP_NUM_CORES; core++)
+			gxp_ssmt_set_core_bypass(&mgr->ssmt, core);
+	}
 	return 0;
 }
 
@@ -166,31 +173,6 @@ static void gxp_unmap_csrs(struct gxp_dev *gxp, struct iommu_domain *domain,
 }
 
 #endif /* GXP_HAS_LAP */
-
-/* Maps the shared buffer region to @domain. */
-static int gxp_map_core_shared_buffer(struct gxp_dev *gxp,
-				      struct iommu_domain *domain,
-				      u8 slice_index)
-{
-	size_t shared_size = gxp->shared_slice_size;
-
-	if (!gxp->shared_buf.paddr)
-		return 0;
-	return iommu_map(domain, gxp->shared_buf.daddr,
-			 gxp->shared_buf.paddr + shared_size * slice_index,
-			 shared_size, IOMMU_READ | IOMMU_WRITE);
-}
-
-/* Reverts gxp_map_core_shared_buffer. */
-static void gxp_unmap_core_shared_buffer(struct gxp_dev *gxp,
-					 struct iommu_domain *domain)
-{
-	size_t shared_size = gxp->shared_slice_size;
-
-	if (!gxp->shared_buf.paddr)
-		return;
-	iommu_unmap(domain, gxp->shared_buf.daddr, shared_size);
-}
 
 /* gxp-dma.h Interface */
 
@@ -343,20 +325,11 @@ int gxp_dma_map_core_resources(struct gxp_dev *gxp,
 		if (ret)
 			goto err;
 	}
-	/*
-	 * TODO(b/202213606): Map FW regions of all cores in a VD for
-	 * each other at VD creation.
-	 */
-	ret = iommu_map(domain, gxp->fwbufs[0].daddr, gxp->fwbufs[0].paddr,
-			gxp->fwbufs[0].size * GXP_NUM_CORES,
-			IOMMU_READ | IOMMU_WRITE);
-	if (ret)
-		goto err;
-	ret = iommu_map(domain, gxp->fwdatabuf.daddr, gxp->fwdatabuf.paddr,
-			gxp->fwdatabuf.size, IOMMU_READ | IOMMU_WRITE);
-	if (ret)
-		goto err;
-	ret = gxp_map_core_shared_buffer(gxp, domain, slice_index);
+	/* TODO(b/265748027): directly remove this map */
+	if (gxp->fwdatabuf.daddr)
+		ret = iommu_map(domain, gxp->fwdatabuf.daddr,
+				gxp->fwdatabuf.paddr, gxp->fwdatabuf.size,
+				IOMMU_READ | IOMMU_WRITE);
 	if (ret)
 		goto err;
 	/* Only map the TPU mailboxes if they were found on probe */
@@ -402,15 +375,8 @@ void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
 				    EXT_TPU_MBX_SIZE);
 		}
 	}
-	gxp_unmap_core_shared_buffer(gxp, domain);
-	iommu_unmap(domain, gxp->fwdatabuf.daddr, gxp->fwdatabuf.size);
-	/*
-	 * TODO(b/202213606): A core should only have access to the FW
-	 * of other cores if they're in the same VD, and have the FW
-	 * region unmapped on VD destruction.
-	 */
-	iommu_unmap(domain, gxp->fwbufs[0].daddr,
-		    gxp->fwbufs[0].size * GXP_NUM_CORES);
+	if (gxp->fwdatabuf.daddr)
+		iommu_unmap(domain, gxp->fwdatabuf.daddr, gxp->fwdatabuf.size);
 	for (i = 0; i < GXP_NUM_CORES; i++) {
 		if (!(BIT(i) & core_list))
 			continue;
@@ -710,6 +676,8 @@ int gxp_dma_map_iova_sgt(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
 			return -EINVAL;
 		return size_mapped;
 	}
+	dma_sync_sg_for_device(gxp->dev, sgt->sgl, sgt->orig_nents,
+			       DMA_BIDIRECTIONAL);
 
 	return 0;
 }

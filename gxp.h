@@ -997,4 +997,23 @@ struct gxp_sync_fence_status {
 #define GXP_SYNC_FENCE_STATUS                                                  \
 	_IOWR(GXP_IOCTL_BASE, 34, struct gxp_sync_fence_status)
 
+/*
+ * struct gxp_register_invalidated_eventfd_ioctl
+ * @eventfd:            File-descriptor obtained via eventfd().
+ *                      Not used during the unregister step.
+ */
+struct gxp_register_invalidated_eventfd_ioctl {
+	__u32 eventfd;
+};
+
+/*
+ * Registers an eventfd which will be triggered when the device crashes and
+ * the virtual device of the client is invalidated.
+ */
+#define GXP_REGISTER_INVALIDATED_EVENTFD                                       \
+	_IOW(GXP_IOCTL_BASE, 35, struct gxp_register_invalidated_eventfd_ioctl)
+
+#define GXP_UNREGISTER_INVALIDATED_EVENTFD                                     \
+	_IOW(GXP_IOCTL_BASE, 36, struct gxp_register_invalidated_eventfd_ioctl)
+
 #endif /* __GXP_H__ */

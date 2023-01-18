@@ -15,6 +15,7 @@ gxp-objs += \
 		gxp-core-telemetry.o \
 		gxp-debug-dump.o \
 		gxp-debugfs.o \
+		gxp-dma-fence.o \
 		gxp-dma-iommu.o \
 		gxp-dmabuf.o \
 		gxp-domain-pool.o \

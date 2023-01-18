@@ -22,6 +22,7 @@
 #include "gxp-mcu.h"
 #include "gxp-pm.h"
 #include "gxp-usage-stats.h"
+#include "gxp-vd.h"
 
 #define GXP_MCU_USAGE_BUFFER_SIZE 4096
 
@@ -128,6 +129,11 @@ static void gxp_kci_handle_rkci(struct gxp_kci *gkci,
 		gxp_kci_resp_rkci_ack(gkci, resp);
 		break;
 	}
+	case GCIP_RKCI_CLIENT_FATAL_ERROR_NOTIFY:
+		/* TODO(b/265092842): Create a debug dump of corresponding cores (resp->status). */
+		gxp_vd_invalidate(gxp, resp->retval);
+		gxp_kci_resp_rkci_ack(gkci, resp);
+		break;
 	default:
 		dev_warn(gxp->dev, "Unrecognized reverse KCI request: %#x",
 			 resp->code);
@@ -150,8 +156,7 @@ gxp_reverse_kci_handle_response(struct gcip_kci *kci,
 
 	switch (resp->code) {
 	case GCIP_RKCI_FIRMWARE_CRASH:
-		/* TODO(b/239638427): Handle firmware crash */
-		dev_dbg(gxp->dev, "MCU firmware is crashed");
+		gxp_mcu_firmware_crash_handler(gxp, resp->retval);
 		break;
 	case GCIP_RKCI_JOB_LOCKUP:
 		/* TODO(b/239638427): Handle job lookup */

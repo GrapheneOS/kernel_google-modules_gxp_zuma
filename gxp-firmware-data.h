@@ -11,6 +11,12 @@
 
 #include "gxp-dma.h"
 #include "gxp-internal.h"
+#include "gxp-vd.h"
+
+enum gxp_fw_data_protocol {
+	/* Use the per-VD configuration region. */
+	FW_DATA_PROTOCOL_PER_VD_CONFIG = 2,
+};
 
 /**
  * gxp_fw_data_init() - Initializes the FW data manager submodule.
@@ -30,14 +36,15 @@ int gxp_fw_data_init(struct gxp_dev *gxp);
  *                            virtual device) used by the specified physical
  *                            cores.
  * @gxp: The parent GXP device
- * @core_list: A bitmap of the physical cores used in this application
+ * @vd: The virtual device this app is being created for
  *
  * Return:
  * ptr     - A pointer of the newly created application handle, an error pointer
  *           (PTR_ERR) otherwise.
  * -ENOMEM - Insufficient memory to create the application
  */
-void *gxp_fw_data_create_app(struct gxp_dev *gxp, uint core_list);
+void *gxp_fw_data_create_app(struct gxp_dev *gxp,
+			     struct gxp_virtual_device *vd);
 
 /**
  * gxp_fw_data_destroy_app() - Deallocates the HW and memory resources used by
@@ -93,5 +100,10 @@ int gxp_fw_data_set_core_telemetry_descriptors(struct gxp_dev *gxp, u8 type,
  */
 u32 gxp_fw_data_get_core_telemetry_device_status(struct gxp_dev *gxp, uint core,
 						 u8 type);
+
+static inline bool gxp_fw_data_use_per_vd_config(struct gxp_virtual_device *vd)
+{
+	return vd->config_version >= FW_DATA_PROTOCOL_PER_VD_CONFIG;
+}
 
 #endif /* __GXP_FIRMWARE_DATA_H__ */

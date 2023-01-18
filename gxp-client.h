@@ -28,6 +28,7 @@ struct gxp_client {
 	 * lock this semaphore for reading for the duration of that operation.
 	 */
 	struct rw_semaphore semaphore;
+	struct lock_class_key key;
 
 	bool has_block_wakelock;
 	bool has_vd_wakelock;
@@ -39,6 +40,7 @@ struct gxp_client {
 	struct gxp_tpu_mbx_desc mbx_desc;
 
 	struct gxp_eventfd *mb_eventfds[GXP_NUM_CORES];
+	struct gxp_eventfd *vd_invalid_eventfd;
 
 	/* client process thread group ID is really the main process ID. */
 	pid_t tgid;

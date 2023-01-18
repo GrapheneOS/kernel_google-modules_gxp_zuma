@@ -25,7 +25,8 @@ struct gxp_client *gxp_client_create(struct gxp_dev *gxp)
 		return ERR_PTR(-ENOMEM);
 
 	client->gxp = gxp;
-	init_rwsem(&client->semaphore);
+	lockdep_register_key(&client->key);
+	__init_rwsem(&client->semaphore, "&client->semaphore", &client->key);
 	client->has_block_wakelock = false;
 	client->has_vd_wakelock = false;
 	client->requested_states = off_states;
@@ -52,6 +53,9 @@ void gxp_client_destroy(struct gxp_client *client)
 		if (client->mb_eventfds[core])
 			gxp_eventfd_put(client->mb_eventfds[core]);
 	}
+
+	if (client->vd_invalid_eventfd)
+		gxp_eventfd_put(client->vd_invalid_eventfd);
 
 #if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&             \
 	!IS_ENABLED(CONFIG_GXP_GEM5)
@@ -84,6 +88,7 @@ void gxp_client_destroy(struct gxp_client *client)
 		up_write(&gxp->vd_semaphore);
 	}
 
+	lockdep_unregister_key(&client->key);
 	kfree(client);
 }
 

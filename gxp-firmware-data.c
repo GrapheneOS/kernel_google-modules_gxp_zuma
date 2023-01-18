@@ -11,9 +11,11 @@
 
 #include "gxp-debug-dump.h"
 #include "gxp-firmware-data.h"
+#include "gxp-firmware.h" /* gxp_core_boot */
 #include "gxp-host-device-structs.h"
 #include "gxp-internal.h"
 #include "gxp-range-alloc.h"
+#include "gxp-vd.h"
 #include "gxp.h"
 
 /*
@@ -89,11 +91,23 @@ struct gxp_fw_data_manager {
 	struct fw_memory wdog_mem;
 	struct fw_memory core_telemetry_mem;
 	struct fw_memory debug_dump_mem;
+
+	/*
+	 * A host-view of the System configuration descriptor. This same desc
+	 * is provided to all VDs and all cores. This is the R/O section.
+	 */
+	struct gxp_system_descriptor_ro *sys_desc_ro;
+	/*
+	 * A host-view of the System configuration descriptor. This same desc
+	 * is provided to all VDs and all cores. This is the R/W section.
+	 */
+	struct gxp_system_descriptor_rw *sys_desc_rw;
 };
 
 /* A container holding information for a single GXP application. */
 struct app_metadata {
 	struct gxp_fw_data_manager *mgr;
+	struct gxp_virtual_device *vd;
 	uint application_id;
 	uint core_count;
 	uint core_list; /* bitmap of cores allocated to this app */
@@ -463,6 +477,208 @@ static struct fw_memory init_application(struct app_metadata *app)
 	return mem;
 }
 
+static struct app_metadata *gxp_fw_data_create_app_legacy(struct gxp_dev *gxp,
+							  uint core_list)
+{
+	struct gxp_fw_data_manager *mgr = gxp->data_mgr;
+	struct app_metadata *app;
+	void *err;
+	int i;
+
+	app = kzalloc(sizeof(struct app_metadata), GFP_KERNEL);
+	if (!app)
+		return ERR_PTR(-ENOMEM);
+
+	/* Create resource and memory allocations for new app */
+	app->mgr = mgr;
+	app->application_id = DEFAULT_APP_ID;
+	app->core_count = hweight_long(core_list);
+	app->core_list = core_list;
+
+	/* User doorbells */
+	app->user_doorbells_count = DEFAULT_APP_USER_DOORBELL_COUNT;
+	app->user_doorbells =
+		kcalloc(app->user_doorbells_count, sizeof(int), GFP_KERNEL);
+	if (!app->user_doorbells) {
+		err = ERR_PTR(-ENOMEM);
+		goto err_user_doorbells;
+	}
+
+	for (i = 0; i < app->user_doorbells_count; i++) {
+		range_alloc_get_any(mgr->doorbell_allocator,
+				    &app->user_doorbells[i]);
+	}
+
+	/* User sync barrier */
+	app->user_barriers_count = DEFAULT_APP_USER_BARRIER_COUNT;
+	app->user_barriers =
+		kcalloc(app->user_barriers_count, sizeof(int), GFP_KERNEL);
+	if (!app->user_barriers) {
+		err = ERR_PTR(-ENOMEM);
+		goto err_user_barriers;
+	}
+
+	for (i = 0; i < app->user_barriers_count; i++) {
+		range_alloc_get_any(mgr->sync_barrier_allocator,
+				    &app->user_barriers[i]);
+	}
+
+	/* Application region. */
+	app->app_mem = init_application(app);
+	for (i = 0; i < GXP_NUM_CORES; i++) {
+		if (core_list & BIT(i)) {
+			mgr->system_desc->app_descriptor_dev_addr[i] =
+				app->app_mem.device_addr;
+		}
+	}
+
+	return app;
+
+err_user_barriers:
+	for (i = 0; i < app->user_doorbells_count; i++)
+		range_alloc_put(mgr->doorbell_allocator,
+				app->user_doorbells[i]);
+	kfree(app->user_doorbells);
+err_user_doorbells:
+	kfree(app);
+
+	return err;
+}
+
+static void gxp_fw_data_destroy_app_legacy(struct gxp_dev *gxp,
+					   struct app_metadata *app)
+{
+	struct gxp_fw_data_manager *mgr = gxp->data_mgr;
+	int i;
+
+	for (i = 0; i < app->user_doorbells_count; i++)
+		range_alloc_put(mgr->doorbell_allocator,
+				app->user_doorbells[i]);
+	kfree(app->user_doorbells);
+
+	for (i = 0; i < app->user_barriers_count; i++)
+		range_alloc_put(mgr->sync_barrier_allocator,
+				app->user_barriers[i]);
+	kfree(app->user_barriers);
+
+	mem_alloc_free(mgr->allocator, &app->user_mem);
+	mem_alloc_free(mgr->allocator, &app->doorbells_mem);
+	mem_alloc_free(mgr->allocator, &app->sync_barriers_mem);
+	mem_alloc_free(mgr->allocator, &app->semaphores_mem);
+	mem_alloc_free(mgr->allocator, &app->cores_mem);
+	for (i = 0; i < app->core_count; i++) {
+		mem_alloc_free(mgr->allocator, &app->core_cmd_queues_mem[i]);
+		mem_alloc_free(mgr->allocator, &app->core_rsp_queues_mem[i]);
+	}
+	mem_alloc_free(mgr->allocator, &app->app_mem);
+
+	kfree(app);
+}
+
+/*
+ * Here assumes sys_cfg contains gxp_system_descriptor_ro in the first page and
+ * gxp_system_descriptor_rw in the second page.
+ */
+static void set_system_cfg_region(struct gxp_dev *gxp, void *sys_cfg)
+{
+	struct gxp_system_descriptor_ro *des_ro = sys_cfg;
+	struct gxp_system_descriptor_rw *des_rw = sys_cfg + PAGE_SIZE;
+	struct gxp_core_telemetry_descriptor *descriptor =
+		gxp->data_mgr->core_telemetry_mem.host_addr;
+	struct telemetry_descriptor_ro *tel_ro;
+	struct telemetry_descriptor_rw *tel_rw;
+	struct core_telemetry_descriptor *tel_des;
+	int i;
+
+	if (gxp->debug_dump_mgr)
+		des_ro->debug_dump_dev_addr = gxp->debug_dump_mgr->buf.dsp_addr;
+	else
+		des_ro->debug_dump_dev_addr = 0;
+
+#define COPY_FIELDS                                                            \
+	do {                                                                   \
+		tel_ro->host_status = tel_des->host_status;                    \
+		tel_ro->buffer_addr = tel_des->buffer_addr;                    \
+		tel_ro->buffer_size = tel_des->buffer_size;                    \
+		tel_rw->device_status = tel_des->device_status;                \
+		tel_rw->data_available = tel_des->watermark_level;             \
+	} while (0)
+	for (i = 0; i < GXP_NUM_CORES; i++) {
+		tel_ro = &des_ro->telemetry_desc.per_core_loggers[i];
+		tel_rw = &des_rw->telemetry_desc.per_core_loggers[i];
+		tel_des = &descriptor->per_core_loggers[i];
+		COPY_FIELDS;
+		tel_ro = &des_ro->telemetry_desc.per_core_tracers[i];
+		tel_rw = &des_rw->telemetry_desc.per_core_tracers[i];
+		tel_des = &descriptor->per_core_tracers[i];
+		COPY_FIELDS;
+	}
+#undef COPY_FIELDS
+}
+
+static struct app_metadata *
+_gxp_fw_data_create_app(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
+{
+	struct app_metadata *app;
+	struct gxp_host_control_region *core_cfg;
+	struct gxp_job_descriptor job;
+	struct gxp_vd_descriptor *vd_desc;
+	int i;
+
+	/*
+	 * If we are able to know where sys_cfg's virt is on init() then we
+	 * don't need this here, but to keep compatibility with
+	 * !use_per_vd_config, we keep gxp_fw_data_init() doing the
+	 * initialization of legacy mode, and have here copy the values to the
+	 * config region.
+	 */
+	if (vd->vdid == 0)
+		set_system_cfg_region(gxp, vd->sys_cfg.vaddr);
+	app = kzalloc(sizeof(*app), GFP_KERNEL);
+	if (!app)
+		return ERR_PTR(-ENOMEM);
+
+	if (!gxp_core_boot) {
+		dev_info(gxp->dev, "Skip setting VD and core CFG");
+		return app;
+	}
+	/* Set up VD config region. */
+	vd_desc = vd->vd_cfg.vaddr;
+	vd_desc->application_id = DEFAULT_APP_ID;
+	vd_desc->vd_is_initialized = 0;
+	/* Set up core config region. */
+	job.workers_count = vd->num_cores;
+	for (i = 0; i < ARRAY_SIZE(job.worker_to_fw); i++) {
+		/*
+		 * Kernel-initiated workloads always act like the entire VD is
+		 * one giant N-core job where N is the number of cores allocated
+		 * to that VD.
+		 * The MCU, on the other hand, can have multiple jobs dispatched
+		 * to the same VD at the same time.
+		 */
+		if (i < job.workers_count)
+			job.worker_to_fw[i] = i;
+		else
+			job.worker_to_fw[i] = -1;
+	}
+	/* Give each VD a unique HW resources slot. */
+	job.hardware_resources_slot = gxp_vd_hw_slot_id(vd);
+	/* Assign the same job descriptor to all cores in this VD */
+	for (i = 0; i < GXP_NUM_CORES; i++) {
+		core_cfg = vd->core_cfg.vaddr +
+			   vd->core_cfg.size / GXP_NUM_CORES * i;
+		core_cfg->job_descriptor = job;
+	}
+
+	return app;
+}
+
+static void _gxp_fw_data_destroy_app(struct gxp_dev *gxp,
+				     struct app_metadata *app)
+{
+	kfree(app);
+}
+
 int gxp_fw_data_init(struct gxp_dev *gxp)
 {
 	struct gxp_fw_data_manager *mgr;
@@ -486,6 +702,7 @@ int gxp_fw_data_init(struct gxp_dev *gxp)
 		res = -ENODEV;
 		goto err;
 	}
+	gxp->fwdatabuf.vaddr = mgr->fw_data_virt;
 
 	/* Instantiate the doorbells allocator with all doorbells */
 	mgr->doorbell_allocator =
@@ -607,101 +824,31 @@ err:
 	return res;
 }
 
-void *gxp_fw_data_create_app(struct gxp_dev *gxp, uint core_list)
+void *gxp_fw_data_create_app(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
-	struct gxp_fw_data_manager *mgr = gxp->data_mgr;
 	struct app_metadata *app;
-	void *err;
-	int i;
 
-	app = kzalloc(sizeof(struct app_metadata), GFP_KERNEL);
-	if (!app)
-		return ERR_PTR(-ENOMEM);
+	if (gxp_fw_data_use_per_vd_config(vd))
+		app = _gxp_fw_data_create_app(gxp, vd);
+	else
+		app = gxp_fw_data_create_app_legacy(gxp, vd->core_list);
 
-	/* Create resource and memory allocations for new app */
-	app->mgr = mgr;
-	app->application_id = DEFAULT_APP_ID;
-	app->core_count = hweight_long(core_list);
-	app->core_list = core_list;
-
-	/* User doorbells */
-	app->user_doorbells_count = DEFAULT_APP_USER_DOORBELL_COUNT;
-	app->user_doorbells =
-		kcalloc(app->user_doorbells_count, sizeof(int), GFP_KERNEL);
-	if (!app->user_doorbells) {
-		err = ERR_PTR(-ENOMEM);
-		goto err_user_doorbells;
-	}
-
-	for (i = 0; i < app->user_doorbells_count; i++) {
-		range_alloc_get_any(mgr->doorbell_allocator,
-				    &app->user_doorbells[i]);
-	}
-
-	/* User sync barrier */
-	app->user_barriers_count = DEFAULT_APP_USER_BARRIER_COUNT;
-	app->user_barriers =
-		kcalloc(app->user_barriers_count, sizeof(int), GFP_KERNEL);
-	if (!app->user_barriers) {
-		err = ERR_PTR(-ENOMEM);
-		goto err_user_barriers;
-	}
-
-	for (i = 0; i < app->user_barriers_count; i++) {
-		range_alloc_get_any(mgr->sync_barrier_allocator,
-				    &app->user_barriers[i]);
-	}
-
-	/* Application region. */
-	app->app_mem = init_application(app);
-	for (i = 0; i < GXP_NUM_CORES; i++) {
-		if (core_list & BIT(i)) {
-			mgr->system_desc->app_descriptor_dev_addr[i] =
-				app->app_mem.device_addr;
-		}
-	}
+	if (IS_ERR(app))
+		return app;
+	app->vd = vd;
 
 	return app;
-
-err_user_barriers:
-	for (i = 0; i < app->user_doorbells_count; i++)
-		range_alloc_put(mgr->doorbell_allocator,
-				app->user_doorbells[i]);
-	kfree(app->user_doorbells);
-err_user_doorbells:
-	kfree(app);
-
-	return err;
 }
 
 void gxp_fw_data_destroy_app(struct gxp_dev *gxp, void *application)
 {
 	struct app_metadata *app = application;
-	struct gxp_fw_data_manager *mgr = gxp->data_mgr;
-	int i;
 
-	for (i = 0; i < app->user_doorbells_count; i++)
-		range_alloc_put(mgr->doorbell_allocator,
-				app->user_doorbells[i]);
-	kfree(app->user_doorbells);
-
-	for (i = 0; i < app->user_barriers_count; i++)
-		range_alloc_put(mgr->sync_barrier_allocator,
-				app->user_barriers[i]);
-	kfree(app->user_barriers);
-
-	mem_alloc_free(mgr->allocator, &app->user_mem);
-	mem_alloc_free(mgr->allocator, &app->doorbells_mem);
-	mem_alloc_free(mgr->allocator, &app->sync_barriers_mem);
-	mem_alloc_free(mgr->allocator, &app->semaphores_mem);
-	mem_alloc_free(mgr->allocator, &app->cores_mem);
-	for (i = 0; i < app->core_count; i++) {
-		mem_alloc_free(mgr->allocator, &app->core_cmd_queues_mem[i]);
-		mem_alloc_free(mgr->allocator, &app->core_rsp_queues_mem[i]);
-	}
-	mem_alloc_free(mgr->allocator, &app->app_mem);
-
-	kfree(app);
+	if (!app)
+		return;
+	if (gxp_fw_data_use_per_vd_config(app->vd))
+		return _gxp_fw_data_destroy_app(gxp, app);
+	return gxp_fw_data_destroy_app_legacy(gxp, app);
 }
 
 void gxp_fw_data_destroy(struct gxp_dev *gxp)

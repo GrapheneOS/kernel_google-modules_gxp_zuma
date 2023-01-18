@@ -39,6 +39,7 @@ static int gxp_uci_mailbox_manager_execute_cmd(
 	u64 *resp_seq, u16 *resp_status)
 {
 	struct gxp_dev *gxp = client->gxp;
+	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
 	struct gxp_virtual_device *vd = client->vd;
 	struct gxp_uci_command cmd;
 	struct gxp_uci_response resp;
@@ -61,7 +62,13 @@ static int gxp_uci_mailbox_manager_execute_cmd(
 	cmd.core_id = 0;
 	cmd.client_id = vd->client_id;
 
+	/*
+	 * Before the response returns, we must prevent unloading the MCU firmware even by
+	 * the firmware crash handler. Otherwise, invalid IOMMU access can occur.
+	 */
+	mutex_lock(&mcu_fw->lock);
 	ret = gxp_mailbox_send_cmd(mailbox, &cmd, &resp);
+	mutex_unlock(&mcu_fw->lock);
 
 	/* resp.seq and resp.status can be updated even though it failed to process the command */
 	if (resp_seq)

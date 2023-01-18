@@ -10,6 +10,8 @@
 #include <linux/bitops.h>
 #include <linux/sizes.h>
 
+#include <gcip/gcip-image-config.h>
+
 #include "gxp-config.h"
 #include "gxp-internal.h"
 
@@ -41,6 +43,15 @@
 #define PRIVATE_FW_DATA_SIZE SZ_2M
 #define SHARED_FW_DATA_SIZE SZ_1M
 
+extern bool gxp_core_boot;
+
+/* Indexes same as image_config.IommuMappingIdx in the firmware side. */
+enum gxp_imgcfg_idx {
+	CORE_CFG_REGION_IDX,
+	VD_CFG_REGION_IDX,
+	SYS_CFG_REGION_IDX,
+};
+
 struct gxp_firmware_manager {
 	const struct firmware *firmwares[GXP_NUM_CORES];
 	char *firmware_name;
@@ -49,18 +60,15 @@ struct gxp_firmware_manager {
 	struct mutex dsp_firmware_lock;
 	/* Firmware status bitmap. Accessors must hold `vd_semaphore`. */
 	u32 firmware_running;
-	/*
-	 * The boundary of readonly segments and writable segments.
-	 * The mappings are programmed as
-	 *   [fwbufs[i].daddr, rw_boundaries[i]): RO
-	 *   [rw_boundaries[i], daddr + fwbufs[i].size): RW
-	 *
-	 * The boundary information is collected by parsing the ELF
-	 * header after @firmwares have been fetched.
-	 */
-	dma_addr_t rw_boundaries[GXP_NUM_CORES];
 	/* Store the entry point of the DSP core firmware. */
 	u32 entry_points[GXP_NUM_CORES];
+	/*
+	 * Cached image config, for easier fetching config entries.
+	 * Not a pointer to the firmware buffer because we want to forcely change the
+	 * privilege level to NS.
+	 * Only valid on firmware requested.
+	 */
+	struct gcip_image_config img_cfg;
 };
 
 enum aurora_msg {
@@ -102,9 +110,12 @@ int gxp_firmware_request_if_needed(struct gxp_dev *gxp);
 /*
  * Re-program the reset vector and power on the core's LPM if the block had
  * been shut down.
+ *
+ * @core should be virt core when using per-VD config method, otherwise should
+ * be phys core.
  */
 int gxp_firmware_setup_hw_after_block_off(struct gxp_dev *gxp, uint core,
-					  bool verbose);
+					  uint phys_core, bool verbose);
 
 /*
  *  Loads the firmware for the cores in system memory and powers up the cores
@@ -123,12 +134,29 @@ void gxp_firmware_stop(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
  * Sets the specified core's boot mode or suspend request value.
  * This function should be called only after the firmware has been run.
  */
-void gxp_firmware_set_boot_mode(struct gxp_dev *gxp, uint core, u32 mode);
+void gxp_firmware_set_boot_mode(struct gxp_dev *gxp,
+				struct gxp_virtual_device *vd, uint core,
+				u32 mode);
 
 /*
  * Returns the specified core's boot mode or boot status.
  * This function should be called only after the firmware has been run.
  */
-u32 gxp_firmware_get_boot_mode(struct gxp_dev *gxp, uint core);
+u32 gxp_firmware_get_boot_mode(struct gxp_dev *gxp,
+			       struct gxp_virtual_device *vd, uint core);
+
+/*
+ * Sets the specified core's boot status or suspend request value.
+ */
+void gxp_firmware_set_boot_status(struct gxp_dev *gxp,
+				  struct gxp_virtual_device *vd, uint core,
+				  u32 status);
+
+/*
+ * Returns the specified core's boot status or boot status.
+ * This function should be called only after the firmware has been run.
+ */
+u32 gxp_firmware_get_boot_status(struct gxp_dev *gxp,
+				 struct gxp_virtual_device *vd, uint core);
 
 #endif /* __GXP_FIRMWARE_H__ */

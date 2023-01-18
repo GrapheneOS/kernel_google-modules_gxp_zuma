@@ -61,4 +61,14 @@ void gxp_mcu_firmware_stop(struct gxp_mcu_firmware *mcu_fw);
  */
 struct gxp_mcu_firmware *gxp_mcu_firmware_of(struct gxp_dev *gxp);
 
+/*
+ * Handles the MCU firmware crash. It will handle the crash only when the @crash_type is
+ * GCIP_FW_CRASH_UNRECOVERABLE_FAULT. Otherwise, it will ignore that crash.
+ *
+ * This function will be called from the `gxp-kci.c` when GCIP_RKCI_FIRMWARE_CRASH RKCI is arrived
+ * from the MCU firmware side.
+ */
+void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
+				    enum gcip_fw_crash_type crash_type);
+
 #endif /* __GXP_MCU_FIRMWARE_H__ */

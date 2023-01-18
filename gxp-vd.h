@@ -18,6 +18,9 @@
 #include <linux/types.h>
 #include <linux/wait.h>
 
+#include <gcip/gcip-image-config.h>
+
+#include "gxp-host-device-structs.h"
 #include "gxp-internal.h"
 #include "gxp-mapping.h"
 
@@ -65,6 +68,8 @@ struct gxp_virtual_device {
 	struct mailbox_resp_queue *mailbox_resp_queues;
 	struct rb_root mappings_root;
 	struct rw_semaphore mappings_semaphore;
+	/* Used to save doorbell state on VD resume. */
+	uint doorbells_state[GXP_NUM_DOORBELLS_PER_VD];
 	enum gxp_virtual_device_state state;
 	/*
 	 * Record the gxp->power_mgr->blk_switch_count when the vd was
@@ -79,9 +84,24 @@ struct gxp_virtual_device {
 	 */
 	int slice_index;
 	/*
-	 * The SG table that holds the firmware data region.
+	 * The SG table that holds the firmware RW data region.
 	 */
-	struct sg_table *fwdata_sgt;
+	struct sg_table *rwdata_sgt[GXP_NUM_CORES];
+	/*
+	 * The SG table that holds the regions specified in the image config's
+	 * non-secure IOMMU mappings.
+	 */
+	struct {
+		dma_addr_t daddr;
+		struct sg_table *sgt;
+	} ns_regions[GCIP_IMG_CFG_MAX_NS_IOMMU_MAPPINGS];
+	/* The firmware size specified in image config. */
+	u32 fw_ro_size;
+	/*
+	 * The config regions specified in image config.
+	 * core_cfg's size should be a multiple of GXP_NUM_CORES.
+	 */
+	struct gxp_mapped_resource core_cfg, vd_cfg, sys_cfg;
 	uint core_list;
 	/*
 	 * The ID of DSP client. -1 if it is not allocated.
@@ -116,6 +136,9 @@ struct gxp_virtual_device {
 	refcount_t refcount;
 	/* A constant ID assigned after VD is allocated. For debug only. */
 	int vdid;
+	struct gcip_image_config_parser cfg_parser;
+	/* The config version specified in firmware's image config. */
+	u32 config_version;
 };
 
 /*
@@ -197,13 +220,6 @@ void gxp_vd_stop(struct gxp_virtual_device *vd);
  * The caller must have locked gxp->vd_semaphore for reading.
  */
 int gxp_vd_virt_core_to_phys_core(struct gxp_virtual_device *vd, u16 virt_core);
-
-/*
- * Acquires the physical core IDs assigned to the virtual device.
- *
- * The caller must have locked gxp->vd_semaphore for reading.
- */
-uint gxp_vd_phys_core_list(struct gxp_virtual_device *vd);
 
 /**
  * gxp_vd_mapping_store() - Store a mapping in a virtual device's records
@@ -352,5 +368,24 @@ gxp_vd_get(struct gxp_virtual_device *vd)
  * If @vd->refcount becomes 0, @vd will be freed.
  */
 void gxp_vd_put(struct gxp_virtual_device *vd);
+
+/*
+ * Change the status of the vd of @client_id to GXP_VD_UNAVAILABLE.
+ * Internally, it will discard all pending/unconsumed user commands and call the
+ * `gxp_vd_block_unready` function.
+ *
+ * This function will be called when the `CLIENT_FATAL_ERROR_NOTIFY` RKCI has been sent from the
+ * firmware side.
+ */
+void gxp_vd_invalidate(struct gxp_dev *gxp, int client_id);
+
+/*
+ * An ID between 0~GXP_NUM_CORES-1 and is unique to each VD.
+ * Only used in direct mode.
+ */
+static inline uint gxp_vd_hw_slot_id(struct gxp_virtual_device *vd)
+{
+	return ffs(vd->core_list) - 1;
+}
 
 #endif /* __GXP_VD_H__ */

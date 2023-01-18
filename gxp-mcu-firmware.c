@@ -121,11 +121,6 @@ static int gxp_mcu_firmware_load_locked(struct gxp_mcu_firmware *mcu_fw,
 
 	memcpy(mcu_fw->image_buf.vaddr, fw->data + offset, size);
 
-	if (!gxp->gsa_dev)
-		program_iremap_csr(gxp, &mcu_fw->image_buf);
-	gxp_bpm_configure(gxp, GXP_MCU_CORE_ID, INST_BPM_OFFSET,
-			  BPM_EVENT_READ_XFER);
-
 out_release_firmware:
 	release_firmware(fw);
 	return ret;
@@ -206,12 +201,46 @@ static void gxp_mcu_firmware_stop_locked(struct gxp_mcu_firmware *mcu_fw)
 	if (ret)
 		dev_warn(gxp->dev, "KCI shutdown failed: %d", ret);
 
-	if (!gxp_lpm_wait_state_eq(gxp, CORE_TO_PSM(GXP_MCU_CORE_ID), LPM_PG_STATE))
+	if (!gxp_lpm_wait_state_eq(gxp, CORE_TO_PSM(GXP_MCU_CORE_ID),
+				   LPM_PG_STATE))
 		dev_warn(gxp->dev,
 			 "MCU PSM transition to PS3 fails, current state: %u\n",
 			 gxp_lpm_get_state(gxp, CORE_TO_PSM(GXP_MCU_CORE_ID)));
 
 	gxp_mcu_firmware_unload_locked(mcu_fw);
+}
+
+static int gxp_mcu_firmware_power_up(struct gxp_mcu_firmware *mcu_fw,
+				     const char *name)
+{
+	struct gxp_dev *gxp = mcu_fw->gxp;
+	int ret;
+
+	if (!gxp->gsa_dev)
+		program_iremap_csr(gxp, &mcu_fw->image_buf);
+	gxp_bpm_configure(gxp, GXP_MCU_CORE_ID, INST_BPM_OFFSET,
+			  BPM_EVENT_READ_XFER);
+
+	ret = gxp_lpm_up(gxp, GXP_MCU_CORE_ID);
+	if (ret)
+		return ret;
+	/* Raise wakeup doorbell */
+	dev_notice(gxp->dev, "Raising doorbell %d interrupt\n",
+		   CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
+	gxp_doorbell_enable_for_core(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID),
+				     GXP_MCU_CORE_ID);
+	gxp_doorbell_set(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
+
+	ret = gxp_mcu_firmware_handshake(mcu_fw);
+	if (ret)
+		goto err_lpm_down;
+	dev_info(gxp->dev, "MCU firmware %s run succeeded", name);
+
+	return ret;
+
+err_lpm_down:
+	gxp_lpm_down(gxp, GXP_MCU_CORE_ID);
+	return ret;
 }
 
 /*
@@ -229,7 +258,6 @@ static int gxp_mcu_firmware_run_locked(struct gxp_mcu_firmware *mcu_fw,
 				       const char *name)
 {
 	int ret;
-	struct gxp_dev *gxp = mcu_fw->gxp;
 
 	lockdep_assert_held(&mcu_fw->lock);
 
@@ -240,27 +268,14 @@ static int gxp_mcu_firmware_run_locked(struct gxp_mcu_firmware *mcu_fw,
 	ret = gxp_mcu_firmware_load_locked(mcu_fw, name);
 	if (ret)
 		goto err_invalid;
-	ret = gxp_lpm_up(gxp, GXP_MCU_CORE_ID);
+	ret = gxp_mcu_firmware_power_up(mcu_fw, name);
 	if (ret)
 		goto err_unload;
-	/* Raise wakeup doorbell */
-	dev_notice(gxp->dev, "Raising doorbell %d interrupt\n",
-		   CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
-	gxp_doorbell_enable_for_core(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID),
-				     GXP_MCU_CORE_ID);
-	gxp_doorbell_set(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
-
-	ret = gxp_mcu_firmware_handshake(mcu_fw);
-	if (ret)
-		goto err_lpm_down;
-	dev_info(gxp->dev, "MCU firmware %s run succeeded", name);
 
 	mcu_fw->status = GCIP_FW_VALID;
 	mcu_fw->name = name;
 	return 0;
 
-err_lpm_down:
-	gxp_lpm_down(gxp, GXP_MCU_CORE_ID);
 err_unload:
 	gxp_mcu_firmware_unload_locked(mcu_fw);
 err_invalid:
@@ -271,8 +286,19 @@ err_invalid:
 
 static int gxp_mcu_firmware_restart_locked(struct gxp_mcu_firmware *mcu_fw)
 {
-	/* TODO(b/233159020): implement restart */
-	return gxp_mcu_firmware_run_locked(mcu_fw, mcu_fw->name);
+	struct gxp_dev *gxp = mcu_fw->gxp;
+	int ret;
+
+	lockdep_assert_held(&mcu_fw->lock);
+
+	ret = gxp_mcu_firmware_power_up(mcu_fw, mcu_fw->name);
+	if (ret) {
+		dev_warn(gxp->dev, "Failed to restart, reload MCU fw entirely");
+		gxp_mcu_firmware_unload_locked(mcu_fw);
+		return gxp_mcu_firmware_run_locked(mcu_fw, mcu_fw->name);
+	}
+
+	return 0;
 }
 
 static int init_mcu_firmware_buf(struct gxp_dev *gxp,
@@ -445,7 +471,13 @@ int gxp_mcu_firmware_run(struct gxp_mcu_firmware *mcu_fw)
 	int ret;
 
 	mutex_lock(&mcu_fw->lock);
-	if (mcu_fw->status == GCIP_FW_VALID)
+	/*
+	 * TODO(b/233159020): Currently, the stop function unloads the firmware image and
+	 * we have to reload it by calling the run function. We have implemented the restart
+	 * function for non-GSA environment, but let's enable it by removing " && 0" once we
+	 * refactor the whole logic for supporting the GSA device.
+	 */
+	if (mcu_fw->status == GCIP_FW_VALID && 0)
 		ret = gxp_mcu_firmware_restart_locked(mcu_fw);
 	else
 		ret = gxp_mcu_firmware_run_locked(mcu_fw, mcu_fw->name);
@@ -458,4 +490,109 @@ void gxp_mcu_firmware_stop(struct gxp_mcu_firmware *mcu_fw)
 	mutex_lock(&mcu_fw->lock);
 	gxp_mcu_firmware_stop_locked(mcu_fw);
 	mutex_unlock(&mcu_fw->lock);
+}
+
+void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
+				    enum gcip_fw_crash_type crash_type)
+{
+	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
+	struct gxp_client *client;
+	int ret;
+
+	dev_err(gxp->dev, "MCU firmware is crashed, crash_type=%d", crash_type);
+
+	if (crash_type != GCIP_FW_CRASH_UNRECOVERABLE_FAULT)
+		return;
+
+	dev_err(gxp->dev, "Unrecoverable MCU firmware fault, handle it");
+
+	/*
+	 * Prevent @gxp->client_list is being changed while handling the crash.
+	 * The user cannot open or close a fd until this function releases the lock.
+	 */
+	mutex_lock(&gxp->client_list_lock);
+
+	/*
+	 * Hold @client->semaphore first to prevent deadlock.
+	 * By holding this lock, clients cannot proceed most IOCTLs.
+	 */
+	list_for_each_entry (client, &gxp->client_list, list_entry) {
+		down_write(&client->semaphore);
+	}
+
+	/*
+	 * Holding @client->semaphore will block the most client actions, but let's make sure
+	 * it by holding the locks directly related to the actions we want to block accordingly.
+	 * For example, in the case of the block wakelock, the debug dump can try to acquire it
+	 * which cannot be blocked by holding @client->semaphore.
+	 */
+
+	/*
+	 * We have to block allocating a new vd by the runtime. Otherwise, if it is holding the
+	 * block wakelock, it will try to send a `allocate_vmbox` KCI to the crashed MCU firmware.
+	 *
+	 * The runtime cannot allocate a new virtual device or closing its client until this
+	 * function releases the lock.
+	 */
+	down_write(&gxp->vd_semaphore);
+
+	/*
+	 * As we are recovering the MCU firmware, the number of clients holding the block wakelock
+	 * should not be changed until the rescuing is finished.
+	 *
+	 * The runtime cannot acquire or release the block wakelock until this function releases
+	 * the lock.
+	 */
+	mutex_lock(&gxp->wakelock_mgr->lock);
+
+	/*
+	 * Discard all pending/unconsumed UCI responses and change the state of all virtual devices
+	 * to GXP_VD_UNAVAILABLE. From now on, all clients cannot request new UCI commands.
+	 */
+	list_for_each_entry (client, &gxp->client_list, list_entry) {
+		if (client->has_block_wakelock && client->vd) {
+			gxp->mailbox_mgr->release_unconsumed_async_resps(
+				client->vd);
+			client->vd->state = GXP_VD_UNAVAILABLE;
+			if (client->vd_invalid_eventfd)
+				gxp_eventfd_signal(client->vd_invalid_eventfd);
+		}
+	}
+
+	/*
+	 * Turn off and on the Aurora block and rerun the MCU firmware.
+	 * TODO(b/264621513): Change the power state of LPM instead of turning off and on the
+	 * whole Aurora block.
+	 */
+	mutex_lock(&mcu_fw->lock);
+
+	ret = gxp_pm_blk_off(gxp);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to turn off BLK_AUR (ret=%d)\n", ret);
+		goto out;
+	}
+
+	if (!gxp_pm_is_blk_down(gxp, 5000)) {
+		dev_err(gxp->dev, "BLK_AUR hasn't been turned off");
+		goto out;
+	}
+
+	ret = gxp_pm_blk_on(gxp);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to turn on BLK_AUR (ret=%d)\n", ret);
+		goto out;
+	}
+
+	ret = gxp_mcu_firmware_restart_locked(mcu_fw);
+	if (ret)
+		dev_err(gxp->dev, "Failed to run MCU firmware (ret=%d)\n", ret);
+
+out:
+	mutex_unlock(&mcu_fw->lock);
+	mutex_unlock(&gxp->wakelock_mgr->lock);
+	up_write(&gxp->vd_semaphore);
+	list_for_each_entry (client, &gxp->client_list, list_entry) {
+		up_write(&client->semaphore);
+	}
+	mutex_unlock(&gxp->client_list_lock);
 }

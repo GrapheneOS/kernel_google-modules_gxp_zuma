@@ -22,6 +22,8 @@
 #include <linux/uaccess.h>
 #include <linux/uidgid.h>
 
+#include <gcip/gcip-dma-fence.h>
+
 #include "gxp-client.h"
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
@@ -887,7 +889,7 @@ static int map_tpu_mbx_queue(struct gxp_client *client,
 	down_read(&gxp->vd_semaphore);
 
 	core_count = client->vd->num_cores;
-	phys_core_list = gxp_vd_phys_core_list(client->vd);
+	phys_core_list = client->vd->core_list;
 
 	mbx_info = kmalloc(
 		sizeof(struct edgetpu_ext_mailbox_info) +
@@ -1537,6 +1539,48 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
+static int gxp_register_invalidated_eventfd(
+	struct gxp_client *client,
+	struct gxp_register_invalidated_eventfd_ioctl __user *argp)
+{
+	struct gxp_register_invalidated_eventfd_ioctl ibuf;
+	struct gxp_eventfd *eventfd;
+	int ret = 0;
+
+	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
+		return -EFAULT;
+
+	down_write(&client->semaphore);
+
+	eventfd = gxp_eventfd_create(ibuf.eventfd);
+	if (IS_ERR(eventfd)) {
+		ret = PTR_ERR(eventfd);
+		goto out;
+	}
+
+	if (client->vd_invalid_eventfd)
+		gxp_eventfd_put(client->vd_invalid_eventfd);
+	client->vd_invalid_eventfd = eventfd;
+
+out:
+	up_write(&client->semaphore);
+	return ret;
+}
+
+static int gxp_unregister_invalidated_eventfd(
+	struct gxp_client *client,
+	struct gxp_register_invalidated_eventfd_ioctl __user *argp)
+{
+	down_write(&client->semaphore);
+
+	if (client->vd_invalid_eventfd)
+		gxp_eventfd_put(client->vd_invalid_eventfd);
+	client->vd_invalid_eventfd = NULL;
+
+	up_write(&client->semaphore);
+	return 0;
+}
+
 static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 {
 	struct gxp_client *client = file->private_data;
@@ -1627,6 +1671,12 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 		break;
 	case GXP_TRIGGER_DEBUG_DUMP:
 		ret = gxp_trigger_debug_dump(client, argp);
+		break;
+	case GXP_REGISTER_INVALIDATED_EVENTFD:
+		ret = gxp_register_invalidated_eventfd(client, argp);
+		break;
+	case GXP_UNREGISTER_INVALIDATED_EVENTFD:
+		ret = gxp_unregister_invalidated_eventfd(client, argp);
 		break;
 	default:
 		ret = -ENOTTY; /* unknown command */
@@ -1955,16 +2005,23 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		dev_warn(dev, "Failed to init thermal driver: %d\n", ret);
 	}
 
+	gxp->gfence_mgr = gcip_dma_fence_manager_create(gxp->dev);
+	if (IS_ERR(gxp->gfence_mgr)) {
+		ret = PTR_ERR(gxp->gfence_mgr);
+		dev_err(dev, "Failed to init DMA fence manager: %d\n", ret);
+		goto err_thermal_destroy;
+	}
+
 	INIT_LIST_HEAD(&gxp->client_list);
 	mutex_init(&gxp->client_list_lock);
 	if (gxp->after_probe) {
 		ret = gxp->after_probe(gxp);
 		if (ret)
-			goto err_thermal_destroy;
+			goto err_dma_fence_destroy;
 	}
 
 	gxp->misc_dev.minor = MISC_DYNAMIC_MINOR;
-	gxp->misc_dev.name = "gxp";
+	gxp->misc_dev.name = GXP_NAME;
 	gxp->misc_dev.fops = &gxp_fops;
 	ret = misc_register(&gxp->misc_dev);
 	if (ret) {
@@ -1981,6 +2038,8 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 err_before_remove:
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);
+err_dma_fence_destroy:
+	/* DMA fence manager creation doesn't need revert */
 err_thermal_destroy:
 	/* thermal init doesn't need revert */
 	gxp_core_telemetry_exit(gxp);

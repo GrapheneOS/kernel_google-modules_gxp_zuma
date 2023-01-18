@@ -8,6 +8,8 @@
 #ifndef __CALLISTO_CONFIG_H__
 #define __CALLISTO_CONFIG_H__
 
+#include <linux/sizes.h>
+
 #define GXP_DRIVER_NAME "gxp_callisto"
 #define DSP_FIRMWARE_DEFAULT_PREFIX "gxp_callisto_fw_core"
 #define GXP_DEFAULT_MCU_FIRMWARE "google/gxp-callisto.fw"
@@ -27,6 +29,13 @@
 
 /* three for cores, one for MCU */
 #define GXP_NUM_WAKEUP_DOORBELLS (GXP_NUM_CORES + 1)
+
+/* The total size of the configuration region. */
+#define GXP_SHARED_BUFFER_SIZE SZ_512K
+/* Size of slice per VD. */
+#define GXP_SHARED_SLICE_SIZE SZ_32K
+/* TODO(b/265730182): set to 7 */
+#define GXP_NUM_SHARED_SLICES 16
 
 /* TODO(b/234098135): remove this when FW supports suspend / resume */
 #define DISABLE_VD_SUSPEND_RESUME_SUPPORT

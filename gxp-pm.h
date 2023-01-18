@@ -167,11 +167,12 @@ int gxp_pm_blk_off(struct gxp_dev *gxp);
 /**
  * gxp_pm_is_blk_down() - Check weather the blk is turned off or not.
  * @gxp: The GXP device to check
+ * @timeout_ms: Wait for the block to be turned off for this duration.
  *
  * Return:
  * * true       - blk is turned off.
  */
-bool gxp_pm_is_blk_down(struct gxp_dev *gxp);
+bool gxp_pm_is_blk_down(struct gxp_dev *gxp, uint timeout_ms);
 
 /**
  * gxp_pm_get_blk_state() - Get the blk power state
