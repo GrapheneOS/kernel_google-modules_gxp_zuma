@@ -167,7 +167,7 @@ static int elf_load_segments(struct gxp_dev *gxp, const u8 *elf_data,
 			 * skipped while loading
 			 */
 			dev_err(gxp->dev,
-				"Segment out of bounds: da 0x%llx mem 0x%x. Skipping...",
+				"Segment out of bounds: da %#llx mem %#x. Skipping...",
 				da, memsz);
 			continue;
 		}
@@ -193,7 +193,7 @@ static int elf_load_segments(struct gxp_dev *gxp, const u8 *elf_data,
 		/* grab the kernel address for this device address */
 		ptr = buffer->vaddr + (da - buffer->daddr);
 		if (!ptr) {
-			dev_err(gxp->dev, "Bad phdr: da 0x%#llx mem 0x%#x", da,
+			dev_err(gxp->dev, "Bad phdr: da %#llx mem %#x", da,
 				memsz);
 			ret = -EINVAL;
 			break;
@@ -340,7 +340,7 @@ static void *get_scratchpad_base(struct gxp_dev *gxp,
 
 	if (vd && gxp_fw_data_use_per_vd_config(vd))
 		return vd->core_cfg.vaddr +
-		       vd->core_cfg.size / GXP_NUM_CORES * core;
+		       (vd->core_cfg.size / GXP_NUM_CORES) * core;
 
 	if (!vd || !vd->rwdata_sgt[core])
 		return gxp->fwbufs[core].vaddr + AURORA_SCRATCHPAD_OFF;

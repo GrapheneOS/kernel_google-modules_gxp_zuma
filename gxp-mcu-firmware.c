@@ -225,8 +225,8 @@ static int gxp_mcu_firmware_power_up(struct gxp_mcu_firmware *mcu_fw,
 	if (ret)
 		return ret;
 	/* Raise wakeup doorbell */
-	dev_notice(gxp->dev, "Raising doorbell %d interrupt\n",
-		   CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
+	dev_dbg(gxp->dev, "Raising doorbell %d interrupt\n",
+		CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
 	gxp_doorbell_enable_for_core(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID),
 				     GXP_MCU_CORE_ID);
 	gxp_doorbell_set(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));

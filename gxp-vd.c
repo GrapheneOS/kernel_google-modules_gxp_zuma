@@ -58,7 +58,8 @@ void gxp_vd_destroy(struct gxp_dev *gxp)
 }
 
 /* Allocates an SGT and map @daddr to it. */
-static int map_ns_region(struct gxp_virtual_device *vd, dma_addr_t daddr, size_t size)
+static int map_ns_region(struct gxp_virtual_device *vd, dma_addr_t daddr,
+			 size_t size)
 {
 	struct gxp_dev *gxp = vd->gxp;
 	struct sg_table *sgt;
@@ -1402,11 +1403,13 @@ void gxp_vd_put(struct gxp_virtual_device *vd)
 		kfree(vd);
 }
 
-void gxp_vd_invalidate(struct gxp_dev *gxp, int client_id)
+void gxp_vd_invalidate(struct gxp_dev *gxp, int client_id, uint core_list)
 {
 	struct gxp_client *client = NULL, *c;
 	release_unconsumed_async_resps_t release_unconsumed_async_resps =
 		gxp->mailbox_mgr->release_unconsumed_async_resps;
+	int ret;
+	uint core;
 
 	/*
 	 * Prevent @gxp->client_list is being changed while handling the crash.
@@ -1435,6 +1438,19 @@ void gxp_vd_invalidate(struct gxp_dev *gxp, int client_id)
 	if (!client) {
 		dev_err(gxp->dev, "Failed to find a VD, client_id=%d",
 			client_id);
+		/*
+		 * Invalidate all debug dump segments if debug dump
+		 * is enabled and core_list is not empty.
+		 */
+		if (!gxp_debug_dump_is_enabled() || !core_list)
+			return;
+		for (core = 0; core < GXP_NUM_CORES; core++) {
+			if (!(BIT(core) & core_list))
+				continue;
+			mutex_lock(&gxp->debug_dump_mgr->debug_dump_lock);
+			gxp_debug_dump_invalidate_segments(gxp, core);
+			mutex_unlock(&gxp->debug_dump_mgr->debug_dump_lock);
+		}
 		return;
 	}
 
@@ -1456,5 +1472,19 @@ void gxp_vd_invalidate(struct gxp_dev *gxp, int client_id)
 	}
 
 	up_write(&gxp->vd_semaphore);
+	/*
+	 * Process debug dump if its enabled and core_list is not empty.
+	 * Keep on hold the client lock while processing the dumps. vd
+	 * lock would be taken  and released inside the debug dump
+	 * implementation logic ahead.
+	 */
+	if (gxp_debug_dump_is_enabled() && core_list != 0) {
+		ret = gxp_debug_dump_process_dump_mcu_mode(gxp, core_list,
+							   client->vd);
+		if (ret)
+			dev_err(gxp->dev,
+				"debug dump processing failed (ret=%d).\n",
+				ret);
+	}
 	up_write(&client->semaphore);
 }

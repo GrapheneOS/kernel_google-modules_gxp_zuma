@@ -1908,10 +1908,11 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	if (ret)
 		return ret;
 
+	gxp_create_debugdir(gxp);
 	ret = gxp_wakelock_init(gxp);
 	if (ret) {
 		dev_err(dev, "failed to init wakelock: %d", ret);
-		return ret;
+		goto err_remove_debugdir;
 	}
 
 	ret = gxp_pm_init(gxp);
@@ -2063,6 +2064,8 @@ err_put_tpu_dev:
 	gxp_pm_destroy(gxp);
 err_wakelock_destroy:
 	/* wakelock init doesn't need revert */
+err_remove_debugdir:
+	gxp_remove_debugdir(gxp);
 	return ret;
 }
 
@@ -2070,7 +2073,7 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 {
 	struct gxp_dev *gxp = platform_get_drvdata(pdev);
 
-	gxp_remove_debugfs(gxp);
+	gxp_remove_debugdir(gxp);
 	misc_deregister(&gxp->misc_dev);
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);

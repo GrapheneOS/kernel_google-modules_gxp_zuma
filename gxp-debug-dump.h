@@ -23,22 +23,22 @@
 #define GXP_NUM_CORE_SEGMENTS 8
 #define GXP_NUM_BUFFER_MAPPINGS 32
 #define GXP_SEG_HEADER_NAME_LENGTH 32
-#define GXP_NUM_SEGMENTS_PER_CORE \
-	(GXP_NUM_COMMON_SEGMENTS + GXP_NUM_CORE_SEGMENTS + \
+#define GXP_NUM_SEGMENTS_PER_CORE                                              \
+	(GXP_NUM_COMMON_SEGMENTS + GXP_NUM_CORE_SEGMENTS +                     \
 	 GXP_NUM_BUFFER_MAPPINGS + 1)
 
 #define GXP_Q7_ICACHE_SIZE 131072 /* I-cache size in bytes */
 #define GXP_Q7_ICACHE_LINESIZE 64 /* I-cache line size in bytes */
 #define GXP_Q7_ICACHE_WAYS 4
-#define GXP_Q7_ICACHE_SETS ((GXP_Q7_ICACHE_SIZE / GXP_Q7_ICACHE_WAYS) / \
-			    GXP_Q7_ICACHE_LINESIZE)
+#define GXP_Q7_ICACHE_SETS                                                     \
+	((GXP_Q7_ICACHE_SIZE / GXP_Q7_ICACHE_WAYS) / GXP_Q7_ICACHE_LINESIZE)
 #define GXP_Q7_ICACHE_WORDS_PER_LINE (GXP_Q7_ICACHE_LINESIZE / sizeof(u32))
 
 #define GXP_Q7_DCACHE_SIZE 65536 /* D-cache size in bytes */
-#define GXP_Q7_DCACHE_LINESIZE 64  /* D-cache line size in bytes */
+#define GXP_Q7_DCACHE_LINESIZE 64 /* D-cache line size in bytes */
 #define GXP_Q7_DCACHE_WAYS 4
-#define GXP_Q7_DCACHE_SETS ((GXP_Q7_DCACHE_SIZE / GXP_Q7_DCACHE_WAYS) / \
-			    GXP_Q7_DCACHE_LINESIZE)
+#define GXP_Q7_DCACHE_SETS                                                     \
+	((GXP_Q7_DCACHE_SIZE / GXP_Q7_DCACHE_WAYS) / GXP_Q7_DCACHE_LINESIZE)
 #define GXP_Q7_DCACHE_WORDS_PER_LINE (GXP_Q7_DCACHE_LINESIZE / sizeof(u32))
 #define GXP_Q7_NUM_AREGS 64
 #define GXP_Q7_DCACHE_TAG_RAMS 2
@@ -188,6 +188,12 @@ struct gxp_debug_dump_manager {
 	 * time
 	 */
 	struct mutex debug_dump_lock;
+	/*
+	 * Array index maps to dsp cores. Array stores the pointer to the
+	 * crashed VD that was running on the respective core. This is used
+	 * only in mcu mode.
+	 */
+	struct gxp_virtual_device *crashed_core_to_vd[GXP_NUM_CORES];
 #if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
 	struct sscd_segment segs[GXP_NUM_CORES][GXP_NUM_SEGMENTS_PER_CORE];
 #endif
@@ -198,5 +204,32 @@ void gxp_debug_dump_exit(struct gxp_dev *gxp);
 struct work_struct *gxp_debug_dump_get_notification_handler(struct gxp_dev *gxp,
 							    uint core);
 bool gxp_debug_dump_is_enabled(void);
+
+/**
+ * gxp_debug_dump_invalidate_segments() - Invalidate debug dump segments to enable
+ *                                        firmware to populate them on next debug
+ *                                        dump trigger.
+ *
+ * This function is not thread safe. Caller should take the necessary precautions.
+ *
+ * @gxp: The GXP device to obtain the handler for
+ * @core_id: physical id of core whose dump segments need to be invalidated.
+ */
+void gxp_debug_dump_invalidate_segments(struct gxp_dev *gxp, uint32_t core_id);
+
+/**
+ * gxp_debug_dump_process_dump_mcu_mode() - Checks and process the debug dump
+ *                                          for cores from core_list.
+ * @gxp: The GXP device to obtain the handler for
+ * @core_list: A bitfield enumerating the physical cores on which crash is
+ *             reported from firmware.
+ * @crashed_vd: vd that has crashed.
+ *
+ * Return:
+ * * 0       - Success.
+ * * -EINVAL - If vd state is not GXP_VD_UNAVAILABLE.
+ */
+int gxp_debug_dump_process_dump_mcu_mode(struct gxp_dev *gxp, uint core_list,
+					 struct gxp_virtual_device *crashed_vd);
 
 #endif /* __GXP_DEBUG_DUMP_H__ */

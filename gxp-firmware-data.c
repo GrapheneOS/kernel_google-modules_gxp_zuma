@@ -485,7 +485,7 @@ static struct app_metadata *gxp_fw_data_create_app_legacy(struct gxp_dev *gxp,
 	void *err;
 	int i;
 
-	app = kzalloc(sizeof(struct app_metadata), GFP_KERNEL);
+	app = kzalloc(sizeof(*app), GFP_KERNEL);
 	if (!app)
 		return ERR_PTR(-ENOMEM);
 

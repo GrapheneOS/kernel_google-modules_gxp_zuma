@@ -510,10 +510,19 @@ static int gxp_cmu_mux2_get(void *data, u64 *val)
 DEFINE_DEBUGFS_ATTRIBUTE(gxp_cmu_mux2_fops, gxp_cmu_mux2_get, gxp_cmu_mux2_set,
 			 "%llu\n");
 
-void gxp_create_debugfs(struct gxp_dev *gxp)
+void gxp_create_debugdir(struct gxp_dev *gxp)
 {
 	gxp->d_entry = debugfs_create_dir(GXP_NAME, NULL);
-	if (IS_ERR_OR_NULL(gxp->d_entry))
+	if (IS_ERR_OR_NULL(gxp->d_entry)) {
+		dev_warn(gxp->dev, "Create debugfs dir failed: %d",
+			 PTR_ERR_OR_ZERO(gxp->d_entry));
+		gxp->d_entry = NULL;
+	}
+}
+
+void gxp_create_debugfs(struct gxp_dev *gxp)
+{
+	if (!gxp->d_entry)
 		return;
 
 	mutex_init(&gxp->debugfs_client_lock);
@@ -540,9 +549,9 @@ void gxp_create_debugfs(struct gxp_dev *gxp)
 			    &gxp_cmu_mux2_fops);
 }
 
-void gxp_remove_debugfs(struct gxp_dev *gxp)
+void gxp_remove_debugdir(struct gxp_dev *gxp)
 {
-	if (IS_GXP_TEST && !gxp->d_entry)
+	if (!gxp->d_entry)
 		return;
 	debugfs_remove_recursive(gxp->d_entry);
 

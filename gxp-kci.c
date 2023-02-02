@@ -14,6 +14,7 @@
 
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
+#include "gxp-debug-dump.h"
 #include "gxp-dma.h"
 #include "gxp-kci.h"
 #include "gxp-lpm.h"
@@ -129,11 +130,30 @@ static void gxp_kci_handle_rkci(struct gxp_kci *gkci,
 		gxp_kci_resp_rkci_ack(gkci, resp);
 		break;
 	}
-	case GCIP_RKCI_CLIENT_FATAL_ERROR_NOTIFY:
-		/* TODO(b/265092842): Create a debug dump of corresponding cores (resp->status). */
-		gxp_vd_invalidate(gxp, resp->retval);
+	case GCIP_RKCI_CLIENT_FATAL_ERROR_NOTIFY: {
+		uint core_list = (uint)(resp->status);
+		int client_id = (int)(resp->retval);
+		/*
+		 * core_list param is used for generating debug dumps of respective
+		 * cores in core_list. Dumps are not required to be generated for
+		 * secure client and hence resetting it irrespective of debug dumps
+		 * being enabled or not.
+		 */
+		if (client_id == SECURE_CLIENT_ID)
+			core_list = 0;
+		/*
+		 * Inside gxp_vd_invalidate() after invalidating the client, debug dump
+		 * if enabled would be checked and processed for individual cores in
+		 * core_list. Due to debug dump processing being a time consuming task
+		 * rkci ack is sent first to unblock the mcu to send furhter rkci's. Client
+		 * lock inside gxp_vd_invalidate() would make sure the correctness of the
+		 * logic against possible concurrent scenarios.
+		 */
 		gxp_kci_resp_rkci_ack(gkci, resp);
+		gxp_vd_invalidate(gxp, client_id, core_list);
+
 		break;
+	}
 	default:
 		dev_warn(gxp->dev, "Unrecognized reverse KCI request: %#x",
 			 resp->code);
