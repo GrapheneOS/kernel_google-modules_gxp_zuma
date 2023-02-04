@@ -18,6 +18,7 @@
 
 #include "gxp-bpm.h"
 #include "gxp-config.h"
+#include "gxp-dma.h"
 #include "gxp-doorbell.h"
 #include "gxp-internal.h"
 #include "gxp-kci.h"
@@ -111,10 +112,10 @@ static int gxp_mcu_firmware_load_locked(struct gxp_mcu_firmware *mcu_fw,
 		if (ret)
 			dev_err(dev, "image config parsing failed: %d", ret);
 	} else
-		ret = iommu_map(iommu_get_domain_for_dev(gxp->dev),
-				mcu_fw->image_buf.daddr,
-				mcu_fw->image_buf.paddr, mcu_fw->image_buf.size,
-				IOMMU_READ | IOMMU_WRITE);
+		ret = gxp_iommu_map(gxp, gxp_iommu_get_domain_for_dev(gxp),
+				    mcu_fw->image_buf.daddr,
+				    mcu_fw->image_buf.paddr, mcu_fw->image_buf.size,
+				    IOMMU_READ | IOMMU_WRITE);
 
 	if (ret)
 		goto out_release_firmware;
@@ -136,8 +137,8 @@ static void gxp_mcu_firmware_unload_locked(struct gxp_mcu_firmware *mcu_fw)
 	if (mcu_fw->is_signed)
 		gcip_image_config_clear(&mcu_fw->cfg_parser);
 	else
-		iommu_unmap(iommu_get_domain_for_dev(mcu_fw->gxp->dev),
-			    mcu_fw->image_buf.daddr, mcu_fw->image_buf.size);
+		gxp_iommu_unmap(mcu_fw->gxp, gxp_iommu_get_domain_for_dev(mcu_fw->gxp),
+				mcu_fw->image_buf.daddr, mcu_fw->image_buf.size);
 }
 
 static int gxp_mcu_firmware_handshake(struct gxp_mcu_firmware *mcu_fw)
@@ -421,8 +422,23 @@ static int image_config_map(void *data, dma_addr_t daddr, phys_addr_t paddr,
 		dev_err(gxp->dev, "image config NS mappings are not supported");
 		return -EINVAL;
 	}
-	return iommu_map(iommu_get_domain_for_dev(gxp->dev), daddr, paddr, size,
-			 IOMMU_READ | IOMMU_WRITE);
+
+	/* TODO(b/268150335): remove this block once MCU FW changes land */
+	{
+		int i;
+
+		for (i = GXP_NUM_CORES; i < GXP_NUM_MAILBOXES; i++) {
+			if (daddr == gxp->mbx[i].daddr) {
+				dev_warn(
+					gxp->dev,
+					"Skip mapping in MCU image config: %pad",
+					&daddr);
+				return 0;
+			}
+		}
+	}
+	return gxp_iommu_map(gxp, gxp_iommu_get_domain_for_dev(gxp), daddr,
+			    paddr, size, IOMMU_READ | IOMMU_WRITE);
 }
 
 static void image_config_unmap(void *data, dma_addr_t daddr, size_t size,
@@ -430,7 +446,16 @@ static void image_config_unmap(void *data, dma_addr_t daddr, size_t size,
 {
 	struct gxp_dev *gxp = data;
 
-	iommu_unmap(iommu_get_domain_for_dev(gxp->dev), daddr, size);
+	/* TODO(b/268150335): remove this block once MCU FW changes land */
+	{
+		int i;
+
+		for (i = GXP_NUM_CORES; i < GXP_NUM_MAILBOXES; i++) {
+			if (daddr == gxp->mbx[i].daddr)
+				return;
+		}
+	}
+	gxp_iommu_unmap(gxp, gxp_iommu_get_domain_for_dev(gxp), daddr, size);
 }
 
 int gxp_mcu_firmware_init(struct gxp_dev *gxp, struct gxp_mcu_firmware *mcu_fw)

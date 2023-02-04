@@ -47,8 +47,7 @@
 #include "gxp-wakelock.h"
 #include "gxp.h"
 
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
-#define HAS_TPU_EXT
+#if HAS_TPU_EXT
 #include <soc/google/tpu-ext.h>
 #endif
 

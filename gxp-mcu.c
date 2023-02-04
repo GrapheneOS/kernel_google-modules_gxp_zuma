@@ -81,9 +81,10 @@ static void gxp_mcu_unmap_resources(struct gxp_mcu *mcu)
 	int i;
 
 	for (i = GXP_NUM_CORES; i < GXP_NUM_MAILBOXES; i++)
-		iommu_unmap(gdomain->domain, gxp->mbx[i].daddr, gxp->mbx[i].size);
+		gxp_iommu_unmap(gxp, gdomain, gxp->mbx[i].daddr, gxp->mbx[i].size);
 }
 
+/* TODO(b/268150335): remove this function once MCU FW change lands */
 static int gxp_mcu_map_resources(struct gxp_dev *gxp, struct gxp_mcu *mcu)
 {
 	struct gxp_iommu_domain *gdomain = gxp_iommu_get_domain_for_dev(gxp);
@@ -91,10 +92,9 @@ static int gxp_mcu_map_resources(struct gxp_dev *gxp, struct gxp_mcu *mcu)
 
 	for (i = GXP_NUM_CORES; i < GXP_NUM_MAILBOXES; i++) {
 		gxp->mbx[i].daddr = GXP_MCU_NS_MAILBOX(i - GXP_NUM_CORES);
-		ret = iommu_map(gdomain->domain, gxp->mbx[i].daddr,
-				gxp->mbx[i].paddr +
-					MAILBOX_DEVICE_INTERFACE_OFFSET,
-				gxp->mbx[i].size, IOMMU_READ | IOMMU_WRITE);
+		ret = gxp_iommu_map(gxp, gdomain, gxp->mbx[i].daddr,
+				    gxp->mbx[i].paddr + MAILBOX_DEVICE_INTERFACE_OFFSET,
+				    gxp->mbx[i].size, IOMMU_READ | IOMMU_WRITE);
 		if (ret)
 			goto err;
 	}

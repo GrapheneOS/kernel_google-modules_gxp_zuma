@@ -53,6 +53,24 @@ struct gxp_dma_manager {
 #endif
 
 /**
+ * gxp_iommu_map() - Create mappings in iommu
+ * @gxp: The GXP device
+ * @gdomain: The IOMMU domain to create mappings in.
+ *
+ * Return: 0 on success or negative value indicating error
+ */
+int gxp_iommu_map(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
+		  unsigned long iova, phys_addr_t paddr, size_t size, int prot);
+
+/**
+ * gxp_iommu_unmap() - Reverts mappings created by gxp_iommu_map()
+ * @gxp: The GXP device
+ * @gdomain: The IOMMU domain to revert mappings in.
+ */
+void gxp_iommu_unmap(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
+		     unsigned long iova, size_t size);
+
+/**
  * gxp_dma_init() - Initialize the GXP DMA subsystem
  * @gxp: The GXP device to initialize DMA for
  *
@@ -355,6 +373,5 @@ uint gxp_iommu_aux_get_pasid(struct gxp_dev *gxp,
  * @gxp: The GXP device to set shareability for
  */
 void gxp_iommu_setup_shareability(struct gxp_dev *gxp);
-
 
 #endif /* __GXP_DMA_H__ */

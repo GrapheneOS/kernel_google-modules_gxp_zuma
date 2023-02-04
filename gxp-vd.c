@@ -120,26 +120,25 @@ static void unmap_ns_region(struct gxp_virtual_device *vd, dma_addr_t daddr)
 static int map_core_shared_buffer(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
-	struct iommu_domain *domain = vd->domain->domain;
 	const size_t shared_size = GXP_SHARED_SLICE_SIZE;
 
 	if (!gxp->shared_buf.paddr)
 		return 0;
-	return iommu_map(domain, gxp->shared_buf.daddr,
-			 gxp->shared_buf.paddr + shared_size * vd->slice_index,
-			 shared_size, IOMMU_READ | IOMMU_WRITE);
+	return gxp_iommu_map(gxp, vd->domain, gxp->shared_buf.daddr,
+			     gxp->shared_buf.paddr +
+				     shared_size * vd->slice_index,
+			     shared_size, IOMMU_READ | IOMMU_WRITE);
 }
 
 /* Reverts map_core_shared_buffer. */
 static void unmap_core_shared_buffer(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
-	struct iommu_domain *domain = vd->domain->domain;
 	const size_t shared_size = GXP_SHARED_SLICE_SIZE;
 
 	if (!gxp->shared_buf.paddr)
 		return;
-	iommu_unmap(domain, gxp->shared_buf.daddr, shared_size);
+	gxp_iommu_unmap(gxp, vd->domain, gxp->shared_buf.daddr, shared_size);
 }
 
 /* Maps @res->daddr to @res->paddr to @vd->domain. */
@@ -148,8 +147,8 @@ static int map_resource(struct gxp_virtual_device *vd,
 {
 	if (res->daddr == 0)
 		return 0;
-	return iommu_map(vd->domain->domain, res->daddr, res->paddr, res->size,
-			 IOMMU_READ | IOMMU_WRITE);
+	return gxp_iommu_map(vd->gxp, vd->domain, res->daddr, res->paddr, res->size,
+			     IOMMU_READ | IOMMU_WRITE);
 }
 
 /* Reverts map_resource. */
@@ -158,7 +157,7 @@ static void unmap_resource(struct gxp_virtual_device *vd,
 {
 	if (res->daddr == 0)
 		return;
-	iommu_unmap(vd->domain->domain, res->daddr, res->size);
+	gxp_iommu_unmap(vd->gxp, vd->domain, res->daddr, res->size);
 }
 
 /*
@@ -377,14 +376,14 @@ static int alloc_and_map_fw_image(struct gxp_dev *gxp,
 				  struct gxp_virtual_device *vd)
 {
 	size_t ro_size = vd->fw_ro_size, rw_size;
-	struct iommu_domain *domain = vd->domain->domain;
+	struct gxp_iommu_domain *gdomain = vd->domain;
 	int i, ret;
 
 	/* Maps all FW regions together and no rwdata_sgt in this case. */
 	if (ro_size == gxp->fwbufs[0].size)
-		return iommu_map(domain, gxp->fwbufs[0].daddr,
-				 gxp->fwbufs[0].paddr, ro_size * GXP_NUM_CORES,
-				 IOMMU_READ | IOMMU_WRITE);
+		return gxp_iommu_map(gxp, gdomain, gxp->fwbufs[0].daddr,
+				     gxp->fwbufs[0].paddr, ro_size * GXP_NUM_CORES,
+				     IOMMU_READ | IOMMU_WRITE);
 
 	dev_info(gxp->dev, "mapping firmware RO size %#zx", ro_size);
 	rw_size = gxp->fwbufs[0].size - ro_size;
@@ -399,9 +398,9 @@ static int alloc_and_map_fw_image(struct gxp_dev *gxp,
 		}
 	}
 	for (i = 0; i < GXP_NUM_CORES; i++) {
-		ret = iommu_map(domain, gxp->fwbufs[i].daddr,
-				gxp->fwbufs[i].paddr, ro_size,
-				IOMMU_READ | IOMMU_WRITE);
+		ret = gxp_iommu_map(gxp, gdomain, gxp->fwbufs[i].daddr,
+				    gxp->fwbufs[i].paddr, ro_size,
+				    IOMMU_READ | IOMMU_WRITE);
 		if (ret) {
 			dev_err(gxp->dev, "map firmware RO for core %d failed",
 				i);
@@ -414,7 +413,7 @@ static int alloc_and_map_fw_image(struct gxp_dev *gxp,
 		if (ret) {
 			dev_err(gxp->dev, "map firmware RW for core %d failed",
 				i);
-			iommu_unmap(domain, gxp->fwbufs[i].daddr, ro_size);
+			gxp_iommu_unmap(gxp, gdomain, gxp->fwbufs[i].daddr, ro_size);
 			goto err_unmap;
 		}
 	}
@@ -422,7 +421,7 @@ static int alloc_and_map_fw_image(struct gxp_dev *gxp,
 
 err_unmap:
 	while (i--) {
-		iommu_unmap(domain, gxp->fwbufs[i].daddr, ro_size);
+		gxp_iommu_unmap(gxp, gdomain, gxp->fwbufs[i].daddr, ro_size);
 		gxp_dma_unmap_iova_sgt(gxp, vd->domain,
 				       gxp->fwbufs[i].daddr + ro_size,
 				       vd->rwdata_sgt[i]);
@@ -440,17 +439,16 @@ static void unmap_and_free_fw_image(struct gxp_dev *gxp,
 				    struct gxp_virtual_device *vd)
 {
 	size_t ro_size = vd->fw_ro_size;
-	struct iommu_domain *domain = vd->domain->domain;
+	struct gxp_iommu_domain *gdomain = vd->domain;
 	int i;
 
 	if (ro_size == gxp->fwbufs[0].size) {
-		iommu_unmap(domain, gxp->fwbufs[0].daddr,
-			    ro_size * GXP_NUM_CORES);
+		gxp_iommu_unmap(gxp, gdomain, gxp->fwbufs[0].daddr, ro_size * GXP_NUM_CORES);
 		return;
 	}
 
 	for (i = 0; i < GXP_NUM_CORES; i++) {
-		iommu_unmap(domain, gxp->fwbufs[i].daddr, ro_size);
+		gxp_iommu_unmap(gxp, gdomain, gxp->fwbufs[i].daddr, ro_size);
 		gxp_dma_unmap_iova_sgt(gxp, vd->domain,
 				       gxp->fwbufs[i].daddr + ro_size,
 				       vd->rwdata_sgt[i]);

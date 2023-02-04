@@ -40,4 +40,11 @@
 #define GXP_HAS_MCU 1
 #endif
 
+#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&             \
+	!IS_ENABLED(CONFIG_GXP_GEM5)
+#define HAS_TPU_EXT 1
+#else
+#define HAS_TPU_EXT 0
+#endif
+
 #endif /* __GXP_CONFIG_H__ */

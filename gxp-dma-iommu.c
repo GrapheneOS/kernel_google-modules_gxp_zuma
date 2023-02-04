@@ -201,6 +201,18 @@ struct gxp_iommu_domain *gxp_iommu_get_domain_for_dev(struct gxp_dev *gxp)
 	return gdomain;
 }
 
+int gxp_iommu_map(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
+		  unsigned long iova, phys_addr_t paddr, size_t size, int prot)
+{
+	return iommu_map(gdomain->domain, iova, paddr, size, prot);
+}
+
+void gxp_iommu_unmap(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
+		     unsigned long iova, size_t size)
+{
+	iommu_unmap(gdomain->domain, iova, size);
+}
+
 int gxp_dma_init(struct gxp_dev *gxp)
 {
 	struct gxp_dma_iommu_manager *mgr;
