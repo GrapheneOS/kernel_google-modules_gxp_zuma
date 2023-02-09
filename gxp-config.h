@@ -40,11 +40,13 @@
 #define GXP_HAS_MCU 1
 #endif
 
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&             \
-	!IS_ENABLED(CONFIG_GXP_GEM5)
-#define HAS_TPU_EXT 1
-#else
-#define HAS_TPU_EXT 0
-#endif
+/*
+ * Only supports interop with TPU when
+ * 1. Unit testing, or
+ * 2. Production on Android (to exclude vanilla Linux for bringup) but not GEM5.
+ */
+#define HAS_TPU_EXT                                                            \
+	((IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&        \
+	 !IS_ENABLED(CONFIG_GXP_GEM5))
 
 #endif /* __GXP_CONFIG_H__ */

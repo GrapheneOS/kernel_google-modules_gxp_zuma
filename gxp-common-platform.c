@@ -870,7 +870,7 @@ static int gxp_disable_core_telemetry(struct gxp_client *client,
 	return ret;
 }
 
-#ifdef HAS_TPU_EXT
+#if HAS_TPU_EXT
 
 /*
  * Map TPU mailboxes to IOVA.

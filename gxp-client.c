@@ -44,9 +44,9 @@ void gxp_client_destroy(struct gxp_client *client)
 		gxp_vd_block_unready(client->vd);
 
 	if (client->vd && client->vd->state != GXP_VD_OFF) {
-		down_read(&gxp->vd_semaphore);
+		down_write(&gxp->vd_semaphore);
 		gxp_vd_stop(client->vd);
-		up_read(&gxp->vd_semaphore);
+		up_write(&gxp->vd_semaphore);
 	}
 
 	for (core = 0; core < GXP_NUM_CORES; core++) {

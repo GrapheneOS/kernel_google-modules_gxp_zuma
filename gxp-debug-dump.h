@@ -188,12 +188,6 @@ struct gxp_debug_dump_manager {
 	 * time
 	 */
 	struct mutex debug_dump_lock;
-	/*
-	 * Array index maps to dsp cores. Array stores the pointer to the
-	 * crashed VD that was running on the respective core. This is used
-	 * only in mcu mode.
-	 */
-	struct gxp_virtual_device *crashed_core_to_vd[GXP_NUM_CORES];
 #if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
 	struct sscd_segment segs[GXP_NUM_CORES][GXP_NUM_SEGMENTS_PER_CORE];
 #endif
@@ -224,6 +218,8 @@ void gxp_debug_dump_invalidate_segments(struct gxp_dev *gxp, uint32_t core_id);
  * @core_list: A bitfield enumerating the physical cores on which crash is
  *             reported from firmware.
  * @crashed_vd: vd that has crashed.
+ *
+ * The caller must hold @crashed_vd->debug_dump_lock.
  *
  * Return:
  * * 0       - Success.

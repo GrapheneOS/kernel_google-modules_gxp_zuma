@@ -40,6 +40,11 @@ struct mailbox_resp_queue {
 	spinlock_t lock;
 	/* Waitqueue to wait on if the queue is empty */
 	wait_queue_head_t waitq;
+	/*
+	 * If true, the user cannot send requests anymore.
+	 * This must be protected by @lock.
+	 */
+	bool wait_queue_closed;
 };
 
 enum gxp_virtual_device_state {
@@ -144,6 +149,8 @@ struct gxp_virtual_device {
 	struct mutex fence_list_lock;
 	/* List of GXP DMA fences owned by this VD. */
 	struct list_head gxp_fence_list;
+	/* Protects changing the state of vd while generating a debug dump. */
+	struct mutex debug_dump_lock;
 };
 
 /*
@@ -198,7 +205,7 @@ void gxp_vd_release(struct gxp_virtual_device *vd);
  * function. If this function runs successfully, the state becomes
  * GXP_VD_RUNNING. Otherwise, it would be GXP_VD_UNAVAILABLE.
  *
- * The caller must have locked gxp->vd_semaphore.
+ * The caller must have locked gxp->vd_semaphore for writing.
  *
  * Return:
  * * 0         - Success
@@ -213,7 +220,7 @@ int gxp_vd_run(struct gxp_virtual_device *vd);
  *
  * The state of @vd will be GXP_VD_OFF.
  *
- * The caller must have locked gxp->vd_semaphore.
+ * The caller must have locked gxp->vd_semaphore for writing.
  */
 void gxp_vd_stop(struct gxp_virtual_device *vd);
 

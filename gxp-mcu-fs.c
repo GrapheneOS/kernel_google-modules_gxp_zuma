@@ -58,10 +58,13 @@ gxp_ioctl_uci_command(struct gxp_client *client,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
 		client->mb_eventfds[UCI_RESOURCE_ID]);
+
+	up_read(&client->semaphore);
+
 	if (ret) {
 		dev_err(gxp->dev,
 			"Failed to enqueue mailbox command (ret=%d)\n", ret);
-		goto out;
+		return ret;
 	}
 	ibuf.sequence_number = cmd.seq;
 
