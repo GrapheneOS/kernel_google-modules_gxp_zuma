@@ -101,6 +101,7 @@ struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp,
 	dmabuf_mapping->mapping.domain = domain;
 	dmabuf_mapping->mapping.device_address = sg_dma_address(sgt->sgl);
 	dmabuf_mapping->mapping.dir = dir;
+	dmabuf_mapping->mapping.size = dmabuf->size;
 	dmabuf_mapping->dmabuf = dmabuf;
 	dmabuf_mapping->attachment = attachment;
 	dmabuf_mapping->sgt = sgt;

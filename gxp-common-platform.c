@@ -258,6 +258,9 @@ static int gxp_map_buffer(struct gxp_client *client,
 		goto error_remove;
 	}
 
+	gxp_mapping_iova_log(client, map,
+			     GXP_IOVA_LOG_MAP | GXP_IOVA_LOG_BUFFER);
+
 	/*
 	 * The virtual device acquired its own reference to the mapping when
 	 * it was stored in the VD's records. Release the reference from
@@ -315,6 +318,8 @@ static int gxp_unmap_buffer(struct gxp_client *client,
 	WARN_ON(map->host_address != ibuf.host_address);
 
 	gxp_vd_mapping_remove(client->vd, map);
+	gxp_mapping_iova_log(client, map,
+			     GXP_IOVA_LOG_UNMAP | GXP_IOVA_LOG_BUFFER);
 
 	/* Release the reference from gxp_vd_mapping_search() */
 	gxp_mapping_put(map);
@@ -1316,6 +1321,9 @@ static int gxp_map_dmabuf(struct gxp_client *client,
 		ret = -EFAULT;
 	}
 
+	gxp_mapping_iova_log(client, mapping,
+			     GXP_IOVA_LOG_MAP | GXP_IOVA_LOG_DMABUF);
+
 out_put:
 	/*
 	 * Release the reference from creating the dmabuf mapping
@@ -1370,6 +1378,9 @@ static int gxp_unmap_dmabuf(struct gxp_client *client,
 
 	/* Remove the mapping from its VD, releasing the VD's reference */
 	gxp_vd_mapping_remove(client->vd, mapping);
+
+	gxp_mapping_iova_log(client, mapping,
+			     GXP_IOVA_LOG_UNMAP | GXP_IOVA_LOG_DMABUF);
 
 	/* Release the reference from gxp_vd_mapping_search() */
 	gxp_mapping_put(mapping);

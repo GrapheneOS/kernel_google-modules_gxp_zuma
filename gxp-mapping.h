@@ -16,6 +16,16 @@
 
 #include "gxp-internal.h"
 
+#if IS_ENABLED(CONFIG_GXP_TEST)
+/* expose this variable to have unit tests set it dynamically */
+extern bool gxp_log_iova;
+#endif
+
+#define GXP_IOVA_LOG_UNMAP (0u << 0)
+#define GXP_IOVA_LOG_MAP (1u << 0)
+#define GXP_IOVA_LOG_BUFFER (0u << 1)
+#define GXP_IOVA_LOG_DMABUF (1u << 1)
+
 struct gxp_mapping {
 	struct rb_node node;
 	refcount_t refcount;
@@ -53,6 +63,18 @@ struct gxp_mapping {
 	/* Protects `virtual_address`, `page_count`, and `vmap_count` */
 	struct mutex vlock;
 };
+
+/**
+ * gxp_mapping_iova_log() - Log IOVA mapping details
+ * @client: The client to create/destroy the mapping for
+ * @map: The mapping being handled
+ * @mask: The mask combination of GXP_IOVA_LOG_*
+ *
+ * Log IOVA mapping details for each map/unmap operation.
+ * Log the field names of the data before first mapping is logged.
+ */
+void gxp_mapping_iova_log(struct gxp_client *client, struct gxp_mapping *map,
+			  u8 mask);
 
 /**
  * gxp_mapping_create() - Create a mapping for a user buffer

@@ -6,15 +6,50 @@
  */
 
 #include <linux/dma-mapping.h>
+#include <linux/ktime.h>
 #include <linux/mm.h>
 #include <linux/mmap_lock.h>
+#include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 
+#include "gxp-client.h"
 #include "gxp-debug-dump.h"
 #include "gxp-dma.h"
 #include "gxp-internal.h"
 #include "gxp-mapping.h"
+
+#if IS_ENABLED(CONFIG_GXP_TEST)
+/* expose this variable to have unit tests set it dynamically */
+bool gxp_log_iova;
+#else
+static bool gxp_log_iova;
+#endif
+
+module_param_named(log_iova, gxp_log_iova, bool, 0660);
+
+void gxp_mapping_iova_log(struct gxp_client *client, struct gxp_mapping *map,
+			  u8 mask)
+{
+	static bool is_first_log = true;
+	struct device *dev = client->gxp->dev;
+	const char *op = mask & GXP_IOVA_LOG_MAP ? "MAP" : "UNMAP";
+	const char *buf_type = mask & GXP_IOVA_LOG_DMABUF ? "DMABUF" : "BUFFER";
+
+	if (likely(!gxp_log_iova))
+		return;
+
+	if (is_first_log) {
+		dev_info(
+			dev,
+			"iova_log_start: operation, buf_type, tgid, pid, host_address, device_address, size");
+		is_first_log = false;
+	}
+
+	dev_info(dev, "iova_log: %s, %s, %d, %d, %#llx, %#llx, %zu", op,
+		 buf_type, client->pid, client->tgid, map->host_address,
+		 map->device_address, map->size);
+}
 
 /* Destructor for a mapping created with `gxp_mapping_create()` */
 static void destroy_mapping(struct gxp_mapping *mapping)

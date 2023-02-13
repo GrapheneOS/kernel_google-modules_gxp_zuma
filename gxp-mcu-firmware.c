@@ -575,6 +575,17 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 	mutex_lock(&gxp->wakelock_mgr->lock);
 
 	/*
+	 * By the race, if all clients left earlier than this handler, all block wakleock should be
+	 * already released and the BLK is turned off. We don't have to rescue the MCU firmware.
+	 */
+	if (!gxp->wakelock_mgr->count) {
+		dev_info(
+			gxp->dev,
+			"The block wakelock is already released, skip restarting MCU firmware");
+		goto unlock_wakelock_mgr;
+	}
+
+	/*
 	 * Discard all pending/unconsumed UCI responses and change the state of all virtual devices
 	 * to GXP_VD_UNAVAILABLE. From now on, all clients cannot request new UCI commands.
 	 */
@@ -618,6 +629,7 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 
 out:
 	mutex_unlock(&mcu_fw->lock);
+unlock_wakelock_mgr:
 	mutex_unlock(&gxp->wakelock_mgr->lock);
 	up_write(&gxp->vd_semaphore);
 	list_for_each_entry (client, &gxp->client_list, list_entry) {
