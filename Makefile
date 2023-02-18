@@ -32,8 +32,7 @@ gxp-objs += \
 		gxp-range-alloc.o \
 		gxp-ssmt.o \
 		gxp-thermal.o \
-		gxp-vd.o \
-		gxp-wakelock.o
+		gxp-vd.o
 
 
 ifeq ($(GXP_CHIP),CALLISTO)

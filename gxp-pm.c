@@ -13,6 +13,8 @@
 #include <linux/workqueue.h>
 #include <soc/google/exynos_pm_qos.h>
 
+#include <gcip/gcip-pm.h>
+
 #include "gxp-bpm.h"
 #include "gxp-client.h"
 #include "gxp-config.h"
@@ -287,6 +289,28 @@ bool gxp_pm_is_blk_down(struct gxp_dev *gxp, uint timeout_ms)
 	} while (timeout_cnt < max_delay_count);
 
 	return false;
+}
+
+int gxp_pm_blk_reboot(struct gxp_dev *gxp, uint timeout_ms)
+{
+	int ret;
+
+	ret = gxp_pm_blk_off(gxp);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to turn off BLK_AUR (ret=%d)\n", ret);
+		return ret;
+	}
+
+	if (!gxp_pm_is_blk_down(gxp, timeout_ms)) {
+		dev_err(gxp->dev, "BLK_AUR hasn't been turned off");
+		return -EBUSY;
+	}
+
+	ret = gxp_pm_blk_on(gxp);
+	if (ret)
+		dev_err(gxp->dev, "Failed to turn on BLK_AUR (ret=%d)\n", ret);
+
+	return ret;
 }
 
 int gxp_pm_get_blk_switch_count(struct gxp_dev *gxp)
@@ -703,11 +727,47 @@ int gxp_pm_update_pm_qos(struct gxp_dev *gxp, s32 int_val, s32 mif_val)
 	return gxp_pm_req_pm_qos(gxp, int_val, mif_val);
 }
 
+static int gxp_pm_power_up(void *data)
+{
+	struct gxp_dev *gxp = data;
+	int ret = gxp_pm_blk_on(gxp);
+
+	if (ret) {
+		dev_err(gxp->dev, "Failed to power on BLK_AUR (ret=%d)\n", ret);
+		return ret;
+	}
+
+	if (gxp->pm_after_blk_on) {
+		ret = gxp->pm_after_blk_on(gxp);
+		if (ret) {
+			gxp_pm_blk_off(gxp);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+static int gxp_pm_power_down(void *data)
+{
+	struct gxp_dev *gxp = data;
+
+	if (gxp->pm_before_blk_off)
+		gxp->pm_before_blk_off(gxp);
+	return gxp_pm_blk_off(gxp);
+}
+
 int gxp_pm_init(struct gxp_dev *gxp)
 {
 	struct gxp_power_manager *mgr;
 	struct platform_device *pdev =
 		container_of(gxp->dev, struct platform_device, dev);
+	const struct gcip_pm_args args = {
+		.dev = gxp->dev,
+		.data = gxp,
+		.power_up = gxp_pm_power_up,
+		.power_down = gxp_pm_power_down,
+	};
 	struct resource *r;
 	uint i;
 
@@ -715,6 +775,13 @@ int gxp_pm_init(struct gxp_dev *gxp)
 	if (!mgr)
 		return -ENOMEM;
 	mgr->gxp = gxp;
+
+	mgr->pm = gcip_pm_create(&args);
+	if (IS_ERR(mgr->pm)) {
+		devm_kfree(gxp->dev, mgr);
+		return PTR_ERR(mgr->pm);
+	}
+
 	mutex_init(&mgr->pm_lock);
 	mgr->curr_state = AUR_OFF;
 	mgr->curr_memory_state = AUR_MEM_UNDEFINED;
@@ -766,6 +833,8 @@ int gxp_pm_destroy(struct gxp_dev *gxp)
 
 	if (IS_GXP_TEST && !mgr)
 		return 0;
+
+	gcip_pm_destroy(mgr->pm);
 
 	exynos_pm_qos_remove_request(&mgr->mif_min);
 	exynos_pm_qos_remove_request(&mgr->int_min);

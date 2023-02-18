@@ -7,6 +7,8 @@
 
 #include <linux/acpm_dvfs.h>
 
+#include <gcip/gcip-pm.h>
+
 #include "gxp-client.h"
 #include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
@@ -20,7 +22,6 @@
 #include "gxp-mailbox.h"
 #include "gxp-pm.h"
 #include "gxp-vd.h"
-#include "gxp-wakelock.h"
 #include "gxp.h"
 
 #if GXP_HAS_MCU
@@ -266,11 +267,9 @@ static int gxp_wakelock_set(void *data, u64 val)
 			goto out;
 		}
 
-		ret = gxp_wakelock_acquire(gxp);
+		ret = gcip_pm_get(gxp->power_mgr->pm);
 		if (ret) {
-			dev_err(gxp->dev,
-				"Failed to acquire debugfs wakelock ret=%d\n",
-				ret);
+			dev_err(gxp->dev, "gcip_pm_get failed ret=%d\n", ret);
 			goto out;
 		}
 		gxp->debugfs_wakelock_held = true;
@@ -284,7 +283,7 @@ static int gxp_wakelock_set(void *data, u64 val)
 			goto out;
 		}
 
-		gxp_wakelock_release(gxp);
+		gcip_pm_put(gxp->power_mgr->pm);
 		gxp->debugfs_wakelock_held = false;
 		gxp_pm_update_requested_power_states(gxp, uud_states,
 						     off_states);

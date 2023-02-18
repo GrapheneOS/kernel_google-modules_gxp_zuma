@@ -23,6 +23,7 @@
 #include <linux/uidgid.h>
 
 #include <gcip/gcip-dma-fence.h>
+#include <gcip/gcip-pm.h>
 
 #include "gxp-client.h"
 #include "gxp-config.h"
@@ -44,7 +45,6 @@
 #include "gxp-pm.h"
 #include "gxp-thermal.h"
 #include "gxp-vd.h"
-#include "gxp-wakelock.h"
 #include "gxp.h"
 
 #if HAS_TPU_EXT
@@ -1614,16 +1614,21 @@ static int gxp_register_invalidated_eventfd(
 
 	down_write(&client->semaphore);
 
+	if (!gxp_client_has_available_vd(client,
+					 "GXP_REGISTER_INVALIDATED_EVENTFD")) {
+		ret = -ENODEV;
+		goto out;
+	}
+
 	eventfd = gxp_eventfd_create(ibuf.eventfd);
 	if (IS_ERR(eventfd)) {
 		ret = PTR_ERR(eventfd);
 		goto out;
 	}
 
-	if (client->vd_invalid_eventfd)
-		gxp_eventfd_put(client->vd_invalid_eventfd);
-	client->vd_invalid_eventfd = eventfd;
-
+	if (client->vd->invalidate_eventfd)
+		gxp_eventfd_put(client->vd->invalidate_eventfd);
+	client->vd->invalidate_eventfd = eventfd;
 out:
 	up_write(&client->semaphore);
 	return ret;
@@ -1633,14 +1638,24 @@ static int gxp_unregister_invalidated_eventfd(
 	struct gxp_client *client,
 	struct gxp_register_invalidated_eventfd_ioctl __user *argp)
 {
+	struct gxp_dev *gxp = client->gxp;
+	int ret = 0;
+
 	down_write(&client->semaphore);
 
-	if (client->vd_invalid_eventfd)
-		gxp_eventfd_put(client->vd_invalid_eventfd);
-	client->vd_invalid_eventfd = NULL;
+	if (!client->vd) {
+		dev_err(gxp->dev,
+			"GXP_UNREGISTER_INVALIDATED_EVENTFD requires the client allocate a VIRTUAL_DEVICE\n");
+		ret = -ENODEV;
+		goto out;
+	}
 
+	if (client->vd->invalidate_eventfd)
+		gxp_eventfd_put(client->vd->invalidate_eventfd);
+	client->vd->invalidate_eventfd = NULL;
+out:
 	up_write(&client->semaphore);
-	return 0;
+	return ret;
 }
 
 static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
@@ -1980,16 +1995,11 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		return ret;
 
 	gxp_create_debugdir(gxp);
-	ret = gxp_wakelock_init(gxp);
-	if (ret) {
-		dev_err(dev, "failed to init wakelock: %d", ret);
-		goto err_remove_debugdir;
-	}
 
 	ret = gxp_pm_init(gxp);
 	if (ret) {
 		dev_err(dev, "Failed to init power management (ret=%d)\n", ret);
-		goto err_wakelock_destroy;
+		goto err_remove_debugdir;
 	}
 
 	gxp_get_gsa_dev(gxp);
@@ -2137,8 +2147,6 @@ err_put_tpu_dev:
 	gxp_put_tpu_dev(gxp);
 	gxp_put_gsa_dev(gxp);
 	gxp_pm_destroy(gxp);
-err_wakelock_destroy:
-	/* wakelock init doesn't need revert */
 err_remove_debugdir:
 	gxp_remove_debugdir(gxp);
 	return ret;
@@ -2174,15 +2182,45 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 static int gxp_platform_suspend(struct device *dev)
 {
 	struct gxp_dev *gxp = dev_get_drvdata(dev);
+	struct gxp_client *client;
 
-	return gxp_wakelock_suspend(gxp);
+	if (!gcip_pm_is_powered(gxp->power_mgr->pm))
+		return 0;
+
+	/* Log clients currently holding a wakelock */
+	if (!mutex_trylock(&gxp->client_list_lock)) {
+		dev_warn_ratelimited(
+			gxp->dev,
+			"Unable to get client list lock on suspend failure\n");
+		return -EAGAIN;
+	}
+
+	list_for_each_entry(client, &gxp->client_list, list_entry) {
+		if (!down_read_trylock(&client->semaphore)) {
+			dev_warn_ratelimited(
+				gxp->dev,
+				"Unable to acquire client lock (tgid=%d pid=%d)\n",
+				client->tgid, client->pid);
+			continue;
+		}
+
+		if (client->has_block_wakelock)
+			dev_warn_ratelimited(
+				gxp->dev,
+				"Cannot suspend with client holding wakelock (tgid=%d pid=%d)\n",
+				client->tgid, client->pid);
+
+		up_read(&client->semaphore);
+	}
+
+	mutex_unlock(&gxp->client_list_lock);
+
+	return -EAGAIN;
 }
 
 static int gxp_platform_resume(struct device *dev)
 {
-	struct gxp_dev *gxp = dev_get_drvdata(dev);
-
-	return gxp_wakelock_resume(gxp);
+	return 0;
 }
 
 static const struct dev_pm_ops gxp_pm_ops = {

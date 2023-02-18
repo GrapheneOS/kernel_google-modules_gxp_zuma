@@ -142,15 +142,15 @@ static void gxp_kci_handle_rkci(struct gxp_kci *gkci,
 		if (client_id == SECURE_CLIENT_ID)
 			core_list = 0;
 		/*
-		 * Inside gxp_vd_invalidate() after invalidating the client, debug dump
-		 * if enabled would be checked and processed for individual cores in
+		 * Inside gxp_vd_invalidate_with_client_id() after invalidating the client, debug
+		 * dump if enabled would be checked and processed for individual cores in
 		 * core_list. Due to debug dump processing being a time consuming task
 		 * rkci ack is sent first to unblock the mcu to send furhter rkci's. Client
-		 * lock inside gxp_vd_invalidate() would make sure the correctness of the
-		 * logic against possible concurrent scenarios.
+		 * lock inside gxp_vd_invalidate_with_client_id() would make sure the correctness
+		 * of the logic against possible concurrent scenarios.
 		 */
 		gxp_kci_resp_rkci_ack(gkci, resp);
-		gxp_vd_invalidate(gxp, client_id, core_list);
+		gxp_vd_invalidate_with_client_id(gxp, client_id, core_list);
 
 		break;
 	}

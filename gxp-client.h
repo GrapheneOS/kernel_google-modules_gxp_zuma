@@ -40,7 +40,6 @@ struct gxp_client {
 	struct gxp_tpu_mbx_desc mbx_desc;
 
 	struct gxp_eventfd *mb_eventfds[GXP_NUM_CORES];
-	struct gxp_eventfd *vd_invalid_eventfd;
 
 	/* client process thread group ID is really the main process ID. */
 	pid_t tgid;

@@ -151,6 +151,13 @@ struct gxp_virtual_device {
 	struct list_head gxp_fence_list;
 	/* Protects changing the state of vd while generating a debug dump. */
 	struct mutex debug_dump_lock;
+	/* An eventfd which will be triggered when this vd is invalidated. */
+	struct gxp_eventfd *invalidate_eventfd;
+	/*
+	 * If true, the MCU FW communicating with this VD has been crashed and it must not work
+	 * with any MCU FW anymore regardless of its state.
+	 */
+	bool mcu_crashed;
 };
 
 /*
@@ -335,6 +342,8 @@ int gxp_vd_resume(struct gxp_virtual_device *vd);
  * The state of @vd should be GXP_VD_OFF before calling this function.
  * If this function runs successfully, the state becomes GXP_VD_READY.
  *
+ * The caller must have locked gxp->vd_semaphore for writing.
+ *
  * Return:
  * * 0          - Success
  * * -EINVAL    - The VD is not in GXP_VD_OFF state
@@ -343,14 +352,16 @@ int gxp_vd_resume(struct gxp_virtual_device *vd);
 int gxp_vd_block_ready(struct gxp_virtual_device *vd);
 
 /**
- * gxp_vd_block_unready() - This is called before one or both of the virtual device and block
- * wakelock is going to be released.
+ * gxp_vd_block_unready() - This is called before the block wakelock is going to be released.
  *
  * @vd: The virtual device to release the resources
  *
  * This function must be called only when the client holds the block wakelock and allocated a
  * virtual device. It doesn't have a dependency on the state of @vd, but also doesn't change the
- * state.
+ * state in normal situation. However, if an unexpected error happens, the state can be changed
+ * to GXP_VD_UNAVAILABLE.
+ *
+ * The caller must have locked gxp->vd_semaphore for writing.
  */
 void gxp_vd_block_unready(struct gxp_virtual_device *vd);
 
@@ -383,18 +394,47 @@ void gxp_vd_put(struct gxp_virtual_device *vd);
 
 /*
  * Change the status of the vd of @client_id to GXP_VD_UNAVAILABLE.
- * Internally, it will discard all pending/unconsumed user commands
- * and call the `gxp_vd_block_unready` function.
+ * Internally, it will discard all pending/unconsumed user commands and call the
+ * `gxp_vd_block_unready` function.
  *
- * This function will be called when the `CLIENT_FATAL_ERROR_NOTIFY`
- * RKCI has been sent from the firmware side.
+ * This function will be called when the `CLIENT_FATAL_ERROR_NOTIFY` RKCI has been sent from the
+ * firmware side.
  *
  * @gxp: The GXP device to obtain the handler for
  * @client_id: client_id of the crashed vd.
- * @core_list: A bitfield enumerating the physical cores on which
- *             crash is reported from firmware.
+ * @core_list: A bitfield enumerating the physical cores on which crash is reported from firmware.
  */
-void gxp_vd_invalidate(struct gxp_dev *gxp, int client_id, uint core_list);
+void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id,
+				      uint core_list);
+
+/*
+ * Changes the status of the @vd to GXP_VD_UNAVAILABLE.
+ * Internally, it will discard all pending/unconsumed user commands.
+ *
+ * This function will be called when some unexpected errors happened and cannot proceed requests
+ * anymore with this @vd.
+ *
+ * The caller must have locked gxp->vd_semaphore for writing.
+ *
+ * @gxp: The GXP device to obtain the handler for.
+ * @vd: The virtual device to be invaliated.
+ */
+void gxp_vd_invalidate(struct gxp_dev *gxp, struct gxp_virtual_device *vd);
+
+/*
+ * Generates a debug dump of @vd which utilizes @core_list cores.
+ *
+ * This function is usually called in the MCU mode that the kernel driver cannot decide which cores
+ * will be used by @vd.
+ *
+ * The caller must have locked gxp->vd_semaphore for writing.
+ *
+ * @gxp: The GXP device to obtain the handler for.
+ * @vd: The virtual device to be dumped.
+ * @core_list: A bitfield enumerating the physical cores on which crash is reported from firmware.
+ */
+void gxp_vd_generate_debug_dump(struct gxp_dev *gxp,
+				struct gxp_virtual_device *vd, uint core_list);
 
 /*
  * An ID between 0~GXP_NUM_CORES-1 and is unique to each VD.

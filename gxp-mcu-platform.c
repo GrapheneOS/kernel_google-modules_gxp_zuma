@@ -14,6 +14,13 @@
 #include "gxp-mcu.h"
 #include "gxp-usage-stats.h"
 
+#define KCI_RETURN_CORE_LIST_MASK 0xFF00
+#define KCI_RETURN_CORE_LIST_SHIFT 8
+#define KCI_RETURN_ERROR_CODE_MASK (BIT(KCI_RETURN_CORE_LIST_SHIFT) - 1u)
+#define KCI_RETURN_GET_CORE_LIST(ret)                                          \
+	((KCI_RETURN_CORE_LIST_MASK & (ret)) >> KCI_RETURN_CORE_LIST_SHIFT)
+#define KCI_RETURN_GET_ERROR_CODE(ret) (KCI_RETURN_ERROR_CODE_MASK & (ret))
+
 #if IS_ENABLED(CONFIG_GXP_TEST)
 char *gxp_work_mode_name = "direct";
 #else
@@ -92,27 +99,29 @@ static int allocate_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 static void release_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
 	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
+	uint core_list;
 	int ret;
 
 	if (vd->client_id < 0)
 		return;
 
 	ret = gxp_kci_release_vmbox(kci, vd->client_id);
-	if (ret) {
-		/*
-		 * TODO(241057541): Remove this conditional branch after the firmware side
-		 * implements handling allocate_vmbox command.
-		 */
-		if (ret == GCIP_KCI_ERROR_UNIMPLEMENTED)
-			dev_info(
-				gxp->dev,
-				"Releasing VMBox is not implemented from the firmware side");
-		else
-			dev_err(gxp->dev,
-				"Failed to release VMBox for client %d: %d",
-				vd->client_id, ret);
+	if (!ret)
+		goto out;
+	if (ret > 0 &&
+	    KCI_RETURN_GET_ERROR_CODE(ret) == GCIP_KCI_ERROR_ABORTED) {
+		core_list = KCI_RETURN_GET_CORE_LIST(ret);
+		dev_err(gxp->dev,
+			"Firmware failed to gracefully release a VMBox for client %d, core_list=%d",
+			vd->client_id, core_list);
+		gxp_vd_invalidate(gxp, vd);
+		gxp_vd_generate_debug_dump(gxp, vd, core_list);
+	} else {
+		dev_err(gxp->dev,
+			"Failed to request releasing VMBox for client %d: %d",
+			vd->client_id, ret);
 	}
-
+out:
 	vd->client_id = -1;
 }
 
@@ -208,7 +217,7 @@ gxp_mcu_platform_before_vd_block_unready(struct gxp_dev *gxp,
 {
 	if (gxp_is_direct_mode(gxp))
 		return;
-	if (vd->client_id < 0 || vd->state == GXP_VD_UNAVAILABLE)
+	if (vd->client_id < 0 || vd->mcu_crashed)
 		return;
 	if (vd->tpu_client_id >= 0)
 		gxp_mcu_unlink_offload_vmbox(gxp, vd, vd->tpu_client_id,
@@ -216,7 +225,7 @@ gxp_mcu_platform_before_vd_block_unready(struct gxp_dev *gxp,
 	release_vmbox(gxp, vd);
 }
 
-static int gxp_mcu_wakelock_after_blk_on(struct gxp_dev *gxp)
+static int gxp_mcu_pm_after_blk_on(struct gxp_dev *gxp)
 {
 	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
 
@@ -225,7 +234,7 @@ static int gxp_mcu_wakelock_after_blk_on(struct gxp_dev *gxp)
 	return gxp_mcu_firmware_run(mcu_fw);
 }
 
-static void gxp_mcu_wakelock_before_blk_off(struct gxp_dev *gxp)
+static void gxp_mcu_pm_before_blk_off(struct gxp_dev *gxp)
 {
 	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
 
@@ -350,8 +359,8 @@ void gxp_mcu_dev_init(struct gxp_mcu_dev *mcu_dev)
 	gxp->after_vd_block_ready = gxp_mcu_platform_after_vd_block_ready;
 	gxp->before_vd_block_unready = gxp_mcu_platform_before_vd_block_unready;
 	gxp->request_power_states = gxp_mcu_request_power_states;
-	gxp->wakelock_after_blk_on = gxp_mcu_wakelock_after_blk_on;
-	gxp->wakelock_before_blk_off = gxp_mcu_wakelock_before_blk_off;
+	gxp->pm_after_blk_on = gxp_mcu_pm_after_blk_on;
+	gxp->pm_before_blk_off = gxp_mcu_pm_before_blk_off;
 #if HAS_TPU_EXT
 	gxp->after_map_tpu_mbx_queue = gxp_mcu_after_map_tpu_mbx_queue;
 	gxp->before_unmap_tpu_mbx_queue = gxp_mcu_before_unmap_tpu_mbx_queue;

@@ -15,6 +15,7 @@
 
 #include <gcip/gcip-common-image-header.h>
 #include <gcip/gcip-image-config.h>
+#include <gcip/gcip-pm.h>
 
 #include "gxp-bpm.h"
 #include "gxp-config.h"
@@ -26,7 +27,6 @@
 #include "gxp-mcu-firmware.h"
 #include "gxp-mcu.h"
 #include "gxp-pm.h"
-#include "gxp-wakelock.h"
 
 /* Value of Magic field in the common header "DSPF' as a 32-bit LE int */
 #define GXP_FW_MAGIC 0x46505344
@@ -377,7 +377,7 @@ static ssize_t load_firmware_store(struct device *dev,
 	name = fw_name_from_buf(gxp, buf);
 	if (IS_ERR(name))
 		return PTR_ERR(name);
-	if (gxp->wakelock_mgr->count) {
+	if (gcip_pm_is_powered(gxp->power_mgr->pm)) {
 		dev_err(gxp->dev,
 			"Reject firmware loading because wakelocks are holding");
 		return -EBUSY;
@@ -391,12 +391,12 @@ static ssize_t load_firmware_store(struct device *dev,
 	dev_info(gxp->dev, "loading firmware %s from SysFS", name);
 	last_name = mcu_fw->name;
 	mcu_fw->name = name;
-	ret = gxp_wakelock_acquire(gxp);
+	ret = gcip_pm_get(gxp->power_mgr->pm);
 	if (ret) {
 		dev_err(gxp->dev, "loading firmware %s failed: %d", name, ret);
 		mcu_fw->name = last_name;
 	} else {
-		gxp_wakelock_release(gxp);
+		gcip_pm_put(gxp->power_mgr->pm);
 	}
 	return ret < 0 ? ret : count;
 }
@@ -566,23 +566,20 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 	down_write(&gxp->vd_semaphore);
 
 	/*
-	 * As we are recovering the MCU firmware, the number of clients holding the block wakelock
-	 * should not be changed until the rescuing is finished.
+	 * As we are recovering the MCU firmware, we should prevent power state transition caused by
+	 * clients acquiring or releasing the block wakelock until the rescuing is finished.
 	 *
-	 * The runtime cannot acquire or release the block wakelock until this function releases
-	 * the lock.
-	 */
-	mutex_lock(&gxp->wakelock_mgr->lock);
-
-	/*
+	 * The runtime can still acquire or release the block wakelock, but commands issued to the
+	 * firmware might not be handled properly.
+	 *
 	 * By the race, if all clients left earlier than this handler, all block wakleock should be
 	 * already released and the BLK is turned off. We don't have to rescue the MCU firmware.
 	 */
-	if (!gxp->wakelock_mgr->count) {
+	if (gcip_pm_get_if_powered(gxp->power_mgr->pm, false)) {
 		dev_info(
 			gxp->dev,
 			"The block wakelock is already released, skip restarting MCU firmware");
-		goto unlock_wakelock_mgr;
+		goto out_unlock_client_semaphore;
 	}
 
 	/*
@@ -591,36 +588,25 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 	 */
 	list_for_each_entry (client, &gxp->client_list, list_entry) {
 		if (client->has_block_wakelock && client->vd) {
-			gxp->mailbox_mgr->release_unconsumed_async_resps(
-				client->vd);
-			client->vd->state = GXP_VD_UNAVAILABLE;
-			if (client->vd_invalid_eventfd)
-				gxp_eventfd_signal(client->vd_invalid_eventfd);
+			gxp_vd_invalidate(gxp, client->vd);
+			client->vd->mcu_crashed = true;
 		}
 	}
 
-	/*
-	 * Turn off and on the Aurora block and rerun the MCU firmware.
-	 * TODO(b/264621513): Change the power state of LPM instead of turning off and on the
-	 * whole Aurora block.
-	 */
+	/* Turn off and on the MCU PSM and restart the MCU firmware. */
 	mutex_lock(&mcu_fw->lock);
 
-	ret = gxp_pm_blk_off(gxp);
-	if (ret) {
-		dev_err(gxp->dev, "Failed to turn off BLK_AUR (ret=%d)\n", ret);
-		goto out;
-	}
+	gxp_lpm_down(gxp, GXP_MCU_CORE_ID);
 
-	if (!gxp_pm_is_blk_down(gxp, 5000)) {
-		dev_err(gxp->dev, "BLK_AUR hasn't been turned off");
-		goto out;
-	}
-
-	ret = gxp_pm_blk_on(gxp);
-	if (ret) {
-		dev_err(gxp->dev, "Failed to turn on BLK_AUR (ret=%d)\n", ret);
-		goto out;
+	if (!gxp_lpm_wait_state_eq(gxp, CORE_TO_PSM(GXP_MCU_CORE_ID),
+				   LPM_PG_STATE)) {
+		dev_warn(
+			gxp->dev,
+			"MCU PSM transition to PS3 fails, current state: %u. Falling back to power cycle AUR block.\n",
+			gxp_lpm_get_state(gxp, CORE_TO_PSM(GXP_MCU_CORE_ID)));
+		ret = gxp_pm_blk_reboot(gxp, 5000);
+		if (ret)
+			goto out;
 	}
 
 	ret = gxp_mcu_firmware_restart_locked(mcu_fw);
@@ -629,8 +615,8 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 
 out:
 	mutex_unlock(&mcu_fw->lock);
-unlock_wakelock_mgr:
-	mutex_unlock(&gxp->wakelock_mgr->lock);
+	gcip_pm_put(gxp->power_mgr->pm);
+out_unlock_client_semaphore:
 	up_write(&gxp->vd_semaphore);
 	list_for_each_entry (client, &gxp->client_list, list_entry) {
 		up_write(&client->semaphore);

@@ -37,8 +37,6 @@
 /* The max number of active virtual devices. */
 #define GXP_NUM_SHARED_SLICES 7
 
-/* TODO(b/234098135): remove this when FW supports suspend / resume */
-#define DISABLE_VD_SUSPEND_RESUME_SUPPORT
 /*
  * Can be coherent with AP
  *

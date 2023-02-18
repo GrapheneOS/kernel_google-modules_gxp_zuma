@@ -58,10 +58,10 @@ struct gxp_firmware_manager {
 	bool is_firmware_requested;
 	/* Protects `firmwares` and `firmware_name` */
 	struct mutex dsp_firmware_lock;
+	/* FW is readonly, we only need to load it once per image. */
+	bool loaded[GXP_NUM_CORES];
 	/* Firmware status bitmap. Accessors must hold `vd_semaphore`. */
 	u32 firmware_running;
-	/* Store the entry point of the DSP core firmware. */
-	u32 entry_points[GXP_NUM_CORES];
 	/*
 	 * Cached image config, for easier fetching config entries.
 	 * Not a pointer to the firmware buffer because we want to forcely change the

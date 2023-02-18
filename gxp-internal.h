@@ -66,7 +66,6 @@ struct gxp_fw_data_manager;
 struct gxp_power_manager;
 struct gxp_core_telemetry_manager;
 struct gxp_thermal_manager;
-struct gxp_wakelock_manager;
 struct gxp_usage_stats;
 struct gxp_power_states;
 struct gxp_iommu_domain;
@@ -110,7 +109,6 @@ struct gxp_dev {
 	struct gxp_fw_data_manager *data_mgr;
 	struct gxp_tpu_dev tpu_dev;
 	struct gxp_core_telemetry_manager *core_telemetry_mgr;
-	struct gxp_wakelock_manager *wakelock_mgr;
 	struct gxp_iommu_domain *default_domain;
 	/*
 	 * Pointer to GSA device for firmware authentication.
@@ -199,6 +197,7 @@ struct gxp_dev {
 				    struct gxp_power_states power_states);
 	/*
 	 * Called when the client acquired the BLOCK wakelock and allocated a virtual device.
+	 * The caller will hold @gxp->vd_semaphore for writing.
 	 *
 	 * Return a non-zero value can fail the block acquiring.
 	 *
@@ -208,29 +207,30 @@ struct gxp_dev {
 				    struct gxp_virtual_device *vd);
 	/*
 	 * Called before releasing the BLOCK wakelock or the virtual device.
+	 * The caller will hold @gxp->vd_semaphore for writing.
 	 *
-	 * This callback is optional
+	 * This callback is optional.
 	 */
 	void (*before_vd_block_unready)(struct gxp_dev *gxp,
 					struct gxp_virtual_device *vd);
 	/*
-	 * Called in gxp_wakelock_acquire(), after the block is powered.
+	 * Called in .power_up callback of gcip_pm, after the block is powered.
 	 *
-	 * This function is called with holding gxp_wakelock_manager.lock.
+	 * This function is called with holding gcip_pm lock.
 	 *
-	 * Return a non-zero value can fail gxp_wakelock_acquire().
+	 * Return a non-zero value can fail gcip_pm_get.
 	 *
 	 * This callback is optional.
 	 */
-	int (*wakelock_after_blk_on)(struct gxp_dev *gxp);
+	int (*pm_after_blk_on)(struct gxp_dev *gxp);
 	/*
-	 * Called in gxp_wakelock_release(), before the block is shutdown.
+	 * Called in .power_down callback of gcip_pm, before the block is shutdown.
 	 *
-	 * This function is called with holding gxp_wakelock_manager.lock.
+	 * This function is called with holding gcip_pm lock.
 	 *
 	 * This callback is optional.
 	 */
-	void (*wakelock_before_blk_off)(struct gxp_dev *gxp);
+	void (*pm_before_blk_off)(struct gxp_dev *gxp);
 	/*
 	 * Called in gxp_map_tpu_mbx_queue(), after the TPU mailbox buffers are mapped.
 	 *

@@ -138,8 +138,8 @@ static int elf_load_segments(struct gxp_dev *gxp, const u8 *elf_data,
 	    (ehdr->e_ident[EI_MAG1] != ELFMAG1) ||
 	    (ehdr->e_ident[EI_MAG2] != ELFMAG2) ||
 	    (ehdr->e_ident[EI_MAG3] != ELFMAG3)) {
-		dev_err(gxp->dev, "Invalid ELF format.");
-		return -EINVAL;
+		dev_info(gxp->dev, "Firmware is not an ELF, treated as raw binary.");
+		return 0;
 	}
 
 	/* go through the available ELF segments */
@@ -211,15 +211,6 @@ static int elf_load_segments(struct gxp_dev *gxp, const u8 *elf_data,
 	}
 
 	return ret;
-}
-
-static void elf_fetch_entry_point(struct gxp_dev *gxp, const u8 *elf_data,
-				  uint core)
-{
-	struct elf32_hdr *ehdr;
-
-	ehdr = (struct elf32_hdr *)elf_data;
-	gxp->firmware_mgr->entry_points[core] = ehdr->e_entry;
 }
 
 static int
@@ -322,14 +313,14 @@ static void gxp_program_reset_vector(struct gxp_dev *gxp, uint core,
 	reset_vec = gxp_read_32(gxp, GXP_CORE_REG_ALT_RESET_VECTOR(phys_core));
 	if (verbose)
 		dev_notice(gxp->dev,
-			   "Current Aurora reset vector for core %u: 0x%x\n",
+			   "Current Aurora reset vector for core %u: %#x\n",
 			   phys_core, reset_vec);
 	gxp_write_32(gxp, GXP_CORE_REG_ALT_RESET_VECTOR(phys_core),
-		     gxp->firmware_mgr->entry_points[core]);
+		     gxp->fwbufs[core].daddr);
 	if (verbose)
 		dev_notice(gxp->dev,
-			   "New Aurora reset vector for core %u: 0x%x\n",
-			   phys_core, gxp->firmware_mgr->entry_points[core]);
+			   "New Aurora reset vector for core %u: %#llx\n",
+			   phys_core, gxp->fwbufs[core].daddr);
 }
 
 static void *get_scratchpad_base(struct gxp_dev *gxp,
@@ -400,6 +391,8 @@ static int gxp_firmware_load(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 
 	if (!mgr->firmwares[core])
 		return -ENODEV;
+	if (mgr->loaded[core])
+		return 0;
 
 	/* Load firmware to System RAM */
 	ret = elf_load_segments(gxp,
@@ -411,14 +404,11 @@ static int gxp_firmware_load(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 		goto out_firmware_unload;
 	}
 
-	elf_fetch_entry_point(gxp,
-			      mgr->firmwares[core]->data + FW_HEADER_SIZE,
-			      core);
-
 	/* TODO(b/188970444): Cleanup logging of addresses */
 	dev_notice(gxp->dev,
-		   "ELF loaded at virtual: %pK and physical: 0x%llx\n",
+		   "ELF loaded at virtual: %pK and physical: %#llx\n",
 		   gxp->fwbufs[core].vaddr, gxp->fwbufs[core].paddr);
+	mgr->loaded[core] = true;
 
 	return 0;
 
@@ -619,6 +609,7 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 		if (mgr->firmwares[core])
 			release_firmware(mgr->firmwares[core]);
 		mgr->firmwares[core] = firmwares[core];
+		mgr->loaded[core] = false;
 	}
 
 	kfree(mgr->firmware_name);

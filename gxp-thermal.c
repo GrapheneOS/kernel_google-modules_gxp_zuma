@@ -18,6 +18,8 @@
 #include <linux/thermal.h>
 #include <linux/version.h>
 
+#include <gcip/gcip-pm.h>
+
 /*
  * thermal_cdev_update is moved to drivers/thermal/thermal_core.h in kernel
  * 5.12. The symbol is still exported, manually declare the function prototype
@@ -35,7 +37,6 @@ void thermal_cdev_update(struct thermal_cooling_device *cdev);
 #if GXP_HAS_MCU
 #include "gxp-kci.h"
 #include "gxp-mcu.h"
-#include "gxp-wakelock.h"
 #endif /* GXP_HAS_MCU */
 
 /*
@@ -96,7 +97,8 @@ static int gxp_set_cur_state(struct thermal_cooling_device *cdev,
 #if GXP_HAS_MCU
 			struct gxp_mcu *mcu = gxp_mcu_of(gxp);
 
-			ret = gxp_wakelock_acquire_if_powered(mcu->gxp);
+			ret = gcip_pm_get_if_powered(mcu->gxp->power_mgr->pm,
+						     false);
 			if (ret) {
 				dev_err(dev,
 					"Can't acquire wakelock when powered down: %d\n",
@@ -105,7 +107,7 @@ static int gxp_set_cur_state(struct thermal_cooling_device *cdev,
 			}
 
 			ret = gxp_kci_notify_throttling(&mcu->kci, pwr_state);
-			gxp_wakelock_release(gxp);
+			gcip_pm_put(gxp->power_mgr->pm);
 #endif /* GXP_HAS_MCU */
 		} else {
 			ret = gxp_pm_blk_set_rate_acpm(

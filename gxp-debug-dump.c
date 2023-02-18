@@ -18,6 +18,8 @@
 #include <linux/platform_data/sscoredump.h>
 #endif
 
+#include <gcip/gcip-pm.h>
+
 #include "gxp-client.h"
 #include "gxp-debug-dump.h"
 #include "gxp-dma.h"
@@ -29,7 +31,6 @@
 #include "gxp-mapping.h"
 #include "gxp-pm.h"
 #include "gxp-vd.h"
-#include "gxp-wakelock.h"
 
 #define SSCD_MSG_LENGTH 64
 
@@ -273,7 +274,7 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 	int ret;
 
 	/* Power on BLK_AUR to read the common registers */
-	ret = gxp_wakelock_acquire(gxp);
+	ret = gcip_pm_get(gxp->power_mgr->pm);
 	if (ret) {
 		dev_err(gxp->dev,
 			"Failed to acquire wakelock for getting common dump\n");
@@ -287,7 +288,7 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 	gxp_get_lpm_registers(gxp, &common_seg_header[GXP_LPM_REGISTERS_IDX],
 			      &common_dump_data->lpm_regs);
 
-	gxp_wakelock_release(gxp);
+	gcip_pm_put(gxp->power_mgr->pm);
 	gxp_pm_update_requested_power_states(gxp, uud_states, off_states);
 
 	dev_dbg(gxp->dev, "Segment Header for Common Segment\n");
