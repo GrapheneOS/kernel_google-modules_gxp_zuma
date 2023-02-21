@@ -65,10 +65,7 @@ void gxp_client_destroy(struct gxp_client *client)
 		if (client->vd) {
 			if (gxp->before_unmap_tpu_mbx_queue)
 				gxp->before_unmap_tpu_mbx_queue(gxp, client);
-			/*
-			 * TODO(b/237624453): remove '|| 1' once the MCU supports DSP->TPU interop
-			 */
-			if (gxp_is_direct_mode(gxp) || 1)
+			if (gxp_is_direct_mode(gxp))
 				gxp_dma_unmap_tpu_buffer(gxp,
 							 client->vd->domain,
 							 client->mbx_desc);

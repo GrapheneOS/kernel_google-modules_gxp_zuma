@@ -9,6 +9,7 @@
 #include <linux/platform_data/sscoredump.h>
 #endif
 
+#include <linux/bitops.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/file.h>
@@ -893,8 +894,8 @@ static int map_tpu_mbx_queue(struct gxp_client *client,
 
 	down_read(&gxp->vd_semaphore);
 
-	core_count = client->vd->num_cores;
 	phys_core_list = client->vd->core_list;
+	core_count = hweight_long(phys_core_list);
 
 	mbx_info = kmalloc(
 		sizeof(struct edgetpu_ext_mailbox_info) +
@@ -977,8 +978,7 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 	int ret = 0;
 
 	if (!gxp->tpu_dev.mbx_paddr) {
-		dev_err(gxp->dev, "%s: TPU is not available for interop\n",
-			__func__);
+		dev_err(gxp->dev, "TPU is not available for interop\n");
 		return -EINVAL;
 	}
 
@@ -1014,8 +1014,7 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 		goto out_unlock_client_semaphore;
 	}
 
-	/* TODO(b/237624453): remove '|| 1' once the MCU supports DSP->TPU interop */
-	if (gxp_is_direct_mode(gxp) || 1) {
+	if (gxp_is_direct_mode(gxp)) {
 		ret = map_tpu_mbx_queue(client, &ibuf);
 		if (ret)
 			goto err_fput_tpu_file;
@@ -1030,7 +1029,8 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 	goto out_unlock_client_semaphore;
 
 err_unmap_tpu_mbx_queue:
-	unmap_tpu_mbx_queue(client, &ibuf);
+	if (gxp_is_direct_mode(gxp))
+		unmap_tpu_mbx_queue(client, &ibuf);
 err_fput_tpu_file:
 	fput(client->tpu_file);
 	client->tpu_file = NULL;
@@ -1068,8 +1068,7 @@ static int gxp_unmap_tpu_mbx_queue(struct gxp_client *client,
 	if (gxp->before_unmap_tpu_mbx_queue)
 		gxp->before_unmap_tpu_mbx_queue(gxp, client);
 
-	/* TODO(b/237624453): remove '|| 1' once the MCU supports DSP->TPU interop */
-	if (gxp_is_direct_mode(gxp) || 1)
+	if (gxp_is_direct_mode(gxp))
 		unmap_tpu_mbx_queue(client, &ibuf);
 
 	fput(client->tpu_file);

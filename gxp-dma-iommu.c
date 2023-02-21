@@ -90,8 +90,7 @@ static int gxp_dma_ssmt_program(struct gxp_dev *gxp,
 				gxp_ssmt_set_core_vid(&mgr->ssmt, core, pasid);
 			}
 	} else {
-		for (core = 0; core < GXP_NUM_CORES; core++)
-			gxp_ssmt_set_core_bypass(&mgr->ssmt, core);
+		gxp_ssmt_set_bypass(&mgr->ssmt);
 	}
 	return 0;
 }

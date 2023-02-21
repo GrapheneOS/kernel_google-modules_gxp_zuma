@@ -894,11 +894,12 @@ int gxp_vd_run(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
 	int ret;
+	enum gxp_virtual_device_state orig_state = vd->state;
 
 	lockdep_assert_held_write(&gxp->vd_semaphore);
-	if (vd->state != GXP_VD_READY && vd->state != GXP_VD_OFF)
+	if (orig_state != GXP_VD_READY && orig_state != GXP_VD_OFF)
 		return -EINVAL;
-	if (vd->state == GXP_VD_OFF) {
+	if (orig_state == GXP_VD_OFF) {
 		ret = gxp_vd_block_ready(vd);
 		/*
 		 * The failure of `gxp_vd_block_ready` function means following two things:
@@ -933,7 +934,9 @@ int gxp_vd_run(struct gxp_virtual_device *vd)
 
 err_vd_block_unready:
 	debug_dump_unlock(vd);
-	gxp_vd_block_unready(vd);
+	/* Run this only when gxp_vd_block_ready was executed. */
+	if (orig_state == GXP_VD_OFF)
+		gxp_vd_block_unready(vd);
 err_vd_unavailable:
 	vd->state = GXP_VD_UNAVAILABLE;
 	return ret;
