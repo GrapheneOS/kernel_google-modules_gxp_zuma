@@ -37,7 +37,7 @@ struct gxp_mapping {
 	 */
 	u64 host_address;
 	struct gxp_dev *gxp;
-	struct gxp_iommu_domain *domain;
+	struct gcip_iommu_domain *domain;
 	/*
 	 * `device_address` and `size` are the base address and size of the
 	 * user buffer a mapping represents.
@@ -96,7 +96,7 @@ void gxp_mapping_iova_log(struct gxp_client *client, struct gxp_mapping *map,
  *            to map the buffer for the device.
  */
 struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
-				       struct gxp_iommu_domain *domain,
+				       struct gcip_iommu_domain *domain,
 				       u64 user_address, size_t size, u32 flags,
 				       enum dma_data_direction dir);
 

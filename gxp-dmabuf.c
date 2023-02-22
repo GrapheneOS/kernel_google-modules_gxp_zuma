@@ -51,7 +51,7 @@ static void destroy_dmabuf_mapping(struct gxp_mapping *mapping)
 }
 
 struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp,
-				   struct gxp_iommu_domain *domain, int fd,
+				   struct gcip_iommu_domain *domain, int fd,
 				   u32 flags, enum dma_data_direction dir)
 {
 	struct dma_buf *dmabuf;

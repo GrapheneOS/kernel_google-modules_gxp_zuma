@@ -345,19 +345,15 @@ static void unmap_fw_image_config(struct gxp_dev *gxp,
 
 static int map_fw_image(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
-	struct gxp_iommu_domain *gdomain = vd->domain;
-
 	/* Maps all FW regions together. */
-	return gxp_iommu_map(gxp, gdomain, gxp->fwbufs[0].daddr,
+	return gxp_iommu_map(gxp, vd->domain, gxp->fwbufs[0].daddr,
 			     gxp->fwbufs[0].paddr,
 			     gxp->fwbufs[0].size * GXP_NUM_CORES, IOMMU_READ);
 }
 
 static void unmap_fw_image(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
-	struct gxp_iommu_domain *gdomain = vd->domain;
-
-	gxp_iommu_unmap(gxp, gdomain, gxp->fwbufs[0].daddr,
+	gxp_iommu_unmap(gxp, vd->domain, gxp->fwbufs[0].daddr,
 			gxp->fwbufs[0].size * GXP_NUM_CORES);
 }
 

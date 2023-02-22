@@ -70,7 +70,7 @@ struct gxp_virtual_device {
 	struct gxp_dev *gxp;
 	uint num_cores;
 	void *fw_app;
-	struct gxp_iommu_domain *domain;
+	struct gcip_iommu_domain *domain;
 	struct mailbox_resp_queue *mailbox_resp_queues;
 	struct rb_root mappings_root;
 	struct rw_semaphore mappings_semaphore;

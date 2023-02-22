@@ -17,12 +17,9 @@
 #include <soc/google/tpu-ext.h>
 #endif
 
-#include "gxp-internal.h"
+#include <gcip/gcip-iommu.h>
 
-struct gxp_iommu_domain {
-	struct iommu_domain *domain;
-	uint ctx_id;
-};
+#include "gxp-internal.h"
 
 struct gxp_coherent_buf {
 	void *vaddr; /* kernel VA, no allocation if NULL */
@@ -59,7 +56,7 @@ struct gxp_dma_manager {
  *
  * Return: 0 on success or negative value indicating error
  */
-int gxp_iommu_map(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
+int gxp_iommu_map(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 		  unsigned long iova, phys_addr_t paddr, size_t size, int prot);
 
 /**
@@ -67,7 +64,7 @@ int gxp_iommu_map(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
  * @gxp: The GXP device
  * @gdomain: The IOMMU domain to revert mappings in.
  */
-void gxp_iommu_unmap(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
+void gxp_iommu_unmap(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 		     unsigned long iova, size_t size);
 
 /**
@@ -98,7 +95,7 @@ void gxp_dma_exit(struct gxp_dev *gxp);
  * Caller ensures a BLOCK wakelock is hold for the iommu attaching.
  */
 int gxp_dma_domain_attach_device(struct gxp_dev *gxp,
-				 struct gxp_iommu_domain *gdomain,
+				 struct gcip_iommu_domain *gdomain,
 				 uint core_list);
 
 /**
@@ -109,7 +106,7 @@ int gxp_dma_domain_attach_device(struct gxp_dev *gxp,
  * Caller ensures a BLOCK wakelock is hold for the iommu detaching.
  */
 void gxp_dma_domain_detach_device(struct gxp_dev *gxp,
-				  struct gxp_iommu_domain *gdomain);
+				  struct gcip_iommu_domain *gdomain);
 
 /**
  * gxp_dma_init_default_resources() - Set the various buffers/registers with
@@ -142,8 +139,8 @@ void gxp_dma_init_default_resources(struct gxp_dev *gxp);
  * * -EIO - Failed to create one or more of the mappings
  */
 int gxp_dma_map_core_resources(struct gxp_dev *gxp,
-			       struct gxp_iommu_domain *gdomain, uint core_list,
-			       u8 slice_index);
+			       struct gcip_iommu_domain *gdomain,
+			       uint core_list, u8 slice_index);
 
 /**
  * gxp_dma_unmap_core_resources() - Unmap the IOVAs mapped by
@@ -156,7 +153,7 @@ int gxp_dma_map_core_resources(struct gxp_dev *gxp,
  * locations in their IOVA space. This function releases all those mappings.
  */
 void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
-				  struct gxp_iommu_domain *gdomain,
+				  struct gcip_iommu_domain *gdomain,
 				  uint core_list);
 
 #if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&             \
@@ -173,7 +170,7 @@ void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
  * * -EIO - Failed to create the mappings
  */
 int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp,
-			   struct gxp_iommu_domain *gdomain, uint core_list,
+			   struct gcip_iommu_domain *gdomain, uint core_list,
 			   struct edgetpu_ext_mailbox_info *mbx_info);
 
 /**
@@ -183,7 +180,7 @@ int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp,
  * @mbx_desc: Structure holding info for already mapped TPU-DSP mailboxes.
  */
 void gxp_dma_unmap_tpu_buffer(struct gxp_dev *gxp,
-			      struct gxp_iommu_domain *gdomain,
+			      struct gcip_iommu_domain *gdomain,
 			      struct gxp_tpu_mbx_desc mbx_desc);
 #endif // (CONFIG_GXP_TEST || CONFIG_ANDROID) && !CONFIG_GXP_GEM5
 
@@ -198,7 +195,7 @@ void gxp_dma_unmap_tpu_buffer(struct gxp_dev *gxp,
  */
 int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp,
 					  struct gxp_coherent_buf *buf,
-					  struct gxp_iommu_domain *gdomain,
+					  struct gcip_iommu_domain *gdomain,
 					  uint gxp_dma_flags);
 /**
  * gxp_dma_unmap_allocated_coherent_buffer() - Unmap a coherent buffer
@@ -207,7 +204,7 @@ int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp,
  * @buf: The coherent buffer
  */
 void gxp_dma_unmap_allocated_coherent_buffer(struct gxp_dev *gxp,
-					     struct gxp_iommu_domain *gdomain,
+					     struct gcip_iommu_domain *gdomain,
 					     struct gxp_coherent_buf *buf);
 /**
  * gxp_dma_alloc_coherent() - Allocate and map a coherent buffer for a GXP core
@@ -225,7 +222,7 @@ void gxp_dma_unmap_allocated_coherent_buffer(struct gxp_dev *gxp,
  * Note: Allocated buffers size may be larger than the requested size.
  */
 int gxp_dma_alloc_coherent_buf(struct gxp_dev *gxp,
-			       struct gxp_iommu_domain *gdomain, size_t size,
+			       struct gcip_iommu_domain *gdomain, size_t size,
 			       gfp_t flag, uint gxp_dma_flags,
 			       struct gxp_coherent_buf *buffer);
 /**
@@ -242,7 +239,7 @@ int gxp_dma_alloc_coherent_buf(struct gxp_dev *gxp,
  * buffer but not do any unmapping.
  */
 void gxp_dma_free_coherent_buf(struct gxp_dev *gxp,
-			       struct gxp_iommu_domain *gdomain,
+			       struct gcip_iommu_domain *gdomain,
 			       struct gxp_coherent_buf *buf);
 
 /**
@@ -257,7 +254,7 @@ void gxp_dma_free_coherent_buf(struct gxp_dev *gxp,
  *
  * Return: The number of scatter-gather entries mapped to
  */
-int gxp_dma_map_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
+int gxp_dma_map_sg(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 		   struct scatterlist *sg, int nents,
 		   enum dma_data_direction direction, unsigned long attrs,
 		   uint gxp_dma_flags);
@@ -271,7 +268,7 @@ int gxp_dma_map_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
  * @direction: DMA direction; Same as passed to `gxp_dma_map_sg()`
  * @attrs: The same set of flags used by the base DMA API
  */
-void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
+void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 		      struct scatterlist *sg, int nents,
 		      enum dma_data_direction direction, unsigned long attrs);
 
@@ -285,7 +282,7 @@ void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
  *
  * Return: 0 on success. Negative errno otherwise.
  */
-int gxp_dma_map_iova_sgt(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
+int gxp_dma_map_iova_sgt(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 			 dma_addr_t iova, struct sg_table *sgt, int prot);
 /**
  * gxp_dma_unmap_iova_sgt() - Revert gxp_dma_map_iova_sgt()
@@ -296,7 +293,7 @@ int gxp_dma_map_iova_sgt(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
  *      `gxp_dma_map_iova_sgt()`
  */
 void gxp_dma_unmap_iova_sgt(struct gxp_dev *gxp,
-			    struct gxp_iommu_domain *gdomain, dma_addr_t iova,
+			    struct gcip_iommu_domain *gdomain, dma_addr_t iova,
 			    struct sg_table *sgt);
 
 /**
@@ -331,7 +328,7 @@ void gxp_dma_sync_sg_for_device(struct gxp_dev *gxp, struct scatterlist *sg,
  */
 struct sg_table *
 gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
-			      struct gxp_iommu_domain *gdomain,
+			      struct gcip_iommu_domain *gdomain,
 			      struct dma_buf_attachment *attachment,
 			      enum dma_data_direction direction);
 
@@ -346,7 +343,7 @@ gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
  * @direction: DMA direction
  */
 void gxp_dma_unmap_dmabuf_attachment(struct gxp_dev *gxp,
-				     struct gxp_iommu_domain *gdomain,
+				     struct gcip_iommu_domain *gdomain,
 				     struct dma_buf_attachment *attachment,
 				     struct sg_table *sgt,
 				     enum dma_data_direction direction);
@@ -356,7 +353,7 @@ void gxp_dma_unmap_dmabuf_attachment(struct gxp_dev *gxp,
  *
  * Return: Domain embedding default IOMMU domain information.
  */
-struct gxp_iommu_domain *gxp_iommu_get_domain_for_dev(struct gxp_dev *gxp);
+struct gcip_iommu_domain *gxp_iommu_get_domain_for_dev(struct gxp_dev *gxp);
 
 /**
  * gxp_iommu_aux_get_pasid() - Get PASID corresponding to gdomain
@@ -366,7 +363,7 @@ struct gxp_iommu_domain *gxp_iommu_get_domain_for_dev(struct gxp_dev *gxp);
  * Return: PASID of the passed domain
  */
 uint gxp_iommu_aux_get_pasid(struct gxp_dev *gxp,
-			     struct gxp_iommu_domain *gdomain);
+			     struct gcip_iommu_domain *gdomain);
 
 /**
  * gxp_iommu_setup_shareability() - Set shareability to enable IO-Coherency.

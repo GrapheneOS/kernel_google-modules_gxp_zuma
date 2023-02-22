@@ -59,7 +59,8 @@ struct gxp_tpu_dev {
 };
 
 /* Forward declarations from submodules */
-struct gcip_domain_pool;
+struct gcip_iommu_domain_pool;
+struct gcip_iommu_domain;
 struct gxp_client;
 struct gxp_mailbox_manager;
 struct gxp_debug_dump_manager;
@@ -70,7 +71,6 @@ struct gxp_core_telemetry_manager;
 struct gxp_thermal_manager;
 struct gxp_usage_stats;
 struct gxp_power_states;
-struct gxp_iommu_domain;
 
 struct gxp_dev {
 	struct device *dev;		 /* platform bus device */
@@ -111,7 +111,7 @@ struct gxp_dev {
 	struct gxp_fw_data_manager *data_mgr;
 	struct gxp_tpu_dev tpu_dev;
 	struct gxp_core_telemetry_manager *core_telemetry_mgr;
-	struct gxp_iommu_domain *default_domain;
+	struct gcip_iommu_domain *default_domain;
 	struct gcip_thermal *thermal;
 	/*
 	 * Pointer to GSA device for firmware authentication.
@@ -119,7 +119,7 @@ struct gxp_dev {
 	 */
 	struct device *gsa_dev;
 	u32 memory_per_core;
-	struct gcip_domain_pool *domain_pool;
+	struct gcip_iommu_domain_pool *domain_pool;
 	struct list_head client_list;
 	struct mutex client_list_lock;
 	/* Pointer and mutex of secure virtual device */
