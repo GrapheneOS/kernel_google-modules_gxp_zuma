@@ -46,6 +46,11 @@
  */
 #define GXP_IS_DMA_COHERENT
 
+/* HW watchdog */
+#define GXP_WDG_DT_IRQ_INDEX 5
+#define GXP_WDG_ENABLE_BIT 0
+#define GXP_WDG_INT_CLEAR_BIT 5
+
 #include "config-pwr-state.h"
 #include "context.h"
 #include "csrs.h"

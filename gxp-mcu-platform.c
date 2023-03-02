@@ -5,7 +5,9 @@
  * Copyright (C) 2022 Google LLC
  */
 
+#include <linux/interrupt.h>
 #include <linux/moduleparam.h>
+#include <linux/of_irq.h>
 
 #include "gxp-config.h"
 #include "gxp-internal.h"
@@ -74,20 +76,10 @@ static int allocate_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 	ret = gxp_kci_allocate_vmbox(kci, client_id, vd->num_cores,
 				     vd->slice_index, vd->first_open);
 	if (ret) {
-		if (ret != GCIP_KCI_ERROR_UNIMPLEMENTED) {
-			dev_err(gxp->dev,
-				"Failed to allocate VMBox for client %d, TPU client %d: %d",
-				client_id, vd->tpu_client_id, ret);
-			return ret;
-		}
-
-		/*
-		 * TODO(241057541): Remove this conditional branch after the firmware side
-		 * implements handling allocate_vmbox command.
-		 */
-		dev_info(
-			gxp->dev,
-			"Allocating VMBox is not implemented from the firmware side");
+		dev_err(gxp->dev,
+			"Failed to allocate VMBox for client %d, TPU client %d: %d",
+			client_id, vd->tpu_client_id, ret);
+		return ret;
 	}
 
 	vd->client_id = client_id;
@@ -136,21 +128,11 @@ static int gxp_mcu_link_offload_vmbox(struct gxp_dev *gxp,
 	ret = gxp_kci_link_unlink_offload_vmbox(
 		kci, vd->client_id, offload_client_id, offload_chip_type, true);
 	if (ret) {
-		if (ret != GCIP_KCI_ERROR_UNIMPLEMENTED) {
-			dev_err(gxp->dev,
-				"Failed to link offload VMBox for client %d, offload client %u, offload chip type %d: %d",
-				vd->client_id, offload_client_id,
-				offload_chip_type, ret);
-			return ret;
-		}
-
-		/*
-		 * TODO(241057541): Remove this conditional branch after the firmware side
-		 * implements handling link_offload_vmbox command.
-		 */
-		dev_info(
-			gxp->dev,
-			"Linking offload VMBox is not implemented from the firmware side");
+		dev_err(gxp->dev,
+			"Failed to link offload VMBox for client %d, offload client %u, offload chip type %d: %d",
+			vd->client_id, offload_client_id, offload_chip_type,
+			ret);
+		return ret;
 	}
 
 	return 0;
@@ -167,21 +149,11 @@ static void gxp_mcu_unlink_offload_vmbox(struct gxp_dev *gxp,
 	ret = gxp_kci_link_unlink_offload_vmbox(kci, vd->client_id,
 						offload_client_id,
 						offload_chip_type, false);
-	if (ret) {
-		/*
-		 * TODO(241057541): Remove this conditional branch after the firmware side
-		 * implements handling allocate_vmbox command.
-		 */
-		if (ret == GCIP_KCI_ERROR_UNIMPLEMENTED)
-			dev_info(
-				gxp->dev,
-				"Unlinking offload VMBox is not implemented from the firmware side");
-		else
-			dev_err(gxp->dev,
-				"Failed to unlink offload VMBox for client %d, offload client %u, offload chip type %d: %d",
-				vd->client_id, offload_client_id,
-				offload_chip_type, ret);
-	}
+	if (ret)
+		dev_err(gxp->dev,
+			"Failed to unlink offload VMBox for client %d, offload client %u, offload chip type %d: %d",
+			vd->client_id, offload_client_id, offload_chip_type,
+			ret);
 }
 
 static int gxp_mcu_platform_after_vd_block_ready(struct gxp_dev *gxp,
@@ -303,6 +275,56 @@ static void gxp_mcu_before_unmap_tpu_mbx_queue(struct gxp_dev *gxp,
 
 #endif /* HAS_TPU_EXT */
 
+static irqreturn_t mcu_wdg_irq_handler(int irq, void *arg)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)arg;
+	u32 wdg_control_val;
+
+	/* Clear the interrupt and disable the WDG. */
+	wdg_control_val = gxp_read_32(gxp, GXP_REG_WDOG_CONTROL);
+	wdg_control_val |= (1 << GXP_WDG_INT_CLEAR_BIT);
+	wdg_control_val &= ~(1 << GXP_WDG_ENABLE_BIT);
+	gxp_write_32(gxp, GXP_REG_WDOG_CONTROL, wdg_control_val);
+
+	return IRQ_WAKE_THREAD;
+}
+
+static irqreturn_t mcu_wdg_threaded_handler(int irq, void *arg)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)arg;
+
+	gxp_mcu_firmware_crash_handler(gxp, GCIP_FW_CRASH_HW_WDG_TIMEOUT);
+
+	return IRQ_HANDLED;
+}
+
+static int gxp_mcu_register_wdg_irq(struct gxp_dev *gxp)
+{
+	struct device *dev = gxp->dev;
+	unsigned int wdg_virq;
+	int ret;
+
+	wdg_virq = irq_of_parse_and_map(dev->of_node, GXP_WDG_DT_IRQ_INDEX);
+	if (!wdg_virq) {
+		dev_warn(dev,
+			 "Unable to parse interrupt for HW WDG from the DT");
+	} else {
+		ret = devm_request_threaded_irq(dev, wdg_virq,
+						mcu_wdg_irq_handler,
+						mcu_wdg_threaded_handler,
+						/*flags=*/0, "aurora_mcu_wdg",
+						(void *)gxp);
+		if (ret) {
+			dev_err(dev,
+				"Unable to register MCU WDG IRQ; error=%d\n",
+				ret);
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
 struct gxp_mcu *gxp_mcu_of(struct gxp_dev *gxp)
 {
 	return &(to_mcu_dev(gxp)->mcu);
@@ -331,8 +353,14 @@ enum gxp_chip_revision gxp_get_chip_revision(struct gxp_dev *gxp)
 
 int gxp_mcu_platform_after_probe(struct gxp_dev *gxp)
 {
+	int ret;
+
 	if (gxp_is_direct_mode(gxp))
 		return 0;
+
+	ret = gxp_mcu_register_wdg_irq(gxp);
+	if (ret)
+		return ret;
 
 	gxp_usage_stats_init(gxp);
 	return gxp_mcu_init(gxp, gxp_mcu_of(gxp));

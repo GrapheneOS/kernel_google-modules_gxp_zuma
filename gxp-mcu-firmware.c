@@ -423,20 +423,6 @@ static int image_config_map(void *data, dma_addr_t daddr, phys_addr_t paddr,
 		return -EINVAL;
 	}
 
-	/* TODO(b/268150335): remove this block once MCU FW changes land */
-	{
-		int i;
-
-		for (i = GXP_NUM_CORES; i < GXP_NUM_MAILBOXES; i++) {
-			if (daddr == gxp->mbx[i].daddr) {
-				dev_warn(
-					gxp->dev,
-					"Skip mapping in MCU image config: %pad",
-					&daddr);
-				return 0;
-			}
-		}
-	}
 	return gxp_iommu_map(gxp, gxp_iommu_get_domain_for_dev(gxp), daddr,
 			    paddr, size, IOMMU_READ | IOMMU_WRITE);
 }
@@ -446,15 +432,6 @@ static void image_config_unmap(void *data, dma_addr_t daddr, size_t size,
 {
 	struct gxp_dev *gxp = data;
 
-	/* TODO(b/268150335): remove this block once MCU FW changes land */
-	{
-		int i;
-
-		for (i = GXP_NUM_CORES; i < GXP_NUM_MAILBOXES; i++) {
-			if (daddr == gxp->mbx[i].daddr)
-				return;
-		}
-	}
 	gxp_iommu_unmap(gxp, gxp_iommu_get_domain_for_dev(gxp), daddr, size);
 }
 
@@ -530,7 +507,8 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 
 	dev_err(gxp->dev, "MCU firmware is crashed, crash_type=%d", crash_type);
 
-	if (crash_type != GCIP_FW_CRASH_UNRECOVERABLE_FAULT)
+	if (crash_type != GCIP_FW_CRASH_UNRECOVERABLE_FAULT &&
+	    crash_type != GCIP_FW_CRASH_HW_WDG_TIMEOUT)
 		return;
 
 	dev_err(gxp->dev, "Unrecoverable MCU firmware fault, handle it");

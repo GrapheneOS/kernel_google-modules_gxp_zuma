@@ -238,6 +238,9 @@ gxp_firmware_authenticate(struct gxp_dev *gxp,
 		return 0;
 	}
 
+	if (!gxp_is_direct_mode(gxp))
+		return 0;
+
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		data = firmwares[core]->data;
 		size = firmwares[core]->size;
@@ -301,9 +304,6 @@ error:
 	}
 	return ret;
 }
-
-/* Forward declaration for usage inside gxp_firmware_load(..). */
-static void gxp_firmware_unload(struct gxp_dev *gxp, uint core);
 
 static void gxp_program_reset_vector(struct gxp_dev *gxp, uint core,
 				     uint phys_core, bool verbose)
@@ -381,40 +381,6 @@ static void reset_core_config_region(struct gxp_dev *gxp,
 		gxp_firmware_set_boot_mode(gxp, vd, core,
 					   GXP_BOOT_MODE_REQUEST_COLD_BOOT);
 	}
-}
-
-static int gxp_firmware_load(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
-			     uint core)
-{
-	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
-	int ret;
-
-	if (!mgr->firmwares[core])
-		return -ENODEV;
-	if (mgr->loaded[core])
-		return 0;
-
-	/* Load firmware to System RAM */
-	ret = elf_load_segments(gxp,
-				mgr->firmwares[core]->data + FW_HEADER_SIZE,
-				mgr->firmwares[core]->size - FW_HEADER_SIZE,
-				&gxp->fwbufs[core]);
-	if (ret) {
-		dev_err(gxp->dev, "Unable to load elf file\n");
-		goto out_firmware_unload;
-	}
-
-	/* TODO(b/188970444): Cleanup logging of addresses */
-	dev_notice(gxp->dev,
-		   "ELF loaded at virtual: %pK and physical: %#llx\n",
-		   gxp->fwbufs[core].vaddr, gxp->fwbufs[core].paddr);
-	mgr->loaded[core] = true;
-
-	return 0;
-
-out_firmware_unload:
-	gxp_firmware_unload(gxp, core);
-	return ret;
 }
 
 static int gxp_firmware_handshake(struct gxp_dev *gxp,
@@ -515,9 +481,40 @@ static int gxp_firmware_handshake(struct gxp_dev *gxp,
 	return 0;
 }
 
-static void gxp_firmware_unload(struct gxp_dev *gxp, uint core)
+static void gxp_firmware_load(struct gxp_dev *gxp,
+			      const struct firmware *firmwares[GXP_NUM_CORES])
 {
-	/* NO-OP for now. */
+	uint core;
+
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		/* Load firmware to System RAM */
+		memcpy_toio(gxp->fwbufs[core].vaddr,
+			    firmwares[core]->data + FW_HEADER_SIZE,
+			    firmwares[core]->size - FW_HEADER_SIZE);
+	}
+}
+
+static int gxp_firmware_rearrange_elf(struct gxp_dev *gxp)
+{
+	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
+	int ret = 0;
+	uint core;
+
+	lockdep_assert_held(&mgr->dsp_firmware_lock);
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		/* Re-arrange ELF firmware in System RAM */
+		ret = elf_load_segments(
+			gxp, mgr->firmwares[core]->data + FW_HEADER_SIZE,
+			mgr->firmwares[core]->size - FW_HEADER_SIZE,
+			&gxp->fwbufs[core]);
+		if (ret) {
+			dev_err(gxp->dev,
+				"Failed to parse ELF firmware on core %u\n",
+				core);
+			return ret;
+		}
+	}
+	return ret;
 }
 
 /* Helper function to parse name written to sysfs "load_dsp_firmware" node */
@@ -601,6 +598,7 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 		goto err_request_firmware;
 	}
 
+	gxp_firmware_load(gxp, firmwares);
 	ret = gxp_firmware_authenticate(gxp, firmwares);
 	if (ret)
 		goto err_authenticate_firmware;
@@ -609,8 +607,11 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 		if (mgr->firmwares[core])
 			release_firmware(mgr->firmwares[core]);
 		mgr->firmwares[core] = firmwares[core];
-		mgr->loaded[core] = false;
 	}
+
+	ret = gxp_firmware_rearrange_elf(gxp);
+	if (ret)
+		goto err_rearrange_elf;
 
 	kfree(mgr->firmware_name);
 	mgr->firmware_name = name_buf;
@@ -620,6 +621,9 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 	up_read(&gxp->vd_semaphore);
 	return count;
 
+err_rearrange_elf:
+	for (core = 0; core < GXP_NUM_CORES; core++)
+		mgr->firmwares[core] = NULL;
 err_authenticate_firmware:
 	for (core = 0; core < GXP_NUM_CORES; core++)
 		release_firmware(firmwares[core]);
@@ -781,9 +785,14 @@ int gxp_firmware_request_if_needed(struct gxp_dev *gxp)
 	if (ret)
 		goto out;
 
+	gxp_firmware_load(gxp, mgr->firmwares);
 	ret = gxp_firmware_authenticate(gxp, mgr->firmwares);
 	if (ret)
 		goto err_authenticate_firmware;
+
+	ret = gxp_firmware_rearrange_elf(gxp);
+	if (ret)
+		goto err_rearrange_elf;
 
 	gxp_firmware_has_requested(gxp, mgr);
 
@@ -791,6 +800,7 @@ out:
 	mutex_unlock(&mgr->dsp_firmware_lock);
 	return ret;
 
+err_rearrange_elf:
 err_authenticate_firmware:
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		release_firmware(mgr->firmwares[core]);
@@ -837,12 +847,6 @@ static int gxp_firmware_setup(struct gxp_dev *gxp,
 		return -EBUSY;
 	}
 
-	ret = gxp_firmware_load(gxp, vd, core);
-	if (ret) {
-		dev_err(gxp->dev, "Failed to load firmware on core %u\n",
-			phys_core);
-		return ret;
-	}
 	/* Configure bus performance monitors */
 	gxp_bpm_configure(gxp, phys_core, INST_BPM_OFFSET, BPM_EVENT_READ_XFER);
 	gxp_bpm_configure(gxp, phys_core, DATA_BPM_OFFSET, BPM_EVENT_WRITE_XFER);
@@ -855,7 +859,6 @@ static int gxp_firmware_setup(struct gxp_dev *gxp,
 							    /*verbose=*/true);
 		if (ret) {
 			dev_err(gxp->dev, "Failed to power up core %u\n", core);
-			gxp_firmware_unload(gxp, core);
 			return ret;
 		}
 		enable_core_interrupts(gxp, phys_core);
@@ -933,7 +936,6 @@ static int gxp_firmware_finish_startup(struct gxp_dev *gxp,
 err_firmware_off:
 	if (gxp_core_boot)
 		gxp_pm_core_off(gxp, phys_core);
-	gxp_firmware_unload(gxp, core);
 	return ret;
 }
 
@@ -972,8 +974,6 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 			gxp_pm_core_off(gxp, phys_core);
 		}
 	}
-
-	gxp_firmware_unload(gxp, select_core(vd, virt_core, phys_core));
 }
 
 int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
@@ -1007,14 +1007,11 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 		 */
 		virt_core = 0;
 		for (phys_core = 0; phys_core < GXP_NUM_CORES; phys_core++) {
-			uint core = select_core(vd, virt_core, phys_core);
-
 			if (!(core_list & BIT(phys_core)))
 				continue;
 			if (!(failed_cores & BIT(phys_core))) {
 				if (gxp_core_boot)
 					gxp_pm_core_off(gxp, phys_core);
-				gxp_firmware_unload(gxp, core);
 			}
 			virt_core++;
 		}

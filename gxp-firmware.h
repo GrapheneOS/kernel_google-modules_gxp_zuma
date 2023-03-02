@@ -58,8 +58,6 @@ struct gxp_firmware_manager {
 	bool is_firmware_requested;
 	/* Protects `firmwares` and `firmware_name` */
 	struct mutex dsp_firmware_lock;
-	/* FW is readonly, we only need to load it once per image. */
-	bool loaded[GXP_NUM_CORES];
 	/* Firmware status bitmap. Accessors must hold `vd_semaphore`. */
 	u32 firmware_running;
 	/*

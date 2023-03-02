@@ -1836,6 +1836,8 @@ static int gxp_set_reg_resources(struct platform_device *pdev, struct gxp_dev *g
 		gxp->cmu.paddr = r->start;
 		gxp->cmu.size = resource_size(r);
 		gxp->cmu.vaddr = devm_ioremap_resource(dev, r);
+		if (IS_ERR_OR_NULL(gxp->cmu.vaddr))
+			dev_warn(dev, "Failed to map CMU registers\n");
 	}
 	/*
 	 * TODO (b/224685748): Remove this block after CMU CSR is supported
