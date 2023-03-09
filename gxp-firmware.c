@@ -26,6 +26,7 @@
 #include "gxp-debug-dump.h"
 #include "gxp-doorbell.h"
 #include "gxp-firmware-data.h"
+#include "gxp-firmware-loader.h"
 #include "gxp-firmware.h"
 #include "gxp-host-device-structs.h"
 #include "gxp-internal.h"
@@ -44,41 +45,8 @@
 static int gxp_dsp_fw_auth_disable;
 module_param_named(dsp_fw_auth_disable, gxp_dsp_fw_auth_disable, int, 0660);
 
-bool gxp_core_boot = true;
-module_param_named(core_boot, gxp_core_boot, bool, 0660);
-
-/*
- * Fetches and records image config of the first firmware.
- */
-static void gxp_firmware_get_image_config(struct gxp_dev *gxp,
-					  struct gxp_firmware_manager *mgr)
-{
-	struct gcip_common_image_header *hdr =
-		(struct gcip_common_image_header *)mgr->firmwares[0]->data;
-	struct gcip_image_config *cfg;
-
-	if (unlikely(mgr->firmwares[0]->size < FW_HEADER_SIZE))
-		return;
-	cfg = get_image_config_from_hdr(hdr);
-	if (cfg)
-		mgr->img_cfg = *cfg;
-	else
-		dev_warn(gxp->dev,
-			 "Firmware doesn't have a valid image config");
-}
-
-/*
- * Call this function when mgr->firmwares have been populated.
- * This function sets is_firmware_requested to true.
- *
- * Caller holds mgr->dsp_firmware_lock.
- */
-static void gxp_firmware_has_requested(struct gxp_dev *gxp,
-				       struct gxp_firmware_manager *mgr)
-{
-	gxp_firmware_get_image_config(gxp, mgr);
-	mgr->is_firmware_requested = true;
-}
+static bool gxp_core_boot_flag = true;
+module_param_named(core_boot, gxp_core_boot_flag, bool, 0660);
 
 static int
 request_dsp_firmware(struct gxp_dev *gxp, char *name_prefix,
@@ -117,8 +85,10 @@ request_dsp_firmware(struct gxp_dev *gxp, char *name_prefix,
 	return ret;
 
 err:
-	for (core -= 1; core >= 0; core--)
+	for (core -= 1; core >= 0; core--) {
 		release_firmware(out_firmwares[core]);
+		out_firmwares[core] = NULL;
+	}
 	kfree(name_buf);
 	return ret;
 }
@@ -481,32 +451,56 @@ static int gxp_firmware_handshake(struct gxp_dev *gxp,
 	return 0;
 }
 
-static void gxp_firmware_load(struct gxp_dev *gxp,
-			      const struct firmware *firmwares[GXP_NUM_CORES])
+static int
+gxp_firmware_load_into_memories(struct gxp_dev *gxp,
+				const struct firmware *firmwares[GXP_NUM_CORES])
 {
-	uint core;
+	int core;
+	int ret;
 
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		/* Load firmware to System RAM */
+		if (FW_HEADER_SIZE > firmwares[core]->size) {
+			dev_err(gxp->dev,
+				"Invalid Core %u firmware Image size (%d > %zu)\n",
+				core, FW_HEADER_SIZE, firmwares[core]->size);
+			ret = -EINVAL;
+			goto error;
+		}
+
+		if ((firmwares[core]->size - FW_HEADER_SIZE) >
+		    gxp->fwbufs[core].size) {
+			dev_err(gxp->dev,
+				"Core %u firmware image does not fit (%zu > %llu)\n",
+				core, firmwares[core]->size - FW_HEADER_SIZE,
+				gxp->fwbufs[core].size);
+			ret = -EINVAL;
+			goto error;
+		}
 		memcpy_toio(gxp->fwbufs[core].vaddr,
 			    firmwares[core]->data + FW_HEADER_SIZE,
 			    firmwares[core]->size - FW_HEADER_SIZE);
 	}
+	return 0;
+error:
+	/* Zero out firmware buffers if we got invalid size on any core. */
+	for (core -= 1; core >= 0; core--)
+		memset_io(gxp->fwbufs[core].vaddr, 0, gxp->fwbufs[core].size);
+	return ret;
 }
 
-static int gxp_firmware_rearrange_elf(struct gxp_dev *gxp)
+int gxp_firmware_rearrange_elf(struct gxp_dev *gxp,
+			       const struct firmware *firmwares[GXP_NUM_CORES])
 {
-	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
 	int ret = 0;
 	uint core;
 
-	lockdep_assert_held(&mgr->dsp_firmware_lock);
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		/* Re-arrange ELF firmware in System RAM */
-		ret = elf_load_segments(
-			gxp, mgr->firmwares[core]->data + FW_HEADER_SIZE,
-			mgr->firmwares[core]->size - FW_HEADER_SIZE,
-			&gxp->fwbufs[core]);
+		ret = elf_load_segments(gxp,
+					firmwares[core]->data + FW_HEADER_SIZE,
+					firmwares[core]->size - FW_HEADER_SIZE,
+					&gxp->fwbufs[core]);
 		if (ret) {
 			dev_err(gxp->dev,
 				"Failed to parse ELF firmware on core %u\n",
@@ -541,17 +535,11 @@ static ssize_t load_dsp_firmware_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
 	struct gxp_dev *gxp = dev_get_drvdata(dev);
-	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
 	ssize_t ret;
+	char *firmware_name = gxp_firmware_loader_get_core_fw_name(gxp);
 
-	mutex_lock(&mgr->dsp_firmware_lock);
-
-	ret = scnprintf(buf, PAGE_SIZE, "%s\n",
-			mgr->firmware_name ? mgr->firmware_name :
-					     DSP_FIRMWARE_DEFAULT_PREFIX);
-
-	mutex_unlock(&mgr->dsp_firmware_lock);
-
+	ret = scnprintf(buf, PAGE_SIZE, "%s\n", firmware_name);
+	kfree(firmware_name);
 	return ret;
 }
 
@@ -561,10 +549,8 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 {
 	struct gxp_dev *gxp = dev_get_drvdata(dev);
 	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
-	const struct firmware *firmwares[GXP_NUM_CORES];
 	char *name_buf = NULL;
 	int ret;
-	int core;
 
 	/*
 	 * Lock the VD semaphore to ensure no core is executing the firmware
@@ -586,50 +572,28 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 		goto err_out;
 	}
 
-	mutex_lock(&mgr->dsp_firmware_lock);
-
 	dev_notice(gxp->dev, "Requesting firmware be reloaded: %s\n", name_buf);
 
-	ret = request_dsp_firmware(gxp, name_buf, firmwares);
+	/*
+	 * It's possible a race condition bug here that someone opens a gxp
+	 * device and loads the firmware between below unload/load functions in
+	 * another thread, but this interface is only for developer debugging.
+	 * We don't insist on preventing the race condition bug.
+	 */
+	gxp_firmware_loader_unload(gxp);
+	gxp_firmware_loader_set_core_fw_name(gxp, name_buf);
+	ret = gxp_firmware_loader_load_if_needed(gxp);
 	if (ret) {
-		dev_err(gxp->dev,
-			"Failed to request firmwares with names \"%sX\" (ret=%d)\n",
-			name_buf, ret);
-		goto err_request_firmware;
+		dev_err(gxp->dev, "Failed to load core firmware: %s\n", name_buf);
+		goto err_firmware_load;
 	}
 
-	gxp_firmware_load(gxp, firmwares);
-	ret = gxp_firmware_authenticate(gxp, firmwares);
-	if (ret)
-		goto err_authenticate_firmware;
-
-	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (mgr->firmwares[core])
-			release_firmware(mgr->firmwares[core]);
-		mgr->firmwares[core] = firmwares[core];
-	}
-
-	ret = gxp_firmware_rearrange_elf(gxp);
-	if (ret)
-		goto err_rearrange_elf;
-
-	kfree(mgr->firmware_name);
-	mgr->firmware_name = name_buf;
-	gxp_firmware_has_requested(gxp, mgr);
-
-	mutex_unlock(&mgr->dsp_firmware_lock);
+	kfree(name_buf);
 	up_read(&gxp->vd_semaphore);
 	return count;
 
-err_rearrange_elf:
-	for (core = 0; core < GXP_NUM_CORES; core++)
-		mgr->firmwares[core] = NULL;
-err_authenticate_firmware:
-	for (core = 0; core < GXP_NUM_CORES; core++)
-		release_firmware(firmwares[core]);
-err_request_firmware:
+err_firmware_load:
 	kfree(name_buf);
-	mutex_unlock(&mgr->dsp_firmware_lock);
 err_out:
 	up_read(&gxp->vd_semaphore);
 	return ret;
@@ -658,7 +622,6 @@ int gxp_fw_init(struct gxp_dev *gxp)
 	if (!mgr)
 		return -ENOMEM;
 	gxp->firmware_mgr = mgr;
-	mutex_init(&mgr->dsp_firmware_lock);
 
 	/* Power on BLK_AUR to read the revision and processor ID registers */
 	gxp_pm_blk_on(gxp);
@@ -754,59 +717,34 @@ void gxp_fw_destroy(struct gxp_dev *gxp)
 			memunmap(gxp->fwbufs[core].vaddr);
 			gxp->fwbufs[core].vaddr = NULL;
 		}
-
-		if (mgr->firmwares[core]) {
-			release_firmware(mgr->firmwares[core]);
-			mgr->firmwares[core] = NULL;
-		}
 	}
-
-	kfree(mgr->firmware_name);
 }
 
-int gxp_firmware_request_if_needed(struct gxp_dev *gxp)
+int gxp_firmware_load_core_firmware(
+	struct gxp_dev *gxp, char *name_prefix,
+	const struct firmware *core_firmware[GXP_NUM_CORES])
 {
-	int ret = 0;
 	uint core;
-	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
-	char *name = NULL;
+	int ret;
 
-	mutex_lock(&mgr->dsp_firmware_lock);
-
-	if (mgr->is_firmware_requested)
-		goto out;
-
-	if (mgr->firmware_name == NULL)
-		name = DSP_FIRMWARE_DEFAULT_PREFIX;
-	else
-		name = mgr->firmware_name;
-
-	ret = request_dsp_firmware(gxp, name, mgr->firmwares);
+	if (name_prefix == NULL)
+		name_prefix = DSP_FIRMWARE_DEFAULT_PREFIX;
+	ret = request_dsp_firmware(gxp, name_prefix, core_firmware);
 	if (ret)
-		goto out;
-
-	gxp_firmware_load(gxp, mgr->firmwares);
-	ret = gxp_firmware_authenticate(gxp, mgr->firmwares);
+		return ret;
+	ret = gxp_firmware_load_into_memories(gxp, core_firmware);
 	if (ret)
-		goto err_authenticate_firmware;
-
-	ret = gxp_firmware_rearrange_elf(gxp);
+		goto error;
+	ret = gxp_firmware_authenticate(gxp, core_firmware);
 	if (ret)
-		goto err_rearrange_elf;
+		goto error;
 
-	gxp_firmware_has_requested(gxp, mgr);
-
-out:
-	mutex_unlock(&mgr->dsp_firmware_lock);
-	return ret;
-
-err_rearrange_elf:
-err_authenticate_firmware:
+	return 0;
+error:
 	for (core = 0; core < GXP_NUM_CORES; core++) {
-		release_firmware(mgr->firmwares[core]);
-		mgr->firmwares[core] = NULL;
+		release_firmware(core_firmware[core]);
+		core_firmware[core] = NULL;
 	}
-	mutex_unlock(&mgr->dsp_firmware_lock);
 	return ret;
 }
 
@@ -841,7 +779,7 @@ static int gxp_firmware_setup(struct gxp_dev *gxp,
 	int ret = 0;
 	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
 
-	if (gxp_core_boot && mgr->firmware_running & BIT(phys_core)) {
+	if (gxp_core_boot(gxp) && mgr->firmware_running & BIT(phys_core)) {
 		dev_err(gxp->dev, "Firmware is already running on core %u\n",
 			phys_core);
 		return -EBUSY;
@@ -852,7 +790,7 @@ static int gxp_firmware_setup(struct gxp_dev *gxp,
 	gxp_bpm_configure(gxp, phys_core, DATA_BPM_OFFSET, BPM_EVENT_WRITE_XFER);
 
 	/* Mark this as a cold boot */
-	if (gxp_core_boot) {
+	if (gxp_core_boot(gxp)) {
 		reset_core_config_region(gxp, vd, core);
 		ret = gxp_firmware_setup_hw_after_block_off(gxp, core,
 							    phys_core,
@@ -892,7 +830,7 @@ static int gxp_firmware_finish_startup(struct gxp_dev *gxp,
 	int ret = 0;
 	uint core = select_core(vd, virt_core, phys_core);
 
-	if (gxp_core_boot) {
+	if (gxp_core_boot(gxp)) {
 		ret = gxp_firmware_handshake(gxp, vd, core, phys_core);
 		if (ret) {
 			dev_err(gxp->dev,
@@ -934,7 +872,7 @@ static int gxp_firmware_finish_startup(struct gxp_dev *gxp,
 	return ret;
 
 err_firmware_off:
-	if (gxp_core_boot)
+	if (gxp_core_boot(gxp))
 		gxp_pm_core_off(gxp, phys_core);
 	return ret;
 }
@@ -945,7 +883,7 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 {
 	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
 
-	if (gxp_core_boot && !(mgr->firmware_running & BIT(phys_core)))
+	if (gxp_core_boot(gxp) && !(mgr->firmware_running & BIT(phys_core)))
 		dev_err(gxp->dev, "Firmware is not running on core %u\n",
 			phys_core);
 
@@ -956,7 +894,7 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 	gxp_notification_unregister_handler(gxp, phys_core,
 					    HOST_NOTIF_CORE_TELEMETRY_STATUS);
 
-	if (gxp_core_boot) {
+	if (gxp_core_boot(gxp)) {
 		if (gxp->mailbox_mgr->release_mailbox) {
 			gxp->mailbox_mgr->release_mailbox(
 				gxp->mailbox_mgr, vd, virt_core,
@@ -1010,7 +948,7 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 			if (!(core_list & BIT(phys_core)))
 				continue;
 			if (!(failed_cores & BIT(phys_core))) {
-				if (gxp_core_boot)
+				if (gxp_core_boot(gxp))
 					gxp_pm_core_off(gxp, phys_core);
 			}
 			virt_core++;
@@ -1031,7 +969,7 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 	}
 #endif
 	/* Switch clock mux to the normal state to guarantee LPM works */
-	if (gxp_core_boot) {
+	if (gxp_core_boot(gxp)) {
 		gxp_pm_force_clkmux_normal(gxp);
 		gxp_firmware_wakeup_cores(gxp, core_list);
 	}
@@ -1062,7 +1000,7 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 		}
 	}
 	/* Check if we need to set clock mux to low state as requested */
-	if (gxp_core_boot)
+	if (gxp_core_boot(gxp))
 		gxp_pm_resume_clkmux(gxp);
 
 	return ret;
@@ -1134,4 +1072,9 @@ u32 gxp_firmware_get_boot_status(struct gxp_dev *gxp,
 
 	core_cfg = get_scratchpad_base(gxp, vd, core);
 	return core_cfg->boot_status;
+}
+
+bool gxp_core_boot(struct gxp_dev *gxp)
+{
+	return gxp_core_boot_flag;
 }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GCIP firmware interface.
  *
@@ -136,7 +136,7 @@ void gcip_firmware_tracing_destroy(struct gcip_fw_tracing *fw_tracing)
 	kfree(fw_tracing);
 }
 
-int gcip_firmware_tracing_restore(struct gcip_fw_tracing *fw_tracing)
+int gcip_firmware_tracing_restore_on_powering(struct gcip_fw_tracing *fw_tracing)
 {
 	int ret = 0;
 

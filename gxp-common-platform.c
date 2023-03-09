@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP platform driver utilities.
  *
@@ -37,6 +37,7 @@
 #include "gxp-domain-pool.h"
 #include "gxp-firmware.h"
 #include "gxp-firmware-data.h"
+#include "gxp-firmware-loader.h"
 #include "gxp-internal.h"
 #include "gxp-lpm.h"
 #include "gxp-mailbox.h"
@@ -145,13 +146,10 @@ static int gxp_open(struct inode *inode, struct file *file)
 					   misc_dev);
 	int ret = 0;
 
-	/* If this is the first call to open(), request the firmware files */
-	ret = gxp_firmware_request_if_needed(gxp);
-	if (ret) {
-		dev_err(gxp->dev,
-			"Failed to request dsp firmware files (ret=%d)\n", ret);
+	/* If this is the first call to open(), load the firmware files */
+	ret = gxp_firmware_loader_load_if_needed(gxp);
+	if (ret)
 		return ret;
-	}
 
 	client = gxp_client_create(gxp);
 	if (IS_ERR(client))
@@ -2063,6 +2061,12 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		goto err_domain_pool_destroy;
 	}
 
+	ret = gxp_firmware_loader_init(gxp);
+	if (ret) {
+		dev_err(dev, "Failed to initialize firmware loader (ret=%d)\n",
+			ret);
+		goto err_fw_destroy;
+	}
 	gxp_dma_init_default_resources(gxp);
 	gxp_vd_init(gxp);
 
@@ -2134,6 +2138,8 @@ err_fw_data_destroy:
 	gxp_fw_data_destroy(gxp);
 err_vd_destroy:
 	gxp_vd_destroy(gxp);
+	gxp_firmware_loader_destroy(gxp);
+err_fw_destroy:
 	gxp_fw_destroy(gxp);
 err_domain_pool_destroy:
 	gxp_domain_pool_destroy(gxp->domain_pool);
@@ -2164,6 +2170,7 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 	gxp_core_telemetry_exit(gxp);
 	gxp_fw_data_destroy(gxp);
 	gxp_vd_destroy(gxp);
+	gxp_firmware_loader_destroy(gxp);
 	gxp_fw_destroy(gxp);
 	gxp_domain_pool_destroy(gxp->domain_pool);
 	kfree(gxp->domain_pool);

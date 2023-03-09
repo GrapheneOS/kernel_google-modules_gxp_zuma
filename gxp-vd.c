@@ -23,8 +23,9 @@
 #include "gxp-domain-pool.h"
 #include "gxp-doorbell.h"
 #include "gxp-eventfd.h"
-#include "gxp-firmware.h"
 #include "gxp-firmware-data.h"
+#include "gxp-firmware-loader.h"
+#include "gxp-firmware.h"
 #include "gxp-host-device-structs.h"
 #include "gxp-internal.h"
 #include "gxp-lpm.h"
@@ -314,9 +315,9 @@ static void gxp_vd_imgcfg_unmap(void *data, dma_addr_t daddr, size_t size,
 	unmap_ns_region(vd, daddr);
 }
 
-static int map_fw_image_config(struct gxp_dev *gxp,
-			       struct gxp_virtual_device *vd,
-			       struct gxp_firmware_manager *fw_mgr)
+static int
+map_fw_image_config(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
+		    struct gxp_firmware_loader_manager *fw_loader_mgr)
 {
 	int ret;
 	struct gcip_image_config *cfg;
@@ -328,9 +329,9 @@ static int map_fw_image_config(struct gxp_dev *gxp,
 	/*
 	 * Allow to skip for test suites need VD but doesn't need the FW module.
 	 */
-	if (IS_ENABLED(CONFIG_GXP_TEST) && !fw_mgr)
+	if (IS_ENABLED(CONFIG_GXP_TEST) && !fw_loader_mgr)
 		return 0;
-	cfg = &fw_mgr->img_cfg;
+	cfg = &fw_loader_mgr->core_img_cfg;
 	ret = gcip_image_config_parser_init(&vd->cfg_parser, &gxp_vd_imgcfg_ops,
 					    gxp->dev, vd);
 	/* parser_init() never fails unless we pass invalid OPs. */
@@ -568,7 +569,7 @@ static int assign_cores(struct gxp_virtual_device *vd)
 	uint core;
 	uint available_cores = 0;
 
-	if (!gxp_core_boot) {
+	if (!gxp_core_boot(gxp)) {
 		/* We don't do core assignment when cores are managed by MCU. */
 		vd->core_list = BIT(GXP_NUM_CORES) - 1;
 		return 0;
@@ -598,7 +599,7 @@ static void unassign_cores(struct gxp_virtual_device *vd)
 	struct gxp_dev *gxp = vd->gxp;
 	uint core;
 
-	if (!gxp_core_boot)
+	if (!gxp_core_boot(gxp))
 		return;
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (gxp->core_to_vd[core] == vd)
@@ -646,7 +647,8 @@ static void set_config_version(struct gxp_dev *gxp,
 			       struct gxp_virtual_device *vd)
 {
 	if (gxp->firmware_mgr && vd->sys_cfg.daddr)
-		vd->config_version = gxp->firmware_mgr->img_cfg.config_version;
+		vd->config_version =
+			gxp->fw_loader_mgr->core_img_cfg.config_version;
 	/*
 	 * Let gxp_dma_map_core_resources() map this region only when using the
 	 * legacy protocol.
@@ -744,19 +746,17 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	 * Here assumes firmware is requested before allocating a VD, which is
 	 * true because we request firmware on first GXP device open.
 	 */
-	err = map_fw_image_config(gxp, vd, gxp->firmware_mgr);
+	err = map_fw_image_config(gxp, vd, gxp->fw_loader_mgr);
 	if (err)
 		goto error_unassign_cores;
 
 	set_config_version(gxp, vd);
-	if (gxp->data_mgr) {
-		/* After map_fw_image_config because it needs vd->sys_cfg. */
-		vd->fw_app = gxp_fw_data_create_app(gxp, vd);
-		if (IS_ERR(vd->fw_app)) {
-			err = PTR_ERR(vd->fw_app);
-			vd->fw_app = NULL;
-			goto error_unmap_imgcfg;
-		}
+	/* After map_fw_image_config because it needs vd->sys_cfg. */
+	vd->fw_app = gxp_fw_data_create_app(gxp, vd);
+	if (IS_ERR(vd->fw_app)) {
+		err = PTR_ERR(vd->fw_app);
+		vd->fw_app = NULL;
+		goto error_unmap_imgcfg;
 	}
 	err = gxp_dma_map_core_resources(gxp, vd->domain, vd->core_list,
 					 vd->slice_index);
@@ -971,7 +971,7 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 	lockdep_assert_held_write(&gxp->vd_semaphore);
 	debug_dump_lock(gxp, vd);
 
-	if (gxp_core_boot &&
+	if (gxp_core_boot(gxp) &&
 	    (vd->state == GXP_VD_OFF || vd->state == GXP_VD_READY ||
 	     vd->state == GXP_VD_RUNNING) &&
 	    gxp_pm_get_blk_state(gxp) != AUR_OFF) {
@@ -1043,7 +1043,7 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 	u32 boot_state;
 	uint failed_cores = 0;
 
-	if (!gxp_is_direct_mode(gxp) && gxp_core_boot)
+	if (!gxp_is_direct_mode(gxp) && gxp_core_boot(gxp))
 		return gxp_vd_stop(vd);
 	lockdep_assert_held_write(&gxp->vd_semaphore);
 	debug_dump_lock(gxp, vd);
@@ -1055,7 +1055,7 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 			"Attempt to suspend a virtual device twice\n");
 		goto out;
 	}
-	if (!gxp_core_boot) {
+	if (!gxp_core_boot(gxp)) {
 		vd->state = GXP_VD_SUSPENDED;
 		goto out;
 	}
@@ -1165,7 +1165,7 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 		ret = -EBUSY;
 		goto out;
 	}
-	if (!gxp_core_boot) {
+	if (!gxp_core_boot(gxp)) {
 		vd->state = GXP_VD_RUNNING;
 		goto out;
 	}

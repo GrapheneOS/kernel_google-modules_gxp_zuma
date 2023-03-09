@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Kernel Control Interface, implements the protocol between DSP Kernel driver and MCU firmware.
  *

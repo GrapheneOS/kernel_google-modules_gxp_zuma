@@ -11,6 +11,7 @@
 
 #include "gxp-debug-dump.h"
 #include "gxp-firmware-data.h"
+#include "gxp-firmware-loader.h"
 #include "gxp-firmware.h" /* gxp_core_boot */
 #include "gxp-host-device-structs.h"
 #include "gxp-internal.h"
@@ -642,7 +643,7 @@ _gxp_fw_data_create_app(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 	if (!app)
 		return ERR_PTR(-ENOMEM);
 
-	if (!gxp_core_boot) {
+	if (!gxp_core_boot(gxp)) {
 		dev_info(gxp->dev, "Skip setting VD and core CFG");
 		return app;
 	}
@@ -859,9 +860,6 @@ void gxp_fw_data_destroy(struct gxp_dev *gxp)
 {
 	struct gxp_fw_data_manager *mgr = gxp->data_mgr;
 
-	if (!mgr)
-		return;
-
 	mem_alloc_free(mgr->allocator, &mgr->core_telemetry_mem);
 	mem_alloc_free(mgr->allocator, &mgr->wdog_mem);
 	mem_alloc_free(mgr->allocator, &mgr->sys_desc_mem);
@@ -876,10 +874,8 @@ void gxp_fw_data_destroy(struct gxp_dev *gxp)
 		mgr->fw_data_virt = NULL;
 	}
 
-	if (gxp->data_mgr) {
-		devm_kfree(gxp->dev, gxp->data_mgr);
-		gxp->data_mgr = NULL;
-	}
+	devm_kfree(gxp->dev, mgr);
+	gxp->data_mgr = NULL;
 }
 
 int gxp_fw_data_set_core_telemetry_descriptors(struct gxp_dev *gxp, u8 type,
@@ -967,7 +963,7 @@ u32 gxp_fw_data_get_core_telemetry_device_status(struct gxp_dev *gxp, uint core,
 	if (core >= GXP_NUM_CORES)
 		return 0;
 
-	if (gxp->firmware_mgr->img_cfg.config_version >=
+	if (gxp->fw_loader_mgr->core_img_cfg.config_version >=
 	    FW_DATA_PROTOCOL_PER_VD_CONFIG) {
 		return _gxp_fw_data_get_core_telemetry_device_status(gxp, core,
 								     type);

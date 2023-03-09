@@ -83,6 +83,7 @@ struct gxp_dev {
 	struct gxp_mailbox_manager *mailbox_mgr;
 	struct gxp_power_manager *power_mgr;
 	struct gxp_debug_dump_manager *debug_dump_mgr;
+	struct gxp_firmware_loader_manager *fw_loader_mgr;
 	struct gxp_firmware_manager *firmware_mgr;
 	/*
 	 * Lock to ensure only one thread at a time is ever calling

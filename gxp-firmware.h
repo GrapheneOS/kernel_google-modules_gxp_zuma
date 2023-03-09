@@ -43,8 +43,6 @@
 #define PRIVATE_FW_DATA_SIZE SZ_2M
 #define SHARED_FW_DATA_SIZE SZ_1M
 
-extern bool gxp_core_boot;
-
 /* Indexes same as image_config.IommuMappingIdx in the firmware side. */
 enum gxp_imgcfg_idx {
 	CORE_CFG_REGION_IDX,
@@ -53,20 +51,8 @@ enum gxp_imgcfg_idx {
 };
 
 struct gxp_firmware_manager {
-	const struct firmware *firmwares[GXP_NUM_CORES];
-	char *firmware_name;
-	bool is_firmware_requested;
-	/* Protects `firmwares` and `firmware_name` */
-	struct mutex dsp_firmware_lock;
 	/* Firmware status bitmap. Accessors must hold `vd_semaphore`. */
 	u32 firmware_running;
-	/*
-	 * Cached image config, for easier fetching config entries.
-	 * Not a pointer to the firmware buffer because we want to forcely change the
-	 * privilege level to NS.
-	 * Only valid on firmware requested.
-	 */
-	struct gcip_image_config img_cfg;
 };
 
 enum aurora_msg {
@@ -83,7 +69,7 @@ static inline bool gxp_is_fw_running(struct gxp_dev *gxp, uint core)
 }
 
 /*
- * Initializes the firmware loading/unloading subsystem. This includes
+ * Initializes the core firmware loading/unloading subsystem. This includes
  * initializing the LPM and obtaining the memory regions needed to load the FW.
  * The function needs to be called once after a block power up event.
  */
@@ -96,14 +82,22 @@ int gxp_fw_init(struct gxp_dev *gxp);
 void gxp_fw_destroy(struct gxp_dev *gxp);
 
 /*
- * Check if the DSP firmware files have been requested yet, and if not, request
- * them.
+ * Requests and loads core firmware into memories.
+ * If the loaded firmware is ELF, rearranges it.
  *
- * Returns 0 if the files have already been requested or were successfully
- * requested by this call; Returns an errno if this call attempted to request
- * the files and it failed.
+ * Returns 0 on success, a negative errno on failure.
  */
-int gxp_firmware_request_if_needed(struct gxp_dev *gxp);
+int gxp_firmware_load_core_firmware(
+	struct gxp_dev *gxp, char *name_prefix,
+	const struct firmware *core_firmwares[GXP_NUM_CORES]);
+
+/*
+ * Rearranges firmware data if the firmware is ELF.
+ *
+ * Returns 0 on success, a negative errno on failure.
+ */
+int gxp_firmware_rearrange_elf(struct gxp_dev *gxp,
+			       const struct firmware *firmwares[GXP_NUM_CORES]);
 
 /*
  * Re-program the reset vector and power on the core's LPM if the block had
@@ -156,5 +150,8 @@ void gxp_firmware_set_boot_status(struct gxp_dev *gxp,
  */
 u32 gxp_firmware_get_boot_status(struct gxp_dev *gxp,
 				 struct gxp_virtual_device *vd, uint core);
+
+/* Returns whether the core firmware running states are managed by us. */
+bool gxp_core_boot(struct gxp_dev *gxp);
 
 #endif /* __GXP_FIRMWARE_H__ */

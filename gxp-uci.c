@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP user command interface.
  *
@@ -262,10 +262,8 @@ gxp_uci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
 
 	list_add_tail(&async_resp->dest_list_entry, async_resp->dest_queue);
 
-	if (async_resp->eventfd) {
+	if (async_resp->eventfd)
 		gxp_eventfd_signal(async_resp->eventfd);
-		gxp_eventfd_put(async_resp->eventfd);
-	}
 
 	wake_up(async_resp->dest_queue_waitq);
 out:
@@ -303,10 +301,8 @@ gxp_uci_handle_awaiter_timedout(struct gcip_mailbox *mailbox,
 			      async_resp->dest_queue);
 		spin_unlock_irqrestore(async_resp->queue_lock, flags);
 
-		if (async_resp->eventfd) {
+		if (async_resp->eventfd)
 			gxp_eventfd_signal(async_resp->eventfd);
-			gxp_eventfd_put(async_resp->eventfd);
-		}
 
 		wake_up(async_resp->dest_queue_waitq);
 	} else {
@@ -321,6 +317,8 @@ static void gxp_uci_release_awaiter_data(void *data)
 	struct gxp_uci_async_response *async_resp = data;
 
 	gxp_vd_release_credit(async_resp->vd);
+	if (async_resp->eventfd)
+		gxp_eventfd_put(async_resp->eventfd);
 	kfree(async_resp);
 }
 
@@ -510,6 +508,8 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 	return 0;
 
 err_free_resp:
+	if (async_resp->eventfd)
+		gxp_eventfd_put(async_resp->eventfd);
 	kfree(async_resp);
 err_release_credit:
 	gxp_vd_release_credit(vd);

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Platform device driver for devices with MCU support.
  *
@@ -127,15 +127,13 @@ static int gxp_mcu_link_offload_vmbox(struct gxp_dev *gxp,
 
 	ret = gxp_kci_link_unlink_offload_vmbox(
 		kci, vd->client_id, offload_client_id, offload_chip_type, true);
-	if (ret) {
+	if (ret)
 		dev_err(gxp->dev,
 			"Failed to link offload VMBox for client %d, offload client %u, offload chip type %d: %d",
 			vd->client_id, offload_client_id, offload_chip_type,
 			ret);
-		return ret;
-	}
 
-	return 0;
+	return ret;
 }
 
 static void gxp_mcu_unlink_offload_vmbox(struct gxp_dev *gxp,
@@ -277,13 +275,13 @@ static void gxp_mcu_before_unmap_tpu_mbx_queue(struct gxp_dev *gxp,
 
 static irqreturn_t mcu_wdg_irq_handler(int irq, void *arg)
 {
-	struct gxp_dev *gxp = (struct gxp_dev *)arg;
+	struct gxp_dev *gxp = arg;
 	u32 wdg_control_val;
 
 	/* Clear the interrupt and disable the WDG. */
 	wdg_control_val = gxp_read_32(gxp, GXP_REG_WDOG_CONTROL);
-	wdg_control_val |= (1 << GXP_WDG_INT_CLEAR_BIT);
-	wdg_control_val &= ~(1 << GXP_WDG_ENABLE_BIT);
+	wdg_control_val |= BIT(GXP_WDG_INT_CLEAR_BIT);
+	wdg_control_val &= ~BIT(GXP_WDG_ENABLE_BIT);
 	gxp_write_32(gxp, GXP_REG_WDOG_CONTROL, wdg_control_val);
 
 	return IRQ_WAKE_THREAD;
@@ -291,7 +289,7 @@ static irqreturn_t mcu_wdg_irq_handler(int irq, void *arg)
 
 static irqreturn_t mcu_wdg_threaded_handler(int irq, void *arg)
 {
-	struct gxp_dev *gxp = (struct gxp_dev *)arg;
+	struct gxp_dev *gxp = arg;
 
 	gxp_mcu_firmware_crash_handler(gxp, GCIP_FW_CRASH_HW_WDG_TIMEOUT);
 
@@ -308,21 +306,16 @@ static int gxp_mcu_register_wdg_irq(struct gxp_dev *gxp)
 	if (!wdg_virq) {
 		dev_warn(dev,
 			 "Unable to parse interrupt for HW WDG from the DT");
-	} else {
-		ret = devm_request_threaded_irq(dev, wdg_virq,
-						mcu_wdg_irq_handler,
-						mcu_wdg_threaded_handler,
-						/*flags=*/0, "aurora_mcu_wdg",
-						(void *)gxp);
-		if (ret) {
-			dev_err(dev,
-				"Unable to register MCU WDG IRQ; error=%d\n",
-				ret);
-			return -EINVAL;
-		}
+		return 0;
 	}
+	ret = devm_request_threaded_irq(dev, wdg_virq, mcu_wdg_irq_handler,
+					mcu_wdg_threaded_handler,
+					/*flags=*/0, "aurora_mcu_wdg",
+					(void *)gxp);
+	if (ret)
+		dev_err(dev, "Unable to register MCU WDG IRQ: %d\n", ret);
 
-	return 0;
+	return ret;
 }
 
 struct gxp_mcu *gxp_mcu_of(struct gxp_dev *gxp)

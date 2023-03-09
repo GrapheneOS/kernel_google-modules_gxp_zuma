@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP MicroController Unit firmware management.
  *
@@ -7,10 +7,12 @@
 
 #include <linux/device.h>
 #include <linux/firmware.h>
+#include <linux/gsa/gsa_dsp.h>
 #include <linux/io.h>
 #include <linux/lockdep.h>
 #include <linux/mutex.h>
 #include <linux/resource.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 
 #include <gcip/gcip-common-image-header.h>
@@ -21,6 +23,7 @@
 #include "gxp-config.h"
 #include "gxp-dma.h"
 #include "gxp-doorbell.h"
+#include "gxp-firmware-loader.h"
 #include "gxp-internal.h"
 #include "gxp-kci.h"
 #include "gxp-lpm.h"
@@ -61,84 +64,113 @@ static bool is_signed_firmware(const struct firmware *fw,
 	return true;
 }
 
-/*
- * Loads firmware image to memory.
- */
-static int gxp_mcu_firmware_load_locked(struct gxp_mcu_firmware *mcu_fw,
-					const char *name)
+int gxp_mcu_firmware_load(struct gxp_dev *gxp, char *fw_name,
+			  const struct firmware **fw)
 {
 	int ret;
-	struct gxp_dev *gxp = mcu_fw->gxp;
+	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
 	struct device *dev = gxp->dev;
 	struct gcip_image_config *imgcfg;
-	const struct firmware *fw;
 	struct gcip_common_image_header *hdr;
 	size_t offset, size;
+	bool is_signed;
 
-	lockdep_assert_held(&mcu_fw->lock);
-	ret = request_firmware(&fw, name, dev);
-	if (ret) {
-		dev_err(dev, "request firmware '%s' failed: %d", name, ret);
-		return ret;
+	mutex_lock(&mcu_fw->lock);
+	if (mcu_fw->status == GCIP_FW_LOADING ||
+	    mcu_fw->status == GCIP_FW_VALID) {
+		dev_info(gxp->dev, "MCU firmware is loaded, skip loading");
+		goto out;
 	}
 
-	hdr = (struct gcip_common_image_header *)fw->data;
+	mcu_fw->status = GCIP_FW_LOADING;
+	if (fw_name == NULL)
+		fw_name = GXP_DEFAULT_MCU_FIRMWARE;
+	dev_info(gxp->dev, "MCU firmware %s loading", fw_name);
 
-	mcu_fw->is_signed = is_signed_firmware(fw, hdr);
+	ret = request_firmware(fw, fw_name, dev);
+	if (ret) {
+		dev_err(dev, "request firmware '%s' failed: %d", fw_name, ret);
+		goto err_out;
+	}
 
-	if (mcu_fw->is_signed) {
+	hdr = (struct gcip_common_image_header *)(*fw)->data;
+
+	is_signed = is_signed_firmware(*fw, hdr);
+
+	if (is_signed) {
 		offset = GCIP_FW_HEADER_SIZE;
-		size = fw->size - GCIP_FW_HEADER_SIZE;
+		size = (*fw)->size - GCIP_FW_HEADER_SIZE;
 	} else {
 		offset = 0;
-		size = fw->size;
+		size = (*fw)->size;
 	}
 
 	if (size > mcu_fw->image_buf.size) {
 		dev_err(dev, "firmware %s size %#zx exceeds buffer size %#llx",
-			name, size, mcu_fw->image_buf.size);
+			fw_name, size, mcu_fw->image_buf.size);
 		ret = -ENOSPC;
-		goto out_release_firmware;
+		goto err_release_firmware;
 	}
 
-	if (mcu_fw->is_signed) {
+	if (is_signed) {
 		imgcfg = get_image_config_from_hdr(hdr);
 		if (!imgcfg) {
 			dev_err(dev, "Unsupported image header generation");
 			ret = -EINVAL;
-			goto out_release_firmware;
+			goto err_release_firmware;
 		}
 		ret = gcip_image_config_parse(&mcu_fw->cfg_parser, imgcfg);
 		if (ret)
 			dev_err(dev, "image config parsing failed: %d", ret);
-	} else
+		mcu_fw->is_secure = !gcip_image_config_is_ns(imgcfg);
+	} else {
 		ret = gxp_iommu_map(gxp, gxp_iommu_get_domain_for_dev(gxp),
 				    mcu_fw->image_buf.daddr,
-				    mcu_fw->image_buf.paddr, mcu_fw->image_buf.size,
+				    mcu_fw->image_buf.paddr,
+				    mcu_fw->image_buf.size,
 				    IOMMU_READ | IOMMU_WRITE);
+		mcu_fw->is_secure = false;
+	}
 
 	if (ret)
-		goto out_release_firmware;
+		goto err_release_firmware;
 
-	memcpy(mcu_fw->image_buf.vaddr, fw->data + offset, size);
+	memcpy(mcu_fw->image_buf.vaddr, (*fw)->data + offset, size);
+out:
+	mutex_unlock(&mcu_fw->lock);
+	return 0;
 
-out_release_firmware:
-	release_firmware(fw);
+err_release_firmware:
+	release_firmware(*fw);
+err_out:
+	mcu_fw->status = GCIP_FW_INVALID;
+	mutex_unlock(&mcu_fw->lock);
 	return ret;
 }
 
-/*
- * Reverts gxp_mcu_firmware_load_locked. The firmware must be not running when
- * calling this method.
- */
-static void gxp_mcu_firmware_unload_locked(struct gxp_mcu_firmware *mcu_fw)
+void gxp_mcu_firmware_unload(struct gxp_dev *gxp, const struct firmware *fw)
 {
-	lockdep_assert_held(&mcu_fw->lock);
-	if (mcu_fw->is_signed)
+	struct gcip_common_image_header *hdr;
+	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
+	bool is_signed;
+
+	mutex_lock(&mcu_fw->lock);
+	if (mcu_fw->status == GCIP_FW_INVALID) {
+		dev_err(mcu_fw->gxp->dev, "Failed to unload MCU firmware");
+		mutex_unlock(&mcu_fw->lock);
+		return;
+	}
+	hdr = (struct gcip_common_image_header *)fw->data;
+	is_signed = is_signed_firmware(fw, hdr);
+	if (is_signed)
 		gcip_image_config_clear(&mcu_fw->cfg_parser);
 	else
-		gxp_iommu_unmap(mcu_fw->gxp, gxp_iommu_get_domain_for_dev(mcu_fw->gxp),
-				mcu_fw->image_buf.daddr, mcu_fw->image_buf.size);
+		gxp_iommu_unmap(mcu_fw->gxp,
+				gxp_iommu_get_domain_for_dev(mcu_fw->gxp),
+				mcu_fw->image_buf.daddr,
+				mcu_fw->image_buf.size);
+	mcu_fw->status = GCIP_FW_INVALID;
+	mutex_unlock(&mcu_fw->lock);
 }
 
 static int gxp_mcu_firmware_handshake(struct gxp_mcu_firmware *mcu_fw)
@@ -207,21 +239,15 @@ static void gxp_mcu_firmware_stop_locked(struct gxp_mcu_firmware *mcu_fw)
 		dev_warn(gxp->dev,
 			 "MCU PSM transition to PS3 fails, current state: %u\n",
 			 gxp_lpm_get_state(gxp, CORE_TO_PSM(GXP_MCU_CORE_ID)));
-
-	gxp_mcu_firmware_unload_locked(mcu_fw);
+	if (mcu_fw->is_secure)
+		gsa_send_dsp_cmd(gxp->gsa_dev, GSA_DSP_SHUTDOWN);
 }
 
-static int gxp_mcu_firmware_power_up(struct gxp_mcu_firmware *mcu_fw,
-				     const char *name)
+static int gxp_mcu_firmware_power_up(struct gxp_mcu_firmware *mcu_fw)
 {
 	struct gxp_dev *gxp = mcu_fw->gxp;
 	int ret;
-
-	/*
-	 * TODO(267723984): call this only if GSA device is not found after the GSA
-	 * firmware hanles this.
-	 */
-	program_iremap_csr(gxp, &mcu_fw->image_buf);
+	int state;
 
 	gxp_bpm_configure(gxp, GXP_MCU_CORE_ID, INST_BPM_OFFSET,
 			  BPM_EVENT_READ_XFER);
@@ -229,80 +255,51 @@ static int gxp_mcu_firmware_power_up(struct gxp_mcu_firmware *mcu_fw,
 	ret = gxp_lpm_up(gxp, GXP_MCU_CORE_ID);
 	if (ret)
 		return ret;
-	/* Raise wakeup doorbell */
-	dev_dbg(gxp->dev, "Raising doorbell %d interrupt\n",
-		CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
-	gxp_doorbell_enable_for_core(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID),
-				     GXP_MCU_CORE_ID);
-	gxp_doorbell_set(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
+
+	if (mcu_fw->is_secure) {
+		state = gsa_send_dsp_cmd(gxp->gsa_dev, GSA_DSP_START);
+		if (state != GSA_DSP_STATE_RUNNING)
+			goto err_lpm_down;
+	} else {
+		program_iremap_csr(gxp, &mcu_fw->image_buf);
+		/* Raise wakeup doorbell */
+		dev_dbg(gxp->dev, "Raising doorbell %d interrupt\n",
+			CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
+		gxp_doorbell_enable_for_core(
+			gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID),
+			GXP_MCU_CORE_ID);
+		gxp_doorbell_set(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
+	}
 
 	ret = gxp_mcu_firmware_handshake(mcu_fw);
 	if (ret)
-		goto err_lpm_down;
-	dev_info(gxp->dev, "MCU firmware %s run succeeded", name);
+		goto err_mcu_shutdown;
+	dev_info(gxp->dev, "MCU firmware run succeeded");
 
 	return ret;
 
+err_mcu_shutdown:
+	if (mcu_fw->is_secure)
+		gsa_send_dsp_cmd(gxp->gsa_dev, GSA_DSP_SHUTDOWN);
 err_lpm_down:
 	gxp_lpm_down(gxp, GXP_MCU_CORE_ID);
 	return ret;
 }
 
 /*
- * Runs the firmware without checking current status.
- *
- * The firmware status would be set as GCIP_FW_LOADING when this function is
- * working, and set as GCIP_FW_VALID/INVALID on finished.
- *
- * @mcu_fw->name will be set to @name if firmware handshake succeeds, set to
- * NULL otherwise.
- *
- * Caller holds firmware lock.
+ * Caller must hold firmware lock.
  */
-static int gxp_mcu_firmware_run_locked(struct gxp_mcu_firmware *mcu_fw,
-				       const char *name)
+static int gxp_mcu_firmware_run_locked(struct gxp_mcu_firmware *mcu_fw)
 {
 	int ret;
 
 	lockdep_assert_held(&mcu_fw->lock);
 
-	if (!name)
-		name = GXP_DEFAULT_MCU_FIRMWARE;
-	mcu_fw->status = GCIP_FW_LOADING;
-
-	ret = gxp_mcu_firmware_load_locked(mcu_fw, name);
+	ret = gxp_mcu_firmware_power_up(mcu_fw);
 	if (ret)
-		goto err_invalid;
-	ret = gxp_mcu_firmware_power_up(mcu_fw, name);
-	if (ret)
-		goto err_unload;
+		return ret;
 
 	mcu_fw->status = GCIP_FW_VALID;
-	mcu_fw->name = name;
-	return 0;
-
-err_unload:
-	gxp_mcu_firmware_unload_locked(mcu_fw);
-err_invalid:
-	mcu_fw->status = GCIP_FW_INVALID;
-	mcu_fw->name = NULL;
-	return ret;
-}
-
-static int gxp_mcu_firmware_restart_locked(struct gxp_mcu_firmware *mcu_fw)
-{
-	struct gxp_dev *gxp = mcu_fw->gxp;
-	int ret;
-
-	lockdep_assert_held(&mcu_fw->lock);
-
-	ret = gxp_mcu_firmware_power_up(mcu_fw, mcu_fw->name);
-	if (ret) {
-		dev_warn(gxp->dev, "Failed to restart, reload MCU fw entirely");
-		gxp_mcu_firmware_unload_locked(mcu_fw);
-		return gxp_mcu_firmware_run_locked(mcu_fw, mcu_fw->name);
-	}
-
 	return 0;
 }
 
@@ -347,17 +344,11 @@ static ssize_t load_firmware_show(struct device *dev,
 				  struct device_attribute *attr, char *buf)
 {
 	struct gxp_dev *gxp = dev_get_drvdata(dev);
-	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
-	int ret;
-	const char *name;
+	ssize_t ret;
+	char *firmware_name = gxp_firmware_loader_get_mcu_fw_name(gxp);
 
-	mutex_lock(&mcu_fw->lock);
-	name = mcu_fw->name;
-	/* name can be NULL when the last MCU firmware run failed */
-	if (!name)
-		name = "[none]";
-	ret = scnprintf(buf, PAGE_SIZE, "%s\n", name);
-	mutex_unlock(&mcu_fw->lock);
+	ret = scnprintf(buf, PAGE_SIZE, "%s\n", firmware_name);
+	kfree(firmware_name);
 	return ret;
 }
 
@@ -366,14 +357,9 @@ static ssize_t load_firmware_store(struct device *dev,
 				   const char *buf, size_t count)
 {
 	struct gxp_dev *gxp = dev_get_drvdata(dev);
-	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
 	int ret;
 	char *name;
-	const char *last_name;
 
-	/* early return without holding a lock when the FW run is ongoing */
-	if (mcu_fw->status == GCIP_FW_LOADING)
-		return -EBUSY;
 	name = fw_name_from_buf(gxp, buf);
 	if (IS_ERR(name))
 		return PTR_ERR(name);
@@ -389,16 +375,20 @@ static ssize_t load_firmware_store(struct device *dev,
 		 */
 	}
 	dev_info(gxp->dev, "loading firmware %s from SysFS", name);
-	last_name = mcu_fw->name;
-	mcu_fw->name = name;
-	ret = gcip_pm_get(gxp->power_mgr->pm);
+	/*
+	 * It's possible a race condition bug here that someone opens a gxp
+	 * device and loads the firmware between below unload/load functions in
+	 * another thread, but this interface is only for developer debugging.
+	 * We don't insist on preventing the race condition bug.
+	 */
+	gxp_firmware_loader_unload(gxp);
+	gxp_firmware_loader_set_mcu_fw_name(gxp, name);
+	ret = gxp_firmware_loader_load_if_needed(gxp);
 	if (ret) {
-		dev_err(gxp->dev, "loading firmware %s failed: %d", name, ret);
-		mcu_fw->name = last_name;
-	} else {
-		gcip_pm_put(gxp->power_mgr->pm);
+		dev_err(gxp->dev, "Failed to load MCU firmware: %s\n", name);
+		return ret;
 	}
-	return ret < 0 ? ret : count;
+	return count;
 }
 
 static DEVICE_ATTR_RW(load_firmware);
@@ -424,7 +414,7 @@ static int image_config_map(void *data, dma_addr_t daddr, phys_addr_t paddr,
 	}
 
 	return gxp_iommu_map(gxp, gxp_iommu_get_domain_for_dev(gxp), daddr,
-			    paddr, size, IOMMU_READ | IOMMU_WRITE);
+			     paddr, size, IOMMU_READ | IOMMU_WRITE);
 }
 
 static void image_config_unmap(void *data, dma_addr_t daddr, size_t size,
@@ -457,7 +447,6 @@ int gxp_mcu_firmware_init(struct gxp_dev *gxp, struct gxp_mcu_firmware *mcu_fw)
 	}
 	mcu_fw->gxp = gxp;
 	mcu_fw->status = GCIP_FW_INVALID;
-	mcu_fw->name = GXP_DEFAULT_MCU_FIRMWARE;
 	mutex_init(&mcu_fw->lock);
 	ret = device_add_group(gxp->dev, &firmware_attr_group);
 	if (ret)
@@ -477,16 +466,10 @@ int gxp_mcu_firmware_run(struct gxp_mcu_firmware *mcu_fw)
 	int ret;
 
 	mutex_lock(&mcu_fw->lock);
-	/*
-	 * TODO(b/233159020): Currently, the stop function unloads the firmware image and
-	 * we have to reload it by calling the run function. We have implemented the restart
-	 * function for non-GSA environment, but let's enable it by removing " && 0" once we
-	 * refactor the whole logic for supporting the GSA device.
-	 */
-	if (mcu_fw->status == GCIP_FW_VALID && 0)
-		ret = gxp_mcu_firmware_restart_locked(mcu_fw);
+	if (mcu_fw->status == GCIP_FW_INVALID)
+		ret = -EINVAL;
 	else
-		ret = gxp_mcu_firmware_run_locked(mcu_fw, mcu_fw->name);
+		ret = gxp_mcu_firmware_run_locked(mcu_fw);
 	mutex_unlock(&mcu_fw->lock);
 	return ret;
 }
@@ -587,7 +570,7 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 			goto out;
 	}
 
-	ret = gxp_mcu_firmware_restart_locked(mcu_fw);
+	ret = gxp_mcu_firmware_run_locked(mcu_fw);
 	if (ret)
 		dev_err(gxp->dev, "Failed to run MCU firmware (ret=%d)\n", ret);
 

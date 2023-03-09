@@ -19,12 +19,15 @@
 #endif
 
 #include <gcip/gcip-pm.h>
+#include <gcip/gcip-alloc-helper.h>
 
 #include "gxp-client.h"
 #include "gxp-debug-dump.h"
 #include "gxp-dma.h"
 #include "gxp-doorbell.h"
 #include "gxp-firmware.h"
+#include "gxp-firmware-data.h"
+#include "gxp-firmware-loader.h"
 #include "gxp-host-device-structs.h"
 #include "gxp-internal.h"
 #include "gxp-lpm.h"
@@ -38,6 +41,13 @@
 #define SYNC_BARRIER_BASE(_x_) ((_x_) << 12)
 
 #define DEBUG_DUMP_MEMORY_SIZE 0x400000 /* size in bytes */
+
+/*
+ * CORE_FIRMWARE_RW_STRIDE & CORE_FIRMWARE_RW_ADDR must match with their
+ * values defind in core firmware image config.
+ */
+#define CORE_FIRMWARE_RW_STRIDE 0x200000 /* 2 MB */
+#define CORE_FIRMWARE_RW_ADDR(x) (0xFA400000 + CORE_FIRMWARE_RW_STRIDE * x)
 
 /* Enum indicating the debug dump request reason. */
 enum gxp_debug_dump_init_type { DEBUG_DUMP_FW_INIT, DEBUG_DUMP_KERNEL_INIT };
@@ -491,6 +501,60 @@ void gxp_debug_dump_invalidate_segments(struct gxp_dev *gxp, uint32_t core_id)
 	core_dump_header->core_header.dump_available = 0;
 }
 
+/**
+ * gxp_map_fw_rw_section() - Maps the fw rw section address and size to be
+ *                           sent to sscd module for taking the dump.
+ * @gxp: The GXP device.
+ * @vd: vd of the crashed client.
+ * @core_id: physical core_id of crashed core.
+ * @seg_idx: Pointer to a index that is keeping track of
+ *           gxp->debug_dump_mgr->segs[] array.
+ *
+ * This function parses the ns_regions of the given vd to find
+ * fw_rw_section details.
+ *
+ * Return:
+ * * 0 - Successfully mapped fw_rw_section data.
+ * * -EOPNOTSUPP - Operation not supported for invalid image config.
+ * * -ENXIO - No IOVA found for the fw_rw_section.
+ */
+static int gxp_map_fw_rw_section(struct gxp_dev *gxp,
+				 struct gxp_virtual_device *vd,
+				 uint32_t core_id, int *seg_idx)
+{
+	size_t idx;
+	struct sg_table *sgt;
+	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
+	dma_addr_t fw_rw_section_daddr = CORE_FIRMWARE_RW_ADDR(core_id);
+	const size_t n_reg = ARRAY_SIZE(vd->ns_regions);
+
+	if (!gxp_fw_data_use_per_vd_config(vd)) {
+		dev_err(gxp->dev, "Unsupported Image config version = %d.",
+			gxp->fw_loader_mgr->core_img_cfg.config_version);
+		return -EOPNOTSUPP;
+	}
+
+	for (idx = 0; idx < n_reg; idx++) {
+		sgt = vd->ns_regions[idx].sgt;
+		if (!sgt)
+			break;
+
+		if (fw_rw_section_daddr != vd->ns_regions[idx].daddr)
+			continue;
+
+		mgr->segs[core_id][*seg_idx].addr =
+			gcip_noncontiguous_sgt_to_mem(sgt);
+		mgr->segs[core_id][*seg_idx].size = gcip_ns_config_to_size(
+			gxp->fw_loader_mgr->core_img_cfg.ns_iommu_mappings[idx]);
+		*seg_idx += 1;
+		return 0;
+	}
+	dev_err(gxp->dev,
+		"fw_rw_section mapping for core %u at iova 0x%llx does not exist",
+		core_id, fw_rw_section_daddr);
+	return -ENXIO;
+}
+
 /*
  * Caller must make sure that gxp->debug_dump_mgr->common_dump and
  * gxp->debug_dump_mgr->core_dump are not NULL.
@@ -571,13 +635,15 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp,
 		ret = -EFAULT;
 		goto out_efault;
 	}
-	/*
-	 * TODO(b/265105909): Implement the logic for collecting fw rw section
-	 * separately for mcu mode.
-	 */
+	/* fw ro section */
 	mgr->segs[core_id][seg_idx].addr = gxp->fwbufs[core_id].vaddr;
-	mgr->segs[core_id][seg_idx].size = gxp->fwbufs[core_id].size;
+	mgr->segs[core_id][seg_idx].size = vd->fw_ro_size;
 	seg_idx++;
+
+	/* fw rw section */
+	ret = gxp_map_fw_rw_section(gxp, vd, core_id, &seg_idx);
+	if (ret)
+		goto out;
 
 	/* User Buffers */
 	user_buf_cnt =
@@ -663,23 +729,12 @@ out:
 static void gxp_generate_debug_dump(struct gxp_dev *gxp, uint core_id,
 				    struct gxp_virtual_device *vd)
 {
-	u32 boot_mode;
-	bool gxp_generate_coredump_called = false;
-
+	bool gxp_generate_coredump_called = true;
 	mutex_lock(&gxp->debug_dump_mgr->debug_dump_lock);
 
-	/*
-	 * TODO(b/265105909): Checks below to be verified after implementation for
-	 * firmware loading for mcu mode are completed.
-	 */
-	boot_mode = gxp_firmware_get_boot_mode(gxp, vd, core_id);
-
-	if (gxp_is_fw_running(gxp, core_id) &&
-	    (boot_mode == GXP_BOOT_MODE_STATUS_COLD_BOOT_COMPLETED ||
-	     boot_mode == GXP_BOOT_MODE_STATUS_RESUME_COMPLETED)) {
-		gxp_generate_coredump_called = true;
-		if (gxp_generate_coredump(gxp, vd, core_id))
-			dev_err(gxp->dev, "Failed to generate coredump\n");
+	if (gxp_generate_coredump(gxp, vd, core_id)) {
+		gxp_generate_coredump_called = false;
+		dev_err(gxp->dev, "Failed to generate the coredump.\n");
 	}
 
 	/* Invalidate segments to prepare for the next debug dump trigger */
@@ -706,8 +761,14 @@ static void gxp_debug_dump_process_dump_direct_mode(struct work_struct *work)
 	struct gxp_virtual_device *vd = NULL;
 
 	down_read(&gxp->vd_semaphore);
-	if (gxp->core_to_vd[core_id])
+	if (gxp->core_to_vd[core_id]) {
 		vd = gxp_vd_get(gxp->core_to_vd[core_id]);
+	} else {
+		dev_err(gxp->dev, "debug dump failed for null vd on core %d.",
+			core_id);
+		up_read(&gxp->vd_semaphore);
+		return;
+	}
 	up_read(&gxp->vd_semaphore);
 
 	/*
@@ -715,15 +776,12 @@ static void gxp_debug_dump_process_dump_direct_mode(struct work_struct *work)
 	 * of @vd while generating a debug dump. This will help not to block other virtual devices
 	 * proceeding their jobs.
 	 */
-	if (vd)
-		mutex_lock(&vd->debug_dump_lock);
+	mutex_lock(&vd->debug_dump_lock);
 
 	gxp_generate_debug_dump(gxp, core_id, vd);
 
-	if (vd) {
-		mutex_unlock(&vd->debug_dump_lock);
-		gxp_vd_put(vd);
-	}
+	mutex_unlock(&vd->debug_dump_lock);
+	gxp_vd_put(vd);
 }
 
 int gxp_debug_dump_process_dump_mcu_mode(struct gxp_dev *gxp, uint core_list,

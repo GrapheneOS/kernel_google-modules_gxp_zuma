@@ -22,6 +22,7 @@ gxp-objs += \
 		gxp-doorbell.o \
 		gxp-eventfd.o \
 		gxp-firmware-data.o \
+		gxp-firmware-loader.o \
 		gxp-firmware.o \
 		gxp-lpm.o \
 		gxp-mailbox-manager.o \

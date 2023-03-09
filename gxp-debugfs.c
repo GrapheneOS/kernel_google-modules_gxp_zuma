@@ -15,6 +15,7 @@
 #include "gxp-debugfs.h"
 #include "gxp-dma.h"
 #include "gxp-firmware-data.h"
+#include "gxp-firmware-loader.h"
 #include "gxp-firmware.h"
 #include "gxp-internal.h"
 #include "gxp-notification.h"
@@ -136,9 +137,9 @@ static int gxp_firmware_run_set(void *data, u64 val)
 	uint core;
 	bool acquired_block_wakelock;
 
-	ret = gxp_firmware_request_if_needed(gxp);
+	ret = gxp_firmware_loader_load_if_needed(gxp);
 	if (ret) {
-		dev_err(gxp->dev, "Unable to request dsp firmware files\n");
+		dev_err(gxp->dev, "Unable to load firmware files\n");
 		return ret;
 	}
 
