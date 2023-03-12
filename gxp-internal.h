@@ -23,6 +23,8 @@
 #include <linux/rwsem.h>
 #include <linux/spinlock.h>
 
+#include <gcip/gcip-thermal.h>
+
 #include "gxp-config.h"
 
 #define IS_GXP_TEST IS_ENABLED(CONFIG_GXP_TEST)
@@ -105,12 +107,12 @@ struct gxp_dev {
 	struct gxp_client *debugfs_client;
 	struct mutex debugfs_client_lock;
 	bool debugfs_wakelock_held;
-	struct gxp_thermal_manager *thermal_mgr;
 	struct gxp_dma_manager *dma_mgr;
 	struct gxp_fw_data_manager *data_mgr;
 	struct gxp_tpu_dev tpu_dev;
 	struct gxp_core_telemetry_manager *core_telemetry_mgr;
 	struct gxp_iommu_domain *default_domain;
+	struct gcip_thermal *thermal;
 	/*
 	 * Pointer to GSA device for firmware authentication.
 	 * May be NULL if the chip does not support firmware authentication

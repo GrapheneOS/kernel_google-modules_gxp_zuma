@@ -154,4 +154,9 @@ u32 gxp_firmware_get_boot_status(struct gxp_dev *gxp,
 /* Returns whether the core firmware running states are managed by us. */
 bool gxp_core_boot(struct gxp_dev *gxp);
 
+/*
+ * Disable external interrupts to core.
+ */
+void gxp_firmware_disable_ext_interrupts(struct gxp_dev *gxp, uint core);
+
 #endif /* __GXP_FIRMWARE_H__ */

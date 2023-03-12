@@ -84,6 +84,19 @@ int gxp_fw_data_set_core_telemetry_descriptors(struct gxp_dev *gxp, u8 type,
 					       u32 host_status,
 					       struct gxp_coherent_buf *buffers,
 					       u32 per_buffer_size);
+/**
+ * gxp_fw_data_get_core_telemetry_descriptor() - Returns the pointer of core
+ *                                               telemetry descriptor of given
+ *                                               type.
+ * @gxp: The GXP device to get buffer descriptors for
+ * @type: Either `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`
+ *
+ * Return:
+ *   A pointer to the descriptor.
+ *   -EINVAL - If @type is invalid.
+ */
+struct core_telemetry_descriptor *
+gxp_fw_data_get_core_telemetry_descriptor(struct gxp_dev *gxp, u8 type);
 
 /**
  * gxp_fw_data_get_core_telemetry_device_status() - Returns a bitfield

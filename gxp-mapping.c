@@ -272,6 +272,13 @@ int gxp_mapping_sync(struct gxp_mapping *mapping, u32 offset, u32 size,
 	}
 
 	/*
+	 * Since the scatter-gather list of the mapping is modified while it is
+	 * being synced, only one sync for a given mapping can occur at a time.
+	 * Rather than maintain a mutex for every mapping, lock the mapping list
+	 * mutex, making all syncs mutually exclusive.
+	 */
+	mutex_lock(&mapping->sync_lock);
+	/*
 	 * Mappings are created at a PAGE_SIZE granularity, however other data
 	 * which is not part of the mapped buffer may be present in the first
 	 * and last pages of the buffer's scattergather list.
@@ -302,16 +309,8 @@ int gxp_mapping_sync(struct gxp_mapping *mapping, u32 offset, u32 size,
 	/* Make sure a valid starting scatterlist was found for the start */
 	if (!start_sg) {
 		ret = -EINVAL;
-		goto out;
+		goto out_unlock;
 	}
-
-	/*
-	 * Since the scatter-gather list of the mapping is modified while it is
-	 * being synced, only one sync for a given mapping can occur at a time.
-	 * Rather than maintain a mutex for every mapping, lock the mapping list
-	 * mutex, making all syncs mutually exclusive.
-	 */
-	mutex_lock(&mapping->sync_lock);
 
 	start_sg->offset += start_diff;
 	start_sg->dma_address += start_diff;
@@ -336,8 +335,8 @@ int gxp_mapping_sync(struct gxp_mapping *mapping, u32 offset, u32 size,
 	start_sg->length += start_diff;
 	start_sg->dma_length += start_diff;
 
+out_unlock:
 	mutex_unlock(&mapping->sync_lock);
-
 out:
 	gxp_mapping_put(mapping);
 

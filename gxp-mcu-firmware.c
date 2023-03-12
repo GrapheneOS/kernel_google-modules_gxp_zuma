@@ -18,6 +18,7 @@
 #include <gcip/gcip-common-image-header.h>
 #include <gcip/gcip-image-config.h>
 #include <gcip/gcip-pm.h>
+#include <gcip/gcip-thermal.h>
 
 #include "gxp-bpm.h"
 #include "gxp-config.h"
@@ -205,14 +206,9 @@ static int gxp_mcu_firmware_handshake(struct gxp_mcu_firmware *mcu_fw)
 	if (ret)
 		dev_warn(gxp->dev, "telemetry KCI error: %d", ret);
 
-	if (gxp->power_mgr->thermal_limit &&
-	    gxp->power_mgr->thermal_limit != aur_power_state2rate[AUR_NOM]) {
-		ret = gxp_kci_notify_throttling(&mcu->kci,
-						gxp->power_mgr->thermal_limit);
-		if (ret)
-			dev_warn(gxp->dev,
-				 "error setting gxp cooling state: %d\n", ret);
-	}
+	ret = gcip_thermal_restore_on_powering(gxp->thermal);
+	if (ret)
+		dev_warn(gxp->dev, "thermal restore error: %d", ret);
 
 	return 0;
 }
@@ -486,6 +482,7 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 {
 	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
 	struct gxp_client *client;
+	struct gcip_pm *pm = gxp->power_mgr->pm;
 	int ret;
 
 	dev_err(gxp->dev, "MCU firmware is crashed, crash_type=%d", crash_type);
@@ -527,20 +524,23 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 	down_write(&gxp->vd_semaphore);
 
 	/*
-	 * As we are recovering the MCU firmware, we should prevent power state transition caused by
-	 * clients acquiring or releasing the block wakelock until the rescuing is finished.
-	 *
-	 * The runtime can still acquire or release the block wakelock, but commands issued to the
-	 * firmware might not be handled properly.
-	 *
+	 * Holding the PM lock due to the reasons listed below.
+	 *   1. As we are recovering the MCU firmware, we should block the PM requests (e.g.,
+	 *      acquiring or releasing the block wakelock) until the rescuing is finished.
+	 *   2. Restarting the MCU firmware might involve restore functions (e.g.,
+	 *      gcip_thermal_restore_on_powering) which require the caller to hold the PM lock.
+	 */
+	gcip_pm_lock(pm);
+
+	/*
 	 * By the race, if all clients left earlier than this handler, all block wakleock should be
 	 * already released and the BLK is turned off. We don't have to rescue the MCU firmware.
 	 */
-	if (gcip_pm_get_if_powered(gxp->power_mgr->pm, false)) {
+	if (!gcip_pm_is_powered(pm)) {
 		dev_info(
 			gxp->dev,
 			"The block wakelock is already released, skip restarting MCU firmware");
-		goto out_unlock_client_semaphore;
+		goto out_unlock_pm;
 	}
 
 	/*
@@ -576,8 +576,8 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 
 out:
 	mutex_unlock(&mcu_fw->lock);
-	gcip_pm_put(gxp->power_mgr->pm);
-out_unlock_client_semaphore:
+out_unlock_pm:
+	gcip_pm_unlock(pm);
 	up_write(&gxp->vd_semaphore);
 	list_for_each_entry (client, &gxp->client_list, list_entry) {
 		up_write(&client->semaphore);

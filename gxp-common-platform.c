@@ -2090,11 +2090,10 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		dev_err(dev, "Failed to initialize core telemetry (ret=%d)", ret);
 		goto err_fw_data_destroy;
 	}
-	gxp->thermal_mgr = gxp_thermal_init(gxp);
-	if (IS_ERR(gxp->thermal_mgr)) {
-		ret = PTR_ERR(gxp->thermal_mgr);
+
+	ret = gxp_thermal_init(gxp);
+	if (ret)
 		dev_warn(dev, "Failed to init thermal driver: %d\n", ret);
-	}
 
 	gxp->gfence_mgr = gcip_dma_fence_manager_create(gxp->dev);
 	if (IS_ERR(gxp->gfence_mgr)) {
@@ -2132,7 +2131,7 @@ err_before_remove:
 err_dma_fence_destroy:
 	/* DMA fence manager creation doesn't need revert */
 err_thermal_destroy:
-	/* thermal init doesn't need revert */
+	gxp_thermal_exit(gxp);
 	gxp_core_telemetry_exit(gxp);
 err_fw_data_destroy:
 	gxp_fw_data_destroy(gxp);
@@ -2163,6 +2162,11 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 {
 	struct gxp_dev *gxp = platform_get_drvdata(pdev);
 
+	/*
+	 * Call gxp_thermal_exit before gxp_remove_debugdir since it will
+	 * remove its own debugfs.
+	 */
+	gxp_thermal_exit(gxp);
 	gxp_remove_debugdir(gxp);
 	misc_deregister(&gxp->misc_dev);
 	if (gxp->before_remove)

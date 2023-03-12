@@ -93,6 +93,8 @@ struct gxp_fw_data_manager {
 	struct fw_memory core_telemetry_mem;
 	struct fw_memory debug_dump_mem;
 
+	/* Cached core telemetry descriptors. */
+	struct gxp_core_telemetry_descriptor core_telemetry_desc;
 	/*
 	 * A host-view of the System configuration descriptor. This same desc
 	 * is provided to all VDs and all cores. This is the R/O section.
@@ -585,7 +587,7 @@ static void set_system_cfg_region(struct gxp_dev *gxp, void *sys_cfg)
 	struct gxp_system_descriptor_ro *des_ro = sys_cfg;
 	struct gxp_system_descriptor_rw *des_rw = sys_cfg + PAGE_SIZE;
 	struct gxp_core_telemetry_descriptor *descriptor =
-		gxp->data_mgr->core_telemetry_mem.host_addr;
+		&gxp->data_mgr->core_telemetry_desc;
 	struct telemetry_descriptor_ro *tel_ro;
 	struct telemetry_descriptor_rw *tel_rw;
 	struct core_telemetry_descriptor *tel_des;
@@ -883,18 +885,13 @@ int gxp_fw_data_set_core_telemetry_descriptors(struct gxp_dev *gxp, u8 type,
 					       struct gxp_coherent_buf *buffers,
 					       u32 per_buffer_size)
 {
-	struct gxp_core_telemetry_descriptor *descriptor =
-		gxp->data_mgr->core_telemetry_mem.host_addr;
 	struct core_telemetry_descriptor *core_descriptors;
 	uint core;
 	bool enable;
 
-	if (type == GXP_TELEMETRY_TYPE_LOGGING)
-		core_descriptors = descriptor->per_core_loggers;
-	else if (type == GXP_TELEMETRY_TYPE_TRACING)
-		core_descriptors = descriptor->per_core_tracers;
-	else
-		return -EINVAL;
+	core_descriptors = gxp_fw_data_get_core_telemetry_descriptor(gxp, type);
+	if (IS_ERR(core_descriptors))
+		return PTR_ERR(core_descriptors);
 
 	enable = (host_status & GXP_CORE_TELEMETRY_HOST_STATUS_ENABLED);
 
@@ -923,12 +920,26 @@ int gxp_fw_data_set_core_telemetry_descriptors(struct gxp_dev *gxp, u8 type,
 	return 0;
 }
 
+struct core_telemetry_descriptor *
+gxp_fw_data_get_core_telemetry_descriptor(struct gxp_dev *gxp, u8 type)
+{
+	struct gxp_core_telemetry_descriptor *descriptor =
+		&gxp->data_mgr->core_telemetry_desc;
+
+	if (type == GXP_TELEMETRY_TYPE_LOGGING)
+		return descriptor->per_core_loggers;
+	else if (type == GXP_TELEMETRY_TYPE_TRACING)
+		return descriptor->per_core_tracers;
+	else
+		return ERR_PTR(-EINVAL);
+}
+
 static u32
 gxp_fw_data_get_core_telemetry_device_status_legacy(struct gxp_dev *gxp,
 						    uint core, u8 type)
 {
 	struct gxp_core_telemetry_descriptor *descriptor =
-		gxp->data_mgr->core_telemetry_mem.host_addr;
+		&gxp->data_mgr->core_telemetry_desc;
 
 	switch (type) {
 	case GXP_TELEMETRY_TYPE_LOGGING:

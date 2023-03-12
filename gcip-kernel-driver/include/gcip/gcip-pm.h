@@ -117,10 +117,22 @@ static inline void gcip_pm_lockdep_assert_held(struct gcip_pm *pm)
 
 /*
  * Lock the PM lock.
- * Returns 1 if the lock has been acquired successfully, and 0 on contention.
  * Since all the PM requests will be blocked until gcip_pm_unlock is called, one should use the
  * gcip_pm_{get,get_if_powered,put} if possible and uses this only if a power state transition can
- * not be triggered, e.g., in a workqueue that will be canceled during power off.
+ * not be triggered, e.g., in a workqueue that will be canceled during power off or crash handler.
+ */
+static inline void gcip_pm_lock(struct gcip_pm *pm)
+{
+	if (!pm)
+		return;
+
+	mutex_lock(&pm->lock);
+}
+
+/*
+ * Lock the PM lock.
+ * Same as gcip_pm_lock, but returns 1 if the lock has been acquired successfully, and 0 on
+ * contention.
  */
 static inline int gcip_pm_trylock(struct gcip_pm *pm)
 {

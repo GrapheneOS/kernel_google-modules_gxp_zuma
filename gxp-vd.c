@@ -975,15 +975,27 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 	    (vd->state == GXP_VD_OFF || vd->state == GXP_VD_READY ||
 	     vd->state == GXP_VD_RUNNING) &&
 	    gxp_pm_get_blk_state(gxp) != AUR_OFF) {
-		/*
-		 * Put all cores in the VD into reset so they can not wake each other up
-		 */
+
 		for (phys_core = 0; phys_core < GXP_NUM_CORES; phys_core++) {
 			if (core_list & BIT(phys_core)) {
-				lpm_state = gxp_lpm_get_state(
-					gxp, CORE_TO_PSM(phys_core));
-				if (lpm_state != LPM_PG_STATE)
+
+				lpm_state = gxp_lpm_get_state(gxp, CORE_TO_PSM(phys_core));
+
+				if (lpm_state == LPM_ACTIVE_STATE) {
+					/*
+					 * If the core is in PS0 (not idle), it should
+					 * be held in reset before attempting SW PG.
+					 */
 					hold_core_in_reset(gxp, phys_core);
+				} else {
+					/*
+					 * If the core is idle and has already transtioned to PS1,
+					 * we can attempt HW PG. In this case, we should ensure
+					 * that the core doesn't get awakened by an external
+					 * interrupt source before we attempt to HW PG the core.
+					 */
+					gxp_firmware_disable_ext_interrupts(gxp, phys_core);
+				}
 			}
 		}
 	}

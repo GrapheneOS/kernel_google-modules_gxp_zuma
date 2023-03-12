@@ -45,9 +45,6 @@
 static int gxp_dsp_fw_auth_disable;
 module_param_named(dsp_fw_auth_disable, gxp_dsp_fw_auth_disable, int, 0660);
 
-static bool gxp_core_boot_flag = true;
-module_param_named(core_boot, gxp_core_boot_flag, bool, 0660);
-
 static int
 request_dsp_firmware(struct gxp_dev *gxp, char *name_prefix,
 		     const struct firmware *out_firmwares[GXP_NUM_CORES])
@@ -759,7 +756,7 @@ static void enable_core_interrupts(struct gxp_dev *gxp, uint core)
 	gxp_write_32(gxp, GXP_CORE_REG_DEDICATED_INT_MASK(core), 0xffffffff);
 }
 
-static void disable_core_interrupts(struct gxp_dev *gxp, uint core)
+void gxp_firmware_disable_ext_interrupts(struct gxp_dev *gxp, uint core)
 {
 	gxp_write_32(gxp, GXP_CORE_REG_COMMON_INT_MASK_0(core), 0);
 	gxp_write_32(gxp, GXP_CORE_REG_COMMON_INT_MASK_1(core), 0);
@@ -908,7 +905,7 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 			 * Disable interrupts to prevent cores from being woken up
 			 * unexpectedly.
 			 */
-			disable_core_interrupts(gxp, phys_core);
+			gxp_firmware_disable_ext_interrupts(gxp, phys_core);
 			gxp_pm_core_off(gxp, phys_core);
 		}
 	}
@@ -1076,5 +1073,5 @@ u32 gxp_firmware_get_boot_status(struct gxp_dev *gxp,
 
 bool gxp_core_boot(struct gxp_dev *gxp)
 {
-	return gxp_core_boot_flag;
+	return gxp_is_direct_mode(gxp);
 }
