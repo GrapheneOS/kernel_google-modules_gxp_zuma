@@ -30,7 +30,6 @@ gxp-objs += \
 		gxp-mapping.o \
 		gxp-mb-notification.o \
 		gxp-pm.o \
-		gxp-range-alloc.o \
 		gxp-ssmt.o \
 		gxp-thermal.o \
 		gxp-vd.o

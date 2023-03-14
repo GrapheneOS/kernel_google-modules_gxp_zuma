@@ -293,42 +293,11 @@ static void gxp_program_reset_vector(struct gxp_dev *gxp, uint core,
 static void *get_scratchpad_base(struct gxp_dev *gxp,
 				 struct gxp_virtual_device *vd, uint core)
 {
-	void *mem;
-	size_t rw_size;
-
 	if (vd && gxp_fw_data_use_per_vd_config(vd))
 		return vd->core_cfg.vaddr +
 		       (vd->core_cfg.size / GXP_NUM_CORES) * core;
 
-	if (!vd || !vd->rwdata_sgt[core])
-		return gxp->fwbufs[core].vaddr + AURORA_SCRATCHPAD_OFF;
-
-	/* Return the last AURORA_SCRATCHPAD_LEN of rwdata_sgt. */
-	mem = gcip_noncontiguous_sgt_to_mem(vd->rwdata_sgt[core]);
-	rw_size = gxp->fwbufs[core].size - vd->fw_ro_size;
-	return mem + rw_size - AURORA_SCRATCHPAD_LEN;
-}
-
-/* TODO(b/265562894): remove scratchpad region support */
-static void flush_scratchpad_region(struct gxp_dev *gxp,
-				   struct gxp_virtual_device *vd, uint core)
-{
-	if (!vd || gxp_fw_data_use_per_vd_config(vd) || !vd->rwdata_sgt[core])
-		return;
-	dma_sync_sg_for_device(gxp->dev, vd->rwdata_sgt[core]->sgl,
-			       vd->rwdata_sgt[core]->orig_nents,
-			       DMA_BIDIRECTIONAL);
-}
-
-static void invalidate_scratchpad_region(struct gxp_dev *gxp,
-					struct gxp_virtual_device *vd,
-					uint core)
-{
-	if (!vd || gxp_fw_data_use_per_vd_config(vd) || !vd->rwdata_sgt[core])
-		return;
-	dma_sync_sg_for_cpu(gxp->dev, vd->rwdata_sgt[core]->sgl,
-			    vd->rwdata_sgt[core]->orig_nents,
-			    DMA_BIDIRECTIONAL);
+	return gxp->fwbufs[core].vaddr + AURORA_SCRATCHPAD_OFF;
 }
 
 static void reset_core_config_region(struct gxp_dev *gxp,
@@ -398,13 +367,11 @@ static int gxp_firmware_handshake(struct gxp_dev *gxp,
 #endif
 	usleep_range(50 * GXP_TIME_DELAY_FACTOR, 60 * GXP_TIME_DELAY_FACTOR);
 	while (ctr--) {
-		invalidate_scratchpad_region(gxp, vd, core);
 		if (core_cfg->core_alive_magic == Q7_ALIVE_MAGIC)
 			break;
 		usleep_range(1 * GXP_TIME_DELAY_FACTOR,
 			     10 * GXP_TIME_DELAY_FACTOR);
 	}
-	invalidate_scratchpad_region(gxp, vd, core);
 	if (core_cfg->core_alive_magic != Q7_ALIVE_MAGIC) {
 		dev_err(gxp->dev, "Core %u did not respond!\n", phys_core);
 		return -EIO;
@@ -425,7 +392,6 @@ static int gxp_firmware_handshake(struct gxp_dev *gxp,
 	ctr = 1000;
 	expected_top_value = BIT(CORE_WAKEUP_DOORBELL(phys_core));
 	while (ctr--) {
-		invalidate_scratchpad_region(gxp, vd, core);
 		if (core_cfg->top_access_ok == expected_top_value)
 			break;
 		udelay(1 * GXP_TIME_DELAY_FACTOR);
@@ -1035,7 +1001,6 @@ void gxp_firmware_set_boot_mode(struct gxp_dev *gxp,
 
 	core_cfg = get_scratchpad_base(gxp, vd, core);
 	core_cfg->boot_mode = mode;
-	flush_scratchpad_region(gxp, vd, core);
 }
 
 u32 gxp_firmware_get_boot_mode(struct gxp_dev *gxp,
@@ -1048,7 +1013,6 @@ u32 gxp_firmware_get_boot_mode(struct gxp_dev *gxp,
 		return 0;
 
 	core_cfg = get_scratchpad_base(gxp, vd, core);
-	invalidate_scratchpad_region(gxp, vd, core);
 	return core_cfg->boot_mode;
 }
 

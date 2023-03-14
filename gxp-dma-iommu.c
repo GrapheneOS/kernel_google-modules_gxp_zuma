@@ -22,6 +22,9 @@
 #include "gxp-ssmt.h"
 #include "gxp.h"
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/gxp.h>
+
 struct gxp_dma_iommu_manager {
 	struct gxp_dma_manager dma_mgr;
 	struct gxp_iommu_domain *default_domain;
@@ -639,6 +642,8 @@ int gxp_dma_map_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
 	int prot = map_flags_to_iommu_prot(direction, attrs, gxp_dma_flags);
 	ssize_t size_mapped;
 
+	trace_gxp_dma_map_sg_start(nents);
+
 	nents_mapped = dma_map_sg_attrs(gxp->dev, sg, nents, direction, attrs);
 	if (!nents_mapped)
 		return 0;
@@ -655,6 +660,8 @@ int gxp_dma_map_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
 	if (size_mapped <= 0)
 		goto err;
 
+	trace_gxp_dma_map_sg_end(nents_mapped, size_mapped);
+
 	return nents_mapped;
 
 err:
@@ -670,6 +677,8 @@ void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
 	int i;
 	size_t size = 0;
 
+	trace_gxp_dma_unmap_sg_start(nents);
+
 	for_each_sg (sg, s, nents, i)
 		size += sg_dma_len(s);
 
@@ -677,6 +686,8 @@ void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,
 		dev_warn(gxp->dev, "Failed to unmap sg\n");
 
 	dma_unmap_sg_attrs(gxp->dev, sg, nents, direction, attrs);
+
+	trace_gxp_dma_unmap_sg_end(size);
 }
 
 int gxp_dma_map_iova_sgt(struct gxp_dev *gxp, struct gxp_iommu_domain *gdomain,

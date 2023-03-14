@@ -14,10 +14,6 @@
 #include <linux/string.h>
 #include <linux/workqueue.h>
 
-#if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
-#include <linux/platform_data/sscoredump.h>
-#endif
-
 #include <gcip/gcip-pm.h>
 #include <gcip/gcip-alloc-helper.h>
 
@@ -34,6 +30,10 @@
 #include "gxp-mapping.h"
 #include "gxp-pm.h"
 #include "gxp-vd.h"
+
+#if HAS_COREDUMP
+#include <linux/platform_data/sscoredump.h>
+#endif
 
 #define SSCD_MSG_LENGTH 64
 
@@ -311,7 +311,7 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 	return ret;
 }
 
-#if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
+#if HAS_COREDUMP
 static void gxp_send_to_sscd(struct gxp_dev *gxp, void *segs, int seg_cnt,
 			     const char *info)
 {
@@ -464,42 +464,6 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 out:
 	return cnt;
 }
-#endif
-
-void gxp_debug_dump_invalidate_segments(struct gxp_dev *gxp, uint32_t core_id)
-{
-	int i;
-	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
-	struct gxp_core_dump *core_dump;
-	struct gxp_common_dump *common_dump;
-	struct gxp_core_dump_header *core_dump_header;
-
-	core_dump = mgr->core_dump;
-	common_dump = mgr->common_dump;
-	if (!core_dump || !common_dump) {
-		dev_dbg(gxp->dev,
-			"Failed to get core_dump or common_dump for invalidating segments\n");
-		return;
-	}
-
-	core_dump_header = &core_dump->core_dump_header[core_id];
-	if (!core_dump_header) {
-		dev_dbg(gxp->dev,
-			"Failed to get core_dump_header for invalidating segments\n");
-		return;
-	}
-
-	for (i = 0; i < GXP_NUM_COMMON_SEGMENTS; i++)
-		common_dump->seg_header[i].valid = 0;
-
-	for (i = 0; i < GXP_NUM_CORE_SEGMENTS; i++)
-		core_dump_header->seg_header[i].valid = 0;
-
-	for (i = 0; i < GXP_NUM_BUFFER_MAPPINGS; i++)
-		core_dump_header->core_header.user_bufs[i].size = 0;
-
-	core_dump_header->core_header.dump_available = 0;
-}
 
 /**
  * gxp_map_fw_rw_section() - Maps the fw rw section address and size to be
@@ -555,6 +519,43 @@ static int gxp_map_fw_rw_section(struct gxp_dev *gxp,
 	return -ENXIO;
 }
 
+#endif /* HAS_COREDUMP */
+
+void gxp_debug_dump_invalidate_segments(struct gxp_dev *gxp, uint32_t core_id)
+{
+	int i;
+	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
+	struct gxp_core_dump *core_dump;
+	struct gxp_common_dump *common_dump;
+	struct gxp_core_dump_header *core_dump_header;
+
+	core_dump = mgr->core_dump;
+	common_dump = mgr->common_dump;
+	if (!core_dump || !common_dump) {
+		dev_dbg(gxp->dev,
+			"Failed to get core_dump or common_dump for invalidating segments\n");
+		return;
+	}
+
+	core_dump_header = &core_dump->core_dump_header[core_id];
+	if (!core_dump_header) {
+		dev_dbg(gxp->dev,
+			"Failed to get core_dump_header for invalidating segments\n");
+		return;
+	}
+
+	for (i = 0; i < GXP_NUM_COMMON_SEGMENTS; i++)
+		common_dump->seg_header[i].valid = 0;
+
+	for (i = 0; i < GXP_NUM_CORE_SEGMENTS; i++)
+		core_dump_header->seg_header[i].valid = 0;
+
+	for (i = 0; i < GXP_NUM_BUFFER_MAPPINGS; i++)
+		core_dump_header->core_header.user_bufs[i].size = 0;
+
+	core_dump_header->core_header.dump_available = 0;
+}
+
 /*
  * Caller must make sure that gxp->debug_dump_mgr->common_dump and
  * gxp->debug_dump_mgr->core_dump are not NULL.
@@ -569,7 +570,7 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp,
 		&core_dump->core_dump_header[core_id];
 	struct gxp_core_header *core_header = &core_dump_header->core_header;
 	int ret = 0;
-#if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
+#if HAS_COREDUMP
 	struct gxp_common_dump *common_dump = mgr->common_dump;
 	int i;
 	int seg_idx = 0;
@@ -577,7 +578,7 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp,
 	char sscd_msg[SSCD_MSG_LENGTH];
 	void *user_buf_vaddrs[GXP_NUM_BUFFER_MAPPINGS];
 	int user_buf_cnt;
-#endif
+#endif /* HAS_COREDUMP */
 
 	/* Core */
 	if (!core_header->dump_available) {
@@ -586,7 +587,7 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp,
 		goto out;
 	}
 
-#if IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
+#if HAS_COREDUMP
 	/* Common */
 	data_addr = &common_dump->common_dump_data.common_regs;
 	for (i = 0; i < GXP_NUM_COMMON_SEGMENTS; i++) {
@@ -637,7 +638,7 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp,
 	}
 	/* fw ro section */
 	mgr->segs[core_id][seg_idx].addr = gxp->fwbufs[core_id].vaddr;
-	mgr->segs[core_id][seg_idx].size = vd->fw_ro_size;
+	mgr->segs[core_id][seg_idx].size = gxp->fwbufs[core_id].size;
 	seg_idx++;
 
 	/* fw rw section */
@@ -671,7 +672,7 @@ out_efault:
 
 		gxp_user_buffers_vunmap(gxp, vd, core_header);
 	}
-#endif
+#endif /* HAS_COREDUMP */
 
 out:
 	gxp_debug_dump_invalidate_segments(gxp, core_id);
@@ -681,7 +682,7 @@ out:
 
 static int gxp_init_segments(struct gxp_dev *gxp)
 {
-#if !(IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP))
+#if !HAS_COREDUMP
 	return 0;
 #else
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
@@ -691,7 +692,7 @@ static int gxp_init_segments(struct gxp_dev *gxp)
 		return -ENOMEM;
 
 	return 0;
-#endif
+#endif /* HAS_COREDUMP */
 }
 
 /*

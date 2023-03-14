@@ -90,10 +90,6 @@ struct gxp_virtual_device {
 	 */
 	int slice_index;
 	/*
-	 * The SG table that holds the firmware RW data region.
-	 */
-	struct sg_table *rwdata_sgt[GXP_NUM_CORES];
-	/*
 	 * The SG table that holds the regions specified in the image config's
 	 * non-secure IOMMU mappings.
 	 */
@@ -101,8 +97,6 @@ struct gxp_virtual_device {
 		dma_addr_t daddr;
 		struct sg_table *sgt;
 	} ns_regions[GCIP_IMG_CFG_MAX_NS_IOMMU_MAPPINGS];
-	/* The firmware size specified in image config. */
-	u32 fw_ro_size;
 	/*
 	 * The config regions specified in image config.
 	 * core_cfg's size should be a multiple of GXP_NUM_CORES.

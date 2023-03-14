@@ -2109,6 +2109,11 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		if (ret)
 			goto err_dma_fence_destroy;
 	}
+	/*
+	 * We only know where the system config region is after after_probe is
+	 * done so this can't be called earlier.
+	 */
+	gxp_fw_data_populate_system_config(gxp);
 
 	gxp->misc_dev.minor = MISC_DYNAMIC_MINOR;
 	gxp->misc_dev.name = GXP_NAME;

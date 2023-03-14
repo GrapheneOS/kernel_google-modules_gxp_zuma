@@ -24,9 +24,9 @@
 #define KCI_RETURN_GET_ERROR_CODE(ret) (KCI_RETURN_ERROR_CODE_MASK & (ret))
 
 #if IS_ENABLED(CONFIG_GXP_TEST)
-char *gxp_work_mode_name = "direct";
+char *gxp_work_mode_name = "mcu";
 #else
-static char *gxp_work_mode_name = "direct";
+static char *gxp_work_mode_name = "mcu";
 #endif
 
 module_param_named(work_mode, gxp_work_mode_name, charp, 0660);

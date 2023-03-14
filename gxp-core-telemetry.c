@@ -839,6 +839,7 @@ int gxp_core_telemetry_register_eventfd(struct gxp_dev *gxp, u8 type, int fd)
 		break;
 	default:
 		ret = -EINVAL;
+		eventfd_ctx_put(new_ctx);
 		goto out;
 	}
 

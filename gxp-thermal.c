@@ -31,7 +31,7 @@ static int gxp_thermal_get_rate(void *data, unsigned long *rate)
 static int gxp_thermal_set_rate(void *data, unsigned long rate)
 {
 	struct gxp_dev *gxp = data;
-	int ret;
+	int ret = 0;
 
 	if (!gxp_is_direct_mode(gxp)) {
 #if GXP_HAS_MCU
