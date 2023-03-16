@@ -10,11 +10,11 @@
 #endif
 
 #include <linux/bitops.h>
+#include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
@@ -59,7 +59,12 @@
 #include "gxp-dci.h"
 #endif
 
+/* We will only have one gxp device */
+#define GXP_DEV_COUNT 1
+
 static struct gxp_dev *gxp_debug_pointer;
+static struct class *gxp_class;
+static dev_t gxp_base_devno;
 
 /* Caller needs to hold client->semaphore for reading */
 static bool check_client_has_available_vd_wakelock(struct gxp_client *client,
@@ -142,8 +147,8 @@ static const uint aur_memory_state_array[MEMORY_POWER_STATE_MAX + 1] = {
 static int gxp_open(struct inode *inode, struct file *file)
 {
 	struct gxp_client *client;
-	struct gxp_dev *gxp = container_of(file->private_data, struct gxp_dev,
-					   misc_dev);
+	struct gxp_dev *gxp =
+		container_of(inode->i_cdev, struct gxp_dev, char_dev);
 	int ret = 0;
 
 	/* If this is the first call to open(), load the firmware files */
@@ -1912,6 +1917,71 @@ static void gxp_put_gsa_dev(struct gxp_dev *gxp)
 	put_device(gxp->gsa_dev);
 }
 
+static int gxp_device_add(struct gxp_dev *gxp)
+{
+	int ret;
+	struct device *dev;
+
+	dev_dbg(gxp->dev, "adding interface: %s", GXP_NAME);
+
+	gxp->char_dev_no = MKDEV(MAJOR(gxp_base_devno), 0);
+	cdev_init(&gxp->char_dev, &gxp_fops);
+	ret = cdev_add(&gxp->char_dev, gxp->char_dev_no, 1);
+	if (ret) {
+		dev_err(gxp->dev, "error %d adding cdev for dev %d:%d\n", ret,
+			MAJOR(gxp->char_dev_no), MINOR(gxp->char_dev_no));
+		return ret;
+	}
+
+	/*
+	 * We only need char_dev_no for device_destroy, no need to record the
+	 * returned dev.
+	 */
+	dev = device_create(gxp_class, gxp->dev, gxp->char_dev_no, gxp, "%s",
+			    GXP_NAME);
+	if (IS_ERR(dev)) {
+		ret = PTR_ERR(dev);
+		dev_err(gxp->dev, "failed to create char device: %d\n", ret);
+		cdev_del(&gxp->char_dev);
+		return ret;
+	}
+
+	return 0;
+}
+
+static void gxp_device_remove(struct gxp_dev *gxp)
+{
+	device_destroy(gxp_class, gxp->char_dev_no);
+	cdev_del(&gxp->char_dev);
+}
+
+static __init int gxp_fs_init(void)
+{
+	int ret;
+
+	gxp_class = class_create(THIS_MODULE, GXP_NAME);
+	if (IS_ERR(gxp_class)) {
+		pr_err(GXP_NAME " error creating gxp class: %ld\n",
+		       PTR_ERR(gxp_class));
+		return PTR_ERR(gxp_class);
+	}
+
+	ret = alloc_chrdev_region(&gxp_base_devno, 0, GXP_DEV_COUNT, GXP_NAME);
+	if (ret) {
+		pr_err(GXP_NAME " char device registration failed: %d\n", ret);
+		class_destroy(gxp_class);
+		return ret;
+	}
+	pr_debug(GXP_NAME " registered major=%d\n", MAJOR(gxp_base_devno));
+	return 0;
+}
+
+static __exit void gxp_fs_exit(void)
+{
+	unregister_chrdev_region(gxp_base_devno, GXP_DEV_COUNT);
+	class_destroy(gxp_class);
+}
+
 static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_dev *gxp)
 {
 	struct device *dev = &pdev->dev;
@@ -2054,14 +2124,9 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	 */
 	gxp_fw_data_populate_system_config(gxp);
 
-	gxp->misc_dev.minor = MISC_DYNAMIC_MINOR;
-	gxp->misc_dev.name = GXP_NAME;
-	gxp->misc_dev.fops = &gxp_fops;
-	ret = misc_register(&gxp->misc_dev);
-	if (ret) {
-		dev_err(dev, "Failed to register misc device: %d", ret);
+	ret = gxp_device_add(gxp);
+	if (ret)
 		goto err_before_remove;
-	}
 
 	gxp_create_debugfs(gxp);
 	gxp_debug_pointer = gxp;
@@ -2112,7 +2177,7 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 	 */
 	gxp_thermal_exit(gxp);
 	gxp_remove_debugdir(gxp);
-	misc_deregister(&gxp->misc_dev);
+	gxp_device_remove(gxp);
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);
 	gxp_core_telemetry_exit(gxp);
@@ -2131,6 +2196,18 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 	gxp_debug_pointer = NULL;
 
 	return 0;
+}
+
+static int __init gxp_common_platform_init(void)
+{
+	gxp_common_platform_reg_sscd();
+	return gxp_fs_init();
+}
+
+static void __exit gxp_common_platform_exit(void)
+{
+	gxp_fs_exit();
+	gxp_common_platform_unreg_sscd();
 }
 
 #if IS_ENABLED(CONFIG_PM_SLEEP)

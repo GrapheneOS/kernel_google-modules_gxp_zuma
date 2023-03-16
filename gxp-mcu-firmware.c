@@ -29,7 +29,9 @@
 #include "gxp-internal.h"
 #include "gxp-kci.h"
 #include "gxp-lpm.h"
+#include "gxp-mailbox-driver.h"
 #include "gxp-mcu-firmware.h"
+#include "gxp-mcu-platform.h"
 #include "gxp-mcu.h"
 #include "gxp-pm.h"
 
@@ -583,6 +585,10 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 	 * fall into the WFI mode. We have to trigger the doorbell to let the MCU do that.
 	 */
 	if (crash_type == GCIP_FW_CRASH_HW_WDG_TIMEOUT) {
+		struct gxp_mcu *mcu = &to_mcu_dev(gxp)->mcu;
+
+		gxp_mailbox_set_control(mcu->kci.mbx,
+					GXP_MBOX_CONTROL_MAGIC_POWER_DOWN);
 		gxp_doorbell_enable_for_core(
 			gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID),
 			GXP_MCU_CORE_ID);

@@ -8,6 +8,7 @@
 #define __GXP_INTERNAL_H__
 
 #include <linux/atomic.h>
+#include <linux/cdev.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
@@ -15,7 +16,6 @@
 #include <linux/io.h>
 #include <linux/iommu.h>
 #include <linux/list.h>
-#include <linux/miscdevice.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -74,7 +74,8 @@ struct gxp_power_states;
 
 struct gxp_dev {
 	struct device *dev;		 /* platform bus device */
-	struct miscdevice misc_dev;	 /* misc device structure */
+	struct cdev char_dev; /* char device structure */
+	dev_t char_dev_no;
 	struct dentry *d_entry;		 /* debugfs dir for this device */
 	struct gxp_mapped_resource regs; /* ioremapped CSRs */
 	struct gxp_mapped_resource lpm_regs; /* ioremapped LPM CSRs, may be equal to @regs */

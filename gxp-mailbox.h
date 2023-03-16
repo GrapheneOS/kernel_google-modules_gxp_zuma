@@ -20,6 +20,9 @@
 #include <gcip/gcip-mailbox.h>
 #endif
 
+/* Pre-agreed values can be passed to gxp_mailbox_set_control(). */
+#define GXP_MBOX_CONTROL_MAGIC_POWER_DOWN (0xcafebabeu)
+
 /*
  * Offset from the host mailbox interface to the device interface that needs to
  * be mapped.

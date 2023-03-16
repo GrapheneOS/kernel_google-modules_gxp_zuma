@@ -118,14 +118,19 @@ static struct platform_driver gxp_platform_driver = {
 
 static int __init gxp_platform_init(void)
 {
-	gxp_common_platform_reg_sscd();
+	int ret;
+
+	ret = gxp_common_platform_init();
+	if (ret)
+		return ret;
+
 	return platform_driver_register(&gxp_platform_driver);
 }
 
 static void __exit gxp_platform_exit(void)
 {
 	platform_driver_unregister(&gxp_platform_driver);
-	gxp_common_platform_unreg_sscd();
+	gxp_common_platform_exit();
 }
 
 MODULE_DESCRIPTION("Google GXP platform driver");
