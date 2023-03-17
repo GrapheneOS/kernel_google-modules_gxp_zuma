@@ -21,14 +21,6 @@
 static uint gxp_core_telemetry_buffer_size = CORE_TELEMETRY_DEFAULT_BUFFER_SIZE;
 module_param_named(core_telemetry_buffer_size, gxp_core_telemetry_buffer_size, uint, 0660);
 
-static inline bool is_telemetry_enabled(struct gxp_dev *gxp, uint core, u8 type)
-{
-	u32 device_status =
-		gxp_fw_data_get_core_telemetry_device_status(gxp, core, type);
-
-	return device_status & GXP_CORE_TELEMETRY_DEVICE_STATUS_ENABLED;
-}
-
 void gxp_core_telemetry_status_notify(struct gxp_dev *gxp, uint core)
 {
 	struct gxp_core_telemetry_manager *mgr = gxp->core_telemetry_mgr;
@@ -39,12 +31,10 @@ void gxp_core_telemetry_status_notify(struct gxp_dev *gxp, uint core)
 	/* Signal the appropriate eventfd for any active core telemetry types */
 	mutex_lock(&mgr->lock);
 
-	if (is_telemetry_enabled(gxp, core, GXP_TELEMETRY_TYPE_LOGGING) &&
-	    mgr->logging_efd)
+	if (mgr->logging_efd)
 		eventfd_signal(mgr->logging_efd, 1);
 
-	if (is_telemetry_enabled(gxp, core, GXP_TELEMETRY_TYPE_TRACING) &&
-	    mgr->tracing_efd)
+	if (mgr->tracing_efd)
 		eventfd_signal(mgr->tracing_efd, 1);
 
 	mutex_unlock(&mgr->lock);
@@ -108,6 +98,38 @@ static int enable_telemetry_buffers(struct gxp_dev *gxp,
 	return 0;
 }
 
+int gxp_secure_core_telemetry_init(struct gxp_dev *gxp, phys_addr_t phys)
+{
+	int i;
+	void *vaddr, *buffer_vaddr;
+	size_t secure_carveout_buffer_size =
+		GXP_NUM_CORES * SECURE_CORE_TELEMETRY_BUFFER_SIZE;
+
+	if (!phys)
+		return 0;
+
+	buffer_vaddr = memremap(phys, secure_carveout_buffer_size, MEMREMAP_WC);
+	if (!buffer_vaddr) {
+		dev_err(gxp->dev, "memremap failed for secure buffer.");
+		return -EINVAL;
+	}
+
+	for (i = 0; i < GXP_NUM_CORES; i++) {
+		vaddr = buffer_vaddr + i * SECURE_CORE_TELEMETRY_BUFFER_SIZE;
+		/*
+		 * First 64 bytes of per core telemetry buffers are reserved
+		 * for buffer metadata header. Zeroing it.
+		 */
+		memset(vaddr, 0, GXP_CORE_TELEMETRY_BUFFER_HEADER_SIZE);
+		/* First 4 bytes of buffer header are reserved for valid_magic field. */
+		*((uint *)vaddr) = GXP_TELEMETRY_SECURE_BUFFER_VALID_MAGIC_CODE;
+	}
+
+	gxp->core_telemetry_mgr->secure_buffer_carveout_addr = phys;
+	memunmap(buffer_vaddr);
+	return 0;
+}
+
 int gxp_core_telemetry_init(struct gxp_dev *gxp)
 {
 	struct gxp_core_telemetry_manager *mgr;
@@ -139,8 +161,6 @@ int gxp_core_telemetry_init(struct gxp_dev *gxp)
 		gxp_core_telemetry_buffer_size = CORE_TELEMETRY_DEFAULT_BUFFER_SIZE;
 	}
 
-	/* TODO(b/260959553): Remove mutex_lock/unlock during legacy telemetry removal */
-	mutex_lock(&mgr->lock);
 	log_buff_data = allocate_telemetry_buffers(gxp, gxp_core_telemetry_buffer_size);
 	if (IS_ERR_OR_NULL(log_buff_data)) {
 		dev_warn(gxp->dev,
@@ -177,142 +197,16 @@ int gxp_core_telemetry_init(struct gxp_dev *gxp)
 
 	gxp->core_telemetry_mgr->logging_buff_data = log_buff_data;
 	gxp->core_telemetry_mgr->tracing_buff_data = trace_buff_data;
-	mutex_unlock(&mgr->lock);
 	return 0;
 
 err_free:
 	free_telemetry_buffers(gxp, log_buff_data);
 	free_telemetry_buffers(gxp, trace_buff_data);
 err_free_buffers:
-	mutex_unlock(&mgr->lock);
 	mutex_destroy(&mgr->lock);
 	devm_kfree(gxp->dev, mgr);
 	gxp->core_telemetry_mgr = NULL;
 	return ret;
-}
-
-/* Wrapper struct to be used by the core telemetry vma_ops. */
-struct telemetry_vma_data {
-	struct gxp_dev *gxp;
-	struct buffer_data *buff_data;
-	u8 type;
-	refcount_t ref_count;
-};
-
-static void telemetry_vma_open(struct vm_area_struct *vma)
-{
-	struct gxp_dev *gxp;
-	struct telemetry_vma_data *vma_data =
-		(struct telemetry_vma_data *)vma->vm_private_data;
-	/*
-	 * vma_ops are required only for legacy telemetry flow
-	 * to keep track of buffer allocation during mmap and
-	 * buffer free during munmap.
-	 */
-	if (IS_ERR_OR_NULL(vma_data))
-		return;
-
-	gxp = vma_data->gxp;
-	mutex_lock(&gxp->core_telemetry_mgr->lock);
-
-	refcount_inc(&vma_data->ref_count);
-
-	mutex_unlock(&gxp->core_telemetry_mgr->lock);
-}
-
-static void telemetry_vma_close(struct vm_area_struct *vma)
-{
-	struct gxp_dev *gxp;
-	struct buffer_data *buff_data;
-	u8 type;
-	struct telemetry_vma_data *vma_data =
-		(struct telemetry_vma_data *)vma->vm_private_data;
-	/*
-	 * vma_ops are required only for legacy telemetry flow
-	 * to keep track of buffer allocation during mmap and
-	 * buffer free during munmap.
-	 */
-	if (IS_ERR_OR_NULL(vma_data))
-		return;
-
-	gxp = vma_data->gxp;
-	buff_data = vma_data->buff_data;
-	type = vma_data->type;
-
-	mutex_lock(&gxp->core_telemetry_mgr->lock);
-
-	if (!refcount_dec_and_test(&vma_data->ref_count))
-		goto out;
-
-	/*
-	 * Free the core telemetry buffers if they are no longer in use.
-	 *
-	 * If a client enabled core telemetry, then closed their VMA without
-	 * disabling it, firmware will still be expecting those buffers to be
-	 * mapped. If this is the case, core telemetry will be disabled, and the
-	 * buffers freed, when the client is closed.
-	 *
-	 * We cannot disable core telemetry here, since attempting to lock the
-	 * `vd_semaphore` while holding the mmap lock can lead to deadlocks.
-	 */
-	if (refcount_dec_and_test(&buff_data->ref_count)) {
-		switch (type) {
-		case GXP_TELEMETRY_TYPE_LOGGING:
-			gxp->core_telemetry_mgr->logging_buff_data_legacy = NULL;
-			break;
-		case GXP_TELEMETRY_TYPE_TRACING:
-			gxp->core_telemetry_mgr->tracing_buff_data_legacy = NULL;
-			break;
-		default:
-			dev_warn(gxp->dev, "%s called with invalid type %u\n",
-				 __func__, type);
-		}
-		free_telemetry_buffers(gxp, buff_data);
-	}
-
-	kfree(vma_data);
-
-out:
-	mutex_unlock(&gxp->core_telemetry_mgr->lock);
-}
-
-/* TODO(b/260959553): Remove vma ops during legacy telemetry removal */
-static const struct vm_operations_struct telemetry_vma_ops = {
-	.open = telemetry_vma_open,
-	.close = telemetry_vma_close,
-};
-
-/**
- * check_telemetry_type_availability() - Checks if @type is valid and whether
- *                                       buffers of that type already exists.
- * @gxp: The GXP device to check availability for
- * @type: Either `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`
- *
- * Caller must hold the core telemetry_manager's lock.
- *
- * Return:
- * * 0       - @type is valid and can have new buffers created
- * * -EBUSY  - Buffers already exist for @type
- * * -EINVAL - @type is not a valid core telemetry type
- */
-static int check_telemetry_type_availability(struct gxp_dev *gxp, u8 type)
-{
-	lockdep_assert_held(&gxp->core_telemetry_mgr->lock);
-
-	switch (type) {
-	case GXP_TELEMETRY_TYPE_LOGGING:
-		if (gxp->core_telemetry_mgr->logging_buff_data_legacy)
-			return -EBUSY;
-		break;
-	case GXP_TELEMETRY_TYPE_TRACING:
-		if (gxp->core_telemetry_mgr->tracing_buff_data_legacy)
-			return -EBUSY;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	return 0;
 }
 
 /**
@@ -321,8 +215,6 @@ static int check_telemetry_type_availability(struct gxp_dev *gxp, u8 type)
  *                                buffer of @size bytes per core.
  * @gxp: The GXP device to allocate the buffers for
  * @size: The size of buffer to allocate for each core
- *
- * Caller must hold the core telemetry_manager's lock.
  *
  * Return: A pointer to the `struct buffer_data` if successful, error otherwise
  */
@@ -334,9 +226,6 @@ static struct buffer_data *allocate_telemetry_buffers(struct gxp_dev *gxp,
 	int ret = 0;
 
 	size = size < PAGE_SIZE ? PAGE_SIZE : size;
-
-	/* TODO(b/260959553): Remove lockdep_assert_held during legacy telemetry removal */
-	lockdep_assert_held(&gxp->core_telemetry_mgr->lock);
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
@@ -354,7 +243,6 @@ static struct buffer_data *allocate_telemetry_buffers(struct gxp_dev *gxp,
 		}
 	}
 	data->size = size;
-	refcount_set(&data->ref_count, 1);
 	data->is_enabled = false;
 
 	return data;
@@ -371,15 +259,10 @@ err_alloc:
  * free_telemetry_buffers() - Unmap and free a `struct buffer_data`
  * @gxp: The GXP device the buffers were allocated for
  * @data: The descriptor of the buffers to unmap and free
- *
- * Caller must hold the core telemetry_manager's lock.
  */
 static void free_telemetry_buffers(struct gxp_dev *gxp, struct buffer_data *data)
 {
 	int i;
-
-	/* TODO(b/260959553): Remove lockdep_assert_held during legacy telemetry removal */
-	lockdep_assert_held(&gxp->core_telemetry_mgr->lock);
 
 	for (i = 0; i < GXP_NUM_CORES; i++)
 		gxp_dma_free_coherent_buf(gxp, NULL, &data->buffers[i]);
@@ -446,9 +329,50 @@ static int remap_telemetry_buffers(struct gxp_dev *gxp,
 
 out:
 	vma->vm_pgoff = orig_pgoff;
-	/* TODO(b/260959553): Remove vma ops during legacy telemetry removal */
-	vma->vm_ops = &telemetry_vma_ops;
 
+	return ret;
+}
+
+int gxp_secure_core_telemetry_mmap_buffers(struct gxp_dev *gxp,
+					   struct vm_area_struct *vma)
+{
+	int ret = 0;
+	phys_addr_t phys = gxp->core_telemetry_mgr->secure_buffer_carveout_addr;
+	size_t total_size = vma->vm_end - vma->vm_start;
+	size_t secure_carveout_buffer_size =
+		GXP_NUM_CORES * SECURE_CORE_TELEMETRY_BUFFER_SIZE;
+	unsigned long orig_pgoff = vma->vm_pgoff;
+
+	if (!phys) {
+		dev_err(gxp->dev, "Secure buffer is not mapped.\n");
+		return -ENODATA;
+	}
+
+	/* Total size must be equal to reserved secure buffer carveout size. */
+	if (total_size != secure_carveout_buffer_size) {
+		dev_err(gxp->dev, "Invalid vma size requested (%lu != %lu).\n",
+			total_size, secure_carveout_buffer_size);
+		return -EINVAL;
+	}
+
+	mutex_lock(&gxp->core_telemetry_mgr->lock);
+
+	/* mmap the buffers */
+	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+	vma->vm_flags |= VM_DONTCOPY | VM_DONTEXPAND | VM_DONTDUMP;
+	vma->vm_pgoff = 0;
+	/*
+	 * Remapping the physically contiguous carveout area reserved
+	 * for secure telemetry buffer.
+	 */
+	ret = remap_pfn_range(vma, vma->vm_start, phys >> PAGE_SHIFT,
+			      secure_carveout_buffer_size, vma->vm_page_prot);
+	if (ret)
+		goto err;
+	vma->vm_pgoff = orig_pgoff;
+	vma->vm_private_data = NULL;
+err:
+	mutex_unlock(&gxp->core_telemetry_mgr->lock);
 	return ret;
 }
 
@@ -501,320 +425,6 @@ int gxp_core_telemetry_mmap_buffers(struct gxp_dev *gxp, u8 type,
 	return 0;
 err:
 	mutex_unlock(&gxp->core_telemetry_mgr->lock);
-	return ret;
-}
-
-int gxp_core_telemetry_mmap_buffers_legacy(struct gxp_dev *gxp, u8 type,
-                                           struct vm_area_struct *vma)
-{
-	int ret = 0;
-	struct telemetry_vma_data *vma_data;
-	size_t total_size = vma->vm_end - vma->vm_start;
-	size_t size = total_size / GXP_NUM_CORES;
-	struct buffer_data *buff_data;
-	int i;
-
-	if (!gxp->core_telemetry_mgr)
-		return -ENODEV;
-
-	/* Total size must divide evenly into 1 page-aligned buffer per core */
-	if (!total_size || total_size % (PAGE_SIZE * GXP_NUM_CORES))
-		return -EINVAL;
-
-	mutex_lock(&gxp->core_telemetry_mgr->lock);
-
-	ret = check_telemetry_type_availability(gxp, type);
-	if (ret)
-		goto err;
-
-	vma_data = kmalloc(sizeof(*vma_data), GFP_KERNEL);
-	if (!vma_data) {
-		ret = -ENOMEM;
-		goto err;
-	}
-
-	buff_data = allocate_telemetry_buffers(gxp, size);
-	if (IS_ERR(buff_data)) {
-		ret = PTR_ERR(buff_data);
-		goto err_free_vma_data;
-	}
-
-	ret = remap_telemetry_buffers(gxp, vma, buff_data);
-	if (ret)
-		goto err_free_buffers;
-
-	vma_data->gxp = gxp;
-	vma_data->buff_data = buff_data;
-	vma_data->type = type;
-	refcount_set(&vma_data->ref_count, 1);
-	vma->vm_private_data = vma_data;
-
-	/* Save book-keeping on the buffers in the core telemetry manager */
-	if (type == GXP_TELEMETRY_TYPE_LOGGING)
-		gxp->core_telemetry_mgr->logging_buff_data_legacy = buff_data;
-	else /* type == GXP_TELEMETRY_TYPE_TRACING */
-		gxp->core_telemetry_mgr->tracing_buff_data_legacy = buff_data;
-
-	mutex_unlock(&gxp->core_telemetry_mgr->lock);
-
-	return 0;
-
-err_free_buffers:
-	for (i = 0; i < GXP_NUM_CORES; i++)
-		gxp_dma_free_coherent_buf(gxp, NULL, &buff_data->buffers[i]);
-	kfree(buff_data);
-
-err_free_vma_data:
-	kfree(vma_data);
-
-err:
-	mutex_unlock(&gxp->core_telemetry_mgr->lock);
-	return ret;
-}
-
-int gxp_core_telemetry_enable(struct gxp_dev *gxp, u8 type)
-{
-	struct buffer_data *data;
-	int ret = 0;
-	uint core;
-	struct gxp_virtual_device *vd;
-
-	/*
-	 * `vd_semaphore` cannot be acquired while holding the core telemetry
-	 * lock, so acquire it here before locking the core telemetry lock.
-	 */
-	down_read(&gxp->vd_semaphore);
-	mutex_lock(&gxp->core_telemetry_mgr->lock);
-
-	switch (type) {
-	case GXP_TELEMETRY_TYPE_LOGGING:
-		data = gxp->core_telemetry_mgr->logging_buff_data_legacy;
-		break;
-	case GXP_TELEMETRY_TYPE_TRACING:
-		data = gxp->core_telemetry_mgr->tracing_buff_data_legacy;
-		break;
-	default:
-		ret = -EINVAL;
-		goto out;
-	}
-
-	if (!data) {
-		ret = -ENXIO;
-		goto out;
-	}
-
-	/* Map the buffers for any cores already running */
-	for (core = 0; core < GXP_NUM_CORES; core++) {
-		vd = gxp->core_to_vd[core];
-		if (vd != NULL) {
-			ret = gxp_dma_map_allocated_coherent_buffer(
-				gxp, &data->buffers[core], vd->domain, 0);
-			if (ret)
-				goto err;
-		}
-	}
-
-	/* Populate the buffer fields in firmware-data */
-	data->host_status |= GXP_CORE_TELEMETRY_HOST_STATUS_ENABLED;
-	gxp_fw_data_set_core_telemetry_descriptors(gxp, type, data->host_status,
-						   data->buffers, data->size);
-
-	/* Notify any running cores that firmware-data was updated */
-	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (gxp_is_fw_running(gxp, core))
-			gxp_notification_send(gxp, core,
-					      CORE_NOTIF_TELEMETRY_STATUS);
-	}
-
-	refcount_inc(&data->ref_count);
-	data->is_enabled = true;
-
-	goto out;
-err:
-	while (core--) {
-		vd = gxp->core_to_vd[core];
-		if (vd)
-			gxp_dma_unmap_allocated_coherent_buffer(
-				gxp, vd->domain, &data->buffers[core]);
-	}
-
-out:
-	mutex_unlock(&gxp->core_telemetry_mgr->lock);
-	up_read(&gxp->vd_semaphore);
-
-	return ret;
-}
-
-/**
- * notify_core_and_wait_for_disable() - Notify a core that telemetry state has
- *                                      been changed by the host and wait for
- *                                      the core to stop using telemetry.
- * @gxp: The GXP device core telemetry is changing for
- * @core: The core in @gxp to notify of the telemetry state change
- * @type: Either `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`
- *
- * Caller must hold `core_telemetry_mgr->lock`.
- * Caller must hold `gxp->vd_semaphore` for reading only.
- * It is not allowed to hold `gxp->vd_semaphore` for writing, since this
- * function needs to release `gxp->vd_semaphore` at different points to sleep.
- *
- * Return:
- * * 0      - Firmware on @core is no longer using telemetry of @type
- * * -ENXIO - Firmware on @core is unresponsive
- */
-static int notify_core_and_wait_for_disable(struct gxp_dev *gxp, uint core,
-					    u8 type)
-{
-	uint retries_left = 50;
-
-	lockdep_assert_held(&gxp->core_telemetry_mgr->lock);
-	lockdep_assert_held_read(&gxp->vd_semaphore);
-
-	gxp_notification_send(gxp, core, CORE_NOTIF_TELEMETRY_STATUS);
-
-	/* Wait for ACK from firmware */
-	while (is_telemetry_enabled(gxp, core, type) &&
-	       gxp_is_fw_running(gxp, core) && retries_left) {
-		/* Release vd_semaphore while waiting */
-		up_read(&gxp->vd_semaphore);
-
-		/*
-		 * The VD lock must be held to check if firmware is running, so
-		 * the wait condition is only whether the firmware data has been
-		 * updated to show the core disabling telemetry.
-		 *
-		 * If a core does stop running firmware while this function is
-		 * asleep, it will be seen at the next timeout.
-		 */
-		wait_event_timeout(gxp->core_telemetry_mgr->waitq,
-				   !is_telemetry_enabled(gxp, core, type),
-				   msecs_to_jiffies(10));
-		retries_left--;
-
-		/*
-		 * No function may attempt to acquire the `vd_semaphore` while
-		 * holding the core telemetry lock, so it must be released, then
-		 * re-acquired once the `vd_semaphore` is held.
-		 */
-		mutex_unlock(&gxp->core_telemetry_mgr->lock);
-		down_read(&gxp->vd_semaphore);
-		mutex_lock(&gxp->core_telemetry_mgr->lock);
-	}
-
-	/*
-	 * If firmware has stopped running altogether, that is sufficient to be
-	 * considered disabled. If firmware is started on this core again, it
-	 * is responsible for clearing its status.
-	 */
-	if (unlikely(is_telemetry_enabled(gxp, core, type) &&
-		     gxp_is_fw_running(gxp, core)))
-		return -ENXIO;
-
-	return 0;
-}
-
-/**
- * telemetry_disable_locked() - Helper function to break out the actual
- *                              process of disabling core telemetry so that it
- *                              can be invoked by internal functions that are
- *                              already holding the core telemetry lock.
- * @gxp: The GXP device to disable either logging or tracing for
- * @type: Either `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`
- *
- * Caller must hold `core_telemetry_mgr->lock`.
- * Caller must hold `gxp->vd_semaphore` for reading only.
- * It is not allowed to hold `gxp->vd_semaphore` for writing, since this
- * function needs to release `gxp->vd_semaphore` at different points to sleep.
- *
- * Return:
- * * 0       - Success
- * * -EINVAL - The @type provided is not valid
- * * -ENXIO  - Buffers for @type have not been created/mapped yet
- */
-static int telemetry_disable_locked(struct gxp_dev *gxp, u8 type)
-{
-	struct buffer_data *data;
-	int ret = 0;
-	uint core;
-	struct gxp_virtual_device *vd;
-
-	lockdep_assert_held(&gxp->core_telemetry_mgr->lock);
-	lockdep_assert_held_read(&gxp->vd_semaphore);
-
-	/* Cleanup core telemetry manager's book-keeping */
-	switch (type) {
-	case GXP_TELEMETRY_TYPE_LOGGING:
-		data = gxp->core_telemetry_mgr->logging_buff_data_legacy;
-		break;
-	case GXP_TELEMETRY_TYPE_TRACING:
-		data = gxp->core_telemetry_mgr->tracing_buff_data_legacy;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	if (!data)
-		return -ENXIO;
-
-	if (!(data->host_status & GXP_CORE_TELEMETRY_HOST_STATUS_ENABLED))
-		return 0;
-
-	data->is_enabled = false;
-
-	/* Clear the log buffer fields in firmware-data */
-	data->host_status &= ~GXP_CORE_TELEMETRY_HOST_STATUS_ENABLED;
-	gxp_fw_data_set_core_telemetry_descriptors(gxp, type, data->host_status, NULL, 0);
-
-	/* Notify any running cores that firmware-data was updated */
-	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (gxp_is_fw_running(gxp, core)) {
-			ret = notify_core_and_wait_for_disable(gxp, core, type);
-			if (ret)
-				dev_warn(
-					gxp->dev,
-					"%s: core%u failed to disable telemetry (type=%u, ret=%d)\n",
-					__func__, core, type, ret);
-		}
-		vd = gxp->core_to_vd[core];
-		if (vd)
-			gxp_dma_unmap_allocated_coherent_buffer(
-				gxp, vd->domain, &data->buffers[core]);
-	}
-
-	if (refcount_dec_and_test(&data->ref_count)) {
-		switch (type) {
-		case GXP_TELEMETRY_TYPE_LOGGING:
-			gxp->core_telemetry_mgr->logging_buff_data_legacy = NULL;
-			break;
-		case GXP_TELEMETRY_TYPE_TRACING:
-			gxp->core_telemetry_mgr->tracing_buff_data_legacy = NULL;
-			break;
-		default:
-			/* NO-OP, we returned above if `type` was invalid */
-			break;
-		}
-		free_telemetry_buffers(gxp, data);
-	}
-
-	return 0;
-}
-
-int gxp_core_telemetry_disable(struct gxp_dev *gxp, u8 type)
-{
-	int ret;
-
-	/*
-	 * `vd_semaphore` cannot be acquired while holding the core telemetry
-	 * lock, so acquire it here before locking the core telemetry lock.
-	 */
-	down_read(&gxp->vd_semaphore);
-	mutex_lock(&gxp->core_telemetry_mgr->lock);
-
-	ret = telemetry_disable_locked(gxp, type);
-
-	mutex_unlock(&gxp->core_telemetry_mgr->lock);
-	up_read(&gxp->vd_semaphore);
-
 	return ret;
 }
 
@@ -905,8 +515,6 @@ void gxp_core_telemetry_exit(struct gxp_dev *gxp)
 		return;
 	}
 
-	/* TODO(b/260959553): Remove mutex_lock/unlock during legacy telemetry removal */
-	mutex_lock(&gxp->core_telemetry_mgr->lock);
 	log_buff_data = mgr->logging_buff_data;
 	trace_buff_data = mgr->tracing_buff_data;
 
@@ -915,8 +523,6 @@ void gxp_core_telemetry_exit(struct gxp_dev *gxp)
 
 	if (!IS_ERR_OR_NULL(trace_buff_data))
 		free_telemetry_buffers(gxp, trace_buff_data);
-
-	mutex_unlock(&gxp->core_telemetry_mgr->lock);
 
 	if (!IS_ERR_OR_NULL(gxp->core_telemetry_mgr->logging_efd)) {
 		dev_warn(gxp->dev, "logging_efd was not released\n");

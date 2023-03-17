@@ -177,13 +177,6 @@ static int gxp_release(struct inode *inode, struct file *file)
 	if (!client)
 		return 0;
 
-	if (client->enabled_core_telemetry_logging)
-		gxp_core_telemetry_disable(client->gxp,
-					   GXP_TELEMETRY_TYPE_LOGGING);
-	if (client->enabled_core_telemetry_tracing)
-		gxp_core_telemetry_disable(client->gxp,
-					   GXP_TELEMETRY_TYPE_TRACING);
-
 	mutex_lock(&client->gxp->client_list_lock);
 	list_del(&client->list_entry);
 	mutex_unlock(&client->gxp->client_list_lock);
@@ -311,7 +304,7 @@ static int gxp_unmap_buffer(struct gxp_client *client,
 	} else if (!map->host_address) {
 		dev_err(gxp->dev, "dma-bufs must be unmapped via GXP_UNMAP_DMABUF\n");
 		ret = -EINVAL;
-		goto out;
+		goto out_put;
 	}
 
 	WARN_ON(map->host_address != ibuf.host_address);
@@ -320,9 +313,9 @@ static int gxp_unmap_buffer(struct gxp_client *client,
 	gxp_mapping_iova_log(client, map,
 			     GXP_IOVA_LOG_UNMAP | GXP_IOVA_LOG_BUFFER);
 
+out_put:
 	/* Release the reference from gxp_vd_mapping_search() */
 	gxp_mapping_put(map);
-
 out:
 	up_read(&client->semaphore);
 
@@ -822,58 +815,6 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
-static int gxp_enable_core_telemetry(struct gxp_client *client,
-				     __u8 __user *argp)
-{
-	struct gxp_dev *gxp = client->gxp;
-	__u8 type;
-	int ret;
-
-	if (copy_from_user(&type, argp, sizeof(type)))
-		return -EFAULT;
-
-	if (type != GXP_TELEMETRY_TYPE_LOGGING &&
-	    type != GXP_TELEMETRY_TYPE_TRACING)
-		return -EINVAL;
-
-	ret = gxp_core_telemetry_enable(gxp, type);
-
-	/*
-	 * Record what core telemetry types this client enabled so they can be
-	 * cleaned-up if the client closes without disabling them.
-	 */
-	if (!ret && type == GXP_TELEMETRY_TYPE_LOGGING)
-		client->enabled_core_telemetry_logging = true;
-	if (!ret && type == GXP_TELEMETRY_TYPE_TRACING)
-		client->enabled_core_telemetry_tracing = true;
-
-	return ret;
-}
-
-static int gxp_disable_core_telemetry(struct gxp_client *client,
-				      __u8 __user *argp)
-{
-	struct gxp_dev *gxp = client->gxp;
-	__u8 type;
-	int ret;
-
-	if (copy_from_user(&type, argp, sizeof(type)))
-		return -EFAULT;
-
-	if (type != GXP_TELEMETRY_TYPE_LOGGING &&
-	    type != GXP_TELEMETRY_TYPE_TRACING)
-		return -EINVAL;
-
-	ret = gxp_core_telemetry_disable(gxp, type);
-
-	if (!ret && type == GXP_TELEMETRY_TYPE_LOGGING)
-		client->enabled_core_telemetry_logging = false;
-	if (!ret && type == GXP_TELEMETRY_TYPE_TRACING)
-		client->enabled_core_telemetry_tracing = false;
-
-	return ret;
-}
-
 #if HAS_TPU_EXT
 
 /*
@@ -1153,6 +1094,41 @@ out:
 	return ret;
 }
 
+static bool validate_wake_lock_power(struct gxp_dev *gxp,
+				     struct gxp_acquire_wakelock_ioctl *arg)
+{
+	if (arg->gxp_power_state == GXP_POWER_STATE_OFF) {
+		dev_err(gxp->dev,
+			"GXP_POWER_STATE_OFF is not a valid value when acquiring a wakelock\n");
+		return false;
+	}
+	if (arg->gxp_power_state < GXP_POWER_STATE_OFF ||
+	    arg->gxp_power_state >= GXP_NUM_POWER_STATES) {
+		dev_err(gxp->dev, "Requested power state is invalid\n");
+		return false;
+	}
+	if ((arg->memory_power_state < MEMORY_POWER_STATE_MIN ||
+	     arg->memory_power_state > MEMORY_POWER_STATE_MAX) &&
+	    arg->memory_power_state != MEMORY_POWER_STATE_UNDEFINED) {
+		dev_err(gxp->dev,
+			"Requested memory power state %d is invalid\n",
+			arg->memory_power_state);
+		return false;
+	}
+
+	if (arg->gxp_power_state == GXP_POWER_STATE_READY) {
+		dev_warn_once(
+			gxp->dev,
+			"GXP_POWER_STATE_READY is deprecated, please set GXP_POWER_LOW_FREQ_CLKMUX with GXP_POWER_STATE_UUD state");
+		arg->gxp_power_state = GXP_POWER_STATE_UUD;
+	}
+	if (arg->flags & GXP_POWER_NON_AGGRESSOR)
+		dev_warn_once(
+			gxp->dev,
+			"GXP_POWER_NON_AGGRESSOR is deprecated, no operation here");
+	return true;
+}
+
 static int gxp_acquire_wake_lock(struct gxp_client *client,
 				 struct gxp_acquire_wakelock_ioctl __user *argp)
 {
@@ -1166,36 +1142,9 @@ static int gxp_acquire_wake_lock(struct gxp_client *client,
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
 
-	if (ibuf.gxp_power_state == GXP_POWER_STATE_OFF) {
-		dev_err(gxp->dev,
-			"GXP_POWER_STATE_OFF is not a valid value when acquiring a wakelock\n");
+	if ((ibuf.components_to_wake & WAKELOCK_VIRTUAL_DEVICE) &&
+	    !validate_wake_lock_power(gxp, &ibuf))
 		return -EINVAL;
-	}
-	if (ibuf.gxp_power_state < GXP_POWER_STATE_OFF ||
-	    ibuf.gxp_power_state >= GXP_NUM_POWER_STATES) {
-		dev_err(gxp->dev, "Requested power state is invalid\n");
-		return -EINVAL;
-	}
-	if ((ibuf.memory_power_state < MEMORY_POWER_STATE_MIN ||
-	     ibuf.memory_power_state > MEMORY_POWER_STATE_MAX) &&
-	    ibuf.memory_power_state != MEMORY_POWER_STATE_UNDEFINED) {
-		dev_err(gxp->dev,
-			"Requested memory power state %d is invalid\n",
-			ibuf.memory_power_state);
-		return -EINVAL;
-	}
-
-	if (ibuf.gxp_power_state == GXP_POWER_STATE_READY) {
-		dev_warn_once(
-			gxp->dev,
-			"GXP_POWER_STATE_READY is deprecated, please set GXP_POWER_LOW_FREQ_CLKMUX with GXP_POWER_STATE_UUD state");
-		ibuf.gxp_power_state = GXP_POWER_STATE_UUD;
-	}
-
-	if(ibuf.flags & GXP_POWER_NON_AGGRESSOR)
-		dev_warn_once(
-			gxp->dev,
-			"GXP_POWER_NON_AGGRESSOR is deprecated, no operation here");
 
 	down_write(&client->semaphore);
 	if ((ibuf.components_to_wake & WAKELOCK_VIRTUAL_DEVICE) &&
@@ -1698,12 +1647,6 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 	case GXP_ETM_GET_TRACE_INFO_COMMAND:
 		ret = gxp_etm_get_trace_info_command(client, argp);
 		break;
-	case GXP_ENABLE_CORE_TELEMETRY:
-		ret = gxp_enable_core_telemetry(client, argp);
-		break;
-	case GXP_DISABLE_CORE_TELEMETRY:
-		ret = gxp_disable_core_telemetry(client, argp);
-		break;
 	case GXP_MAP_TPU_MBX_QUEUE:
 		ret = gxp_map_tpu_mbx_queue(client, argp);
 		break;
@@ -1789,12 +1732,8 @@ static int gxp_mmap(struct file *file, struct vm_area_struct *vma)
 	case GXP_MMAP_CORE_TRACE_BUFFER_OFFSET:
 		return gxp_core_telemetry_mmap_buffers(
 			client->gxp, GXP_TELEMETRY_TYPE_TRACING, vma);
-	case GXP_MMAP_CORE_LOG_BUFFER_OFFSET_LEGACY:
-		return gxp_core_telemetry_mmap_buffers_legacy(
-			client->gxp, GXP_TELEMETRY_TYPE_LOGGING, vma);
-	case GXP_MMAP_CORE_TRACE_BUFFER_OFFSET_LEGACY:
-		return gxp_core_telemetry_mmap_buffers_legacy(
-			client->gxp, GXP_TELEMETRY_TYPE_TRACING, vma);
+	case GXP_MMAP_SECURE_CORE_LOG_BUFFER_OFFSET:
+		return gxp_secure_core_telemetry_mmap_buffers(client->gxp, vma);
 	default:
 		return -EINVAL;
 	}

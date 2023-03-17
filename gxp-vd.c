@@ -693,8 +693,9 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	struct gxp_mapping *mapping;
 	struct gxp_dev *gxp = vd->gxp;
 	uint core_list = vd->core_list;
+	int vdid = vd->vdid;
 
-	trace_gxp_vd_release_start(vd->vdid);
+	trace_gxp_vd_release_start(vdid);
 
 	lockdep_assert_held_write(&gxp->vd_semaphore);
 	debug_dump_lock(gxp, vd);
@@ -740,7 +741,7 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	debug_dump_unlock(vd);
 	gxp_vd_put(vd);
 
-	trace_gxp_vd_release_end(vd->vdid);
+	trace_gxp_vd_release_end(vdid);
 }
 
 int gxp_vd_block_ready(struct gxp_virtual_device *vd)
@@ -785,6 +786,8 @@ void gxp_vd_block_unready(struct gxp_virtual_device *vd)
 
 	if (gxp->before_vd_block_unready)
 		gxp->before_vd_block_unready(gxp, vd);
+	if (vd->state == GXP_VD_READY)
+		vd->state = GXP_VD_OFF;
 	gxp_dma_domain_detach_device(gxp, vd->domain);
 
 	trace_gxp_vd_block_unready_end(vd->vdid);

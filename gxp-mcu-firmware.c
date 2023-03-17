@@ -22,6 +22,7 @@
 
 #include "gxp-bpm.h"
 #include "gxp-config.h"
+#include "gxp-core-telemetry.h"
 #include "gxp-dma.h"
 #include "gxp-doorbell.h"
 #include "gxp-firmware-loader.h"
@@ -119,6 +120,15 @@ int gxp_mcu_firmware_load(struct gxp_dev *gxp, char *fw_name,
 			dev_err(dev, "Unsupported image header generation");
 			ret = -EINVAL;
 			goto err_release_firmware;
+		}
+		/* Initialize the secure telemetry buffers if available */
+		if (imgcfg->secure_telemetry_region_start) {
+			ret = gxp_secure_core_telemetry_init(
+				gxp, imgcfg->secure_telemetry_region_start);
+			if (ret)
+				dev_warn(
+					dev,
+					"Secure telemetry initialization failed.");
 		}
 		ret = gcip_image_config_parse(&mcu_fw->cfg_parser, imgcfg);
 		if (ret)
@@ -487,6 +497,17 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 
 	dev_err(gxp->dev, "MCU firmware is crashed, crash_type=%d", crash_type);
 
+	/*
+	 * This crash handler can be triggered in two cases:
+	 * 1. The MCU firmware detects some unrecoverable faults and sends FW_CRASH RKCI to the
+	 *    kernel driver. (GCIP_FW_CRASH_UNRECOVERABLE_FAULT)
+	 * 2. The MCU firmware is crashed some reasons which cannot be detected by itself and the
+	 *    kernel driver notices the MCU crash with the HW watchdog timeout.
+	 *    (GCIP_FW_CRASH_HW_WDG_TIMEOUT)
+	 *
+	 * As those two cases are asynchronous, they can happen simultaneously. In the first case,
+	 * the MCU firmware must turn off the HW watchdog first to prevent that race case.
+	 */
 	if (crash_type != GCIP_FW_CRASH_UNRECOVERABLE_FAULT &&
 	    crash_type != GCIP_FW_CRASH_HW_WDG_TIMEOUT)
 		return;
@@ -557,7 +578,16 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 	/* Turn off and on the MCU PSM and restart the MCU firmware. */
 	mutex_lock(&mcu_fw->lock);
 
-	gxp_lpm_down(gxp, GXP_MCU_CORE_ID);
+	/*
+	 * In this case, the MCU can't trigger the PSM transition to PG state by itself and won't
+	 * fall into the WFI mode. We have to trigger the doorbell to let the MCU do that.
+	 */
+	if (crash_type == GCIP_FW_CRASH_HW_WDG_TIMEOUT) {
+		gxp_doorbell_enable_for_core(
+			gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID),
+			GXP_MCU_CORE_ID);
+		gxp_doorbell_set(gxp, CORE_WAKEUP_DOORBELL(GXP_MCU_CORE_ID));
+	}
 
 	if (!gxp_lpm_wait_state_eq(gxp, CORE_TO_PSM(GXP_MCU_CORE_ID),
 				   LPM_PG_STATE)) {
