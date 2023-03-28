@@ -1419,6 +1419,17 @@ out:
 	return ret;
 }
 
+static inline const char *get_driver_commit(void)
+{
+#if IS_ENABLED(CONFIG_MODULE_SCMVERSION)
+	return THIS_MODULE->scmversion;
+#elif defined(GIT_REPO_TAG)
+	return GIT_REPO_TAG;
+#else
+	return "Unknown";
+#endif
+}
+
 static int
 gxp_get_interface_version(struct gxp_client *client,
 			  struct gxp_interface_version_ioctl __user *argp)
@@ -1431,12 +1442,12 @@ gxp_get_interface_version(struct gxp_client *client,
 	memset(ibuf.version_build, 0, GXP_INTERFACE_VERSION_BUILD_BUFFER_SIZE);
 	ret = snprintf(ibuf.version_build,
 		       GXP_INTERFACE_VERSION_BUILD_BUFFER_SIZE - 1,
-		       GIT_REPO_TAG);
+		       get_driver_commit());
 
 	if (ret < 0 || ret >= GXP_INTERFACE_VERSION_BUILD_BUFFER_SIZE) {
 		dev_warn(
 			client->gxp->dev,
-			"Buffer size insufficient to hold GIT_REPO_TAG (size=%d)\n",
+			"Buffer size insufficient to hold git build info (size=%d)\n",
 			ret);
 	}
 
@@ -1988,7 +1999,7 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	int ret;
 	u64 prop;
 
-	dev_notice(dev, "Probing gxp driver with commit %s\n", GIT_REPO_TAG);
+	dev_notice(dev, "Probing gxp driver with commit %s\n", get_driver_commit());
 
 	platform_set_drvdata(pdev, gxp);
 	gxp->dev = dev;
@@ -2043,6 +2054,7 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 
 	mutex_init(&gxp->pin_user_pages_lock);
 	mutex_init(&gxp->secure_vd_lock);
+	mutex_init(&gxp->device_prop.lock);
 
 	gxp->domain_pool = kmalloc(sizeof(*gxp->domain_pool), GFP_KERNEL);
 	if (!gxp->domain_pool) {

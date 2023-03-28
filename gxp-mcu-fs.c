@@ -117,6 +117,26 @@ out:
 	return ret;
 }
 
+static int gxp_ioctl_set_device_properties(
+	struct gxp_dev *gxp,
+	struct gxp_set_device_properties_ioctl __user *argp)
+{
+	struct gxp_dev_prop *device_prop = &gxp->device_prop;
+	struct gxp_set_device_properties_ioctl ibuf;
+
+	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
+		return -EFAULT;
+
+	mutex_lock(&device_prop->lock);
+
+	memcpy(&device_prop->opaque, &ibuf.opaque, sizeof(device_prop->opaque));
+	device_prop->initialized = true;
+
+	mutex_unlock(&device_prop->lock);
+
+	return 0;
+}
+
 static inline enum gcip_telemetry_type to_gcip_telemetry_type(u8 type)
 {
 	if (type == GXP_TELEMETRY_TYPE_LOGGING)
@@ -179,6 +199,9 @@ long gxp_mcu_ioctl(struct file *file, uint cmd, ulong arg)
 		break;
 	case GXP_MAILBOX_UCI_RESPONSE:
 		ret = gxp_ioctl_uci_response(client, argp);
+		break;
+	case GXP_SET_DEVICE_PROPERTIES:
+		ret = gxp_ioctl_set_device_properties(client->gxp, argp);
 		break;
 	default:
 		ret = -ENOTTY; /* unknown command */

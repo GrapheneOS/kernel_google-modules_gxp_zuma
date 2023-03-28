@@ -164,6 +164,38 @@ static void unmap_resource(struct gxp_virtual_device *vd,
 }
 
 /*
+ * System config region needs to be mapped as first page RO and remaining RW.
+ *
+ * Use unmap_resource() to release mapped resource.
+ */
+static int map_sys_cfg_resource(struct gxp_virtual_device *vd,
+				struct gxp_mapped_resource *res)
+{
+	struct gxp_dev *gxp = vd->gxp;
+	int ret;
+	const size_t ro_size = PAGE_SIZE;
+
+	if (res->daddr == 0)
+		return 0;
+	if (res->size != GXP_FW_DATA_SYSCFG_SIZE) {
+		dev_err(gxp->dev, "invalid system cfg size: %#llx", res->size);
+		return -EINVAL;
+	}
+	ret = gxp_iommu_map(gxp, vd->domain, res->daddr, res->paddr, ro_size,
+			    IOMMU_READ);
+	if (ret)
+		return ret;
+	ret = gxp_iommu_map(gxp, vd->domain, res->daddr + ro_size,
+			    res->paddr + ro_size, res->size - ro_size,
+			    IOMMU_READ | IOMMU_WRITE);
+	if (ret) {
+		gxp_iommu_unmap(gxp, vd->domain, res->daddr, ro_size);
+		return ret;
+	}
+	return 0;
+}
+
+/*
  * Assigns @res's IOVA, size from image config.
  */
 static void assign_resource(struct gxp_mapped_resource *res,
@@ -245,15 +277,10 @@ static int map_cfg_regions(struct gxp_virtual_device *vd,
 		goto err_unmap_vd;
 	}
 	assign_resource(&res, img_cfg, SYS_CFG_REGION_IDX);
-	if (res.size != GXP_FW_DATA_SYSCFG_SIZE) {
-		dev_err(gxp->dev, "invalid system cfg size: %#llx", res.size);
-		ret = -EINVAL;
-		goto err_unmap_vd;
-	}
 	res.vaddr = gxp_fw_data_system_cfg(gxp);
 	offset = res.vaddr - pool.vaddr;
 	res.paddr = pool.paddr + offset;
-	ret = map_resource(vd, &res);
+	ret = map_sys_cfg_resource(vd, &res);
 	if (ret) {
 		dev_err(gxp->dev, "map sys config %pad -> offset %#zx failed",
 			&res.daddr, offset);
@@ -1198,6 +1225,26 @@ int gxp_vd_virt_core_to_phys_core(struct gxp_virtual_device *vd, u16 virt_core)
 
 	dev_dbg(gxp->dev, "No mapping for virtual core %u\n", virt_core);
 	return -EINVAL;
+}
+
+int gxp_vd_phys_core_to_virt_core(struct gxp_virtual_device *vd, u32 phys_core)
+{
+	struct gxp_dev *gxp = vd->gxp;
+
+	lockdep_assert_held(&vd->debug_dump_lock);
+
+	if (!gxp_is_direct_mode(gxp)) {
+		dev_dbg(gxp->dev, "%s supported only in direct mode.\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	if (!(vd->core_list & BIT(phys_core))) {
+		dev_dbg(gxp->dev, "No mapping for physical core %u\n",
+			phys_core);
+		return -EINVAL;
+	}
+	return hweight_long(vd->core_list & (BIT(phys_core) - 1));
 }
 
 int gxp_vd_mapping_store(struct gxp_virtual_device *vd, struct gxp_mapping *map)

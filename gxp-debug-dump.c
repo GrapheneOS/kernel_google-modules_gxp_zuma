@@ -471,6 +471,7 @@ out:
  * @gxp: The GXP device.
  * @vd: vd of the crashed client.
  * @core_id: physical core_id of crashed core.
+ * @virt_core_id: virtual core_id of crashed core.
  * @seg_idx: Pointer to a index that is keeping track of
  *           gxp->debug_dump_mgr->segs[] array.
  *
@@ -484,12 +485,13 @@ out:
  */
 static int gxp_map_fw_rw_section(struct gxp_dev *gxp,
 				 struct gxp_virtual_device *vd,
-				 uint32_t core_id, int *seg_idx)
+				 uint32_t core_id, uint32_t virt_core_id,
+				 int *seg_idx)
 {
 	size_t idx;
 	struct sg_table *sgt;
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
-	dma_addr_t fw_rw_section_daddr = CORE_FIRMWARE_RW_ADDR(core_id);
+	dma_addr_t fw_rw_section_daddr = CORE_FIRMWARE_RW_ADDR(virt_core_id);
 	const size_t n_reg = ARRAY_SIZE(vd->ns_regions);
 
 	if (!gxp_fw_data_use_per_vd_config(vd)) {
@@ -569,6 +571,7 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp,
 	struct gxp_core_dump_header *core_dump_header =
 		&core_dump->core_dump_header[core_id];
 	struct gxp_core_header *core_header = &core_dump_header->core_header;
+	int virt_core;
 	int ret = 0;
 #if HAS_COREDUMP
 	struct gxp_common_dump *common_dump = mgr->common_dump;
@@ -636,13 +639,27 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp,
 		ret = -EFAULT;
 		goto out_efault;
 	}
+
+	if (gxp_is_direct_mode(gxp)) {
+		virt_core = gxp_vd_phys_core_to_virt_core(vd, core_id);
+		if (virt_core < 0) {
+			dev_err(gxp->dev,
+				"No virtual core for physical core %u.\n",
+				core_id);
+			ret = -EINVAL;
+			goto out;
+		}
+	} else {
+		virt_core = core_id;
+	}
+
 	/* fw ro section */
-	mgr->segs[core_id][seg_idx].addr = gxp->fwbufs[core_id].vaddr;
-	mgr->segs[core_id][seg_idx].size = gxp->fwbufs[core_id].size;
+	mgr->segs[core_id][seg_idx].addr = gxp->fwbufs[virt_core].vaddr;
+	mgr->segs[core_id][seg_idx].size = gxp->fwbufs[virt_core].size;
 	seg_idx++;
 
 	/* fw rw section */
-	ret = gxp_map_fw_rw_section(gxp, vd, core_id, &seg_idx);
+	ret = gxp_map_fw_rw_section(gxp, vd, core_id, virt_core, &seg_idx);
 	if (ret)
 		goto out;
 

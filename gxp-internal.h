@@ -26,6 +26,7 @@
 #include <gcip/gcip-thermal.h>
 
 #include "gxp-config.h"
+#include "gxp.h"
 
 #define IS_GXP_TEST IS_ENABLED(CONFIG_GXP_TEST)
 
@@ -50,6 +51,13 @@ struct gxp_mapped_resource {
 	phys_addr_t paddr;		 /* starting physical address */
 	dma_addr_t daddr;		 /* starting device address */
 	resource_size_t size;		 /* size in bytes */
+};
+
+/* device properties */
+struct gxp_dev_prop {
+	struct mutex lock; /* protects initialized and opaque */
+	bool initialized;
+	u8 opaque[GXP_DEV_PROP_SIZE];
 };
 
 /* Structure to hold TPU device info */
@@ -144,6 +152,9 @@ struct gxp_dev {
 
 	/* To manage DMA fences. */
 	struct gcip_dma_fence_manager *gfence_mgr;
+
+	/* To save device properties */
+	struct gxp_dev_prop device_prop;
 
 	/* callbacks for chip-dependent implementations */
 

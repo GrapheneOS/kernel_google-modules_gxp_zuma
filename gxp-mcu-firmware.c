@@ -299,6 +299,8 @@ err_lpm_down:
  */
 static int gxp_mcu_firmware_run_locked(struct gxp_mcu_firmware *mcu_fw)
 {
+	struct gxp_dev *gxp = mcu_fw->gxp;
+	struct gxp_mcu *mcu = container_of(mcu_fw, struct gxp_mcu, fw);
 	int ret;
 
 	lockdep_assert_held(&mcu_fw->lock);
@@ -306,6 +308,11 @@ static int gxp_mcu_firmware_run_locked(struct gxp_mcu_firmware *mcu_fw)
 	ret = gxp_mcu_firmware_power_up(mcu_fw);
 	if (ret)
 		return ret;
+
+	ret = gxp_kci_set_device_properties(&mcu->kci, &gxp->device_prop);
+	if (ret)
+		dev_warn(gxp->dev, "Failed to pass device_prop to fw: %d\n",
+			 ret);
 
 	mcu_fw->status = GCIP_FW_VALID;
 	return 0;

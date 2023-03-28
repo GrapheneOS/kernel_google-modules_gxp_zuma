@@ -13,7 +13,7 @@
 
 /* Interface Version */
 #define GXP_INTERFACE_VERSION_MAJOR 1
-#define GXP_INTERFACE_VERSION_MINOR 12
+#define GXP_INTERFACE_VERSION_MINOR 13
 #define GXP_INTERFACE_VERSION_BUILD 0
 
 /*
@@ -1026,5 +1026,22 @@ struct gxp_register_invalidated_eventfd_ioctl {
 
 #define GXP_UNREGISTER_INVALIDATED_EVENTFD                                     \
 	_IOW(GXP_IOCTL_BASE, 36, struct gxp_register_invalidated_eventfd_ioctl)
+
+/* The size of device properties pre-agreed with firmware */
+#define GXP_DEV_PROP_SIZE 256
+/*
+ * struct gxp_set_device_properties_ioctl
+ * @opaque:		Device properties defined by runtime and firmware.
+ */
+struct gxp_set_device_properties_ioctl {
+	__u8 opaque[GXP_DEV_PROP_SIZE];
+};
+
+/*
+ * Registers device properties which will be passed down to firmware on every
+ * MCU boot.
+ */
+#define GXP_SET_DEVICE_PROPERTIES                                              \
+	_IOW(GXP_IOCTL_BASE, 37, struct gxp_set_device_properties_ioctl)
 
 #endif /* __GXP_H__ */

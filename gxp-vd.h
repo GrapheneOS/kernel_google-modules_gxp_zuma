@@ -235,6 +235,22 @@ void gxp_vd_stop(struct gxp_virtual_device *vd);
 int gxp_vd_virt_core_to_phys_core(struct gxp_virtual_device *vd, u16 virt_core);
 
 /**
+ * gxp_vd_phys_core_to_virt_core() -Returns the virtual core ID for the specified
+ *                                  @phys_core belonging to this virtual device.
+ * @vd: The virtual device for which virtual core ID is requested for.
+ * @phys_core: Physical core_id corresponding to which virtual core ID is requested.
+ *
+ * This function works only in direct mode. The caller must have locked
+ * vd->debug_dump_lock before calling this function.
+ *
+ * Return:
+ * * -EINVAL   - If no virtual core ID found for @phys_core or if the function
+ *               was not invoked in direct mode.
+ * * Otherwise - Returns the virtual core ID for the given @phys_core.
+ */
+int gxp_vd_phys_core_to_virt_core(struct gxp_virtual_device *vd, u32 phys_core);
+
+/**
  * gxp_vd_mapping_store() - Store a mapping in a virtual device's records
  * @vd: The virtual device @map was created for and will be stored in
  * @map: The mapping to store

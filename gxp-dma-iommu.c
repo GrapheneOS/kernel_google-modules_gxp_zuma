@@ -701,14 +701,26 @@ void gxp_dma_unmap_iova_sgt(struct gxp_dev *gxp,
 void gxp_dma_sync_sg_for_cpu(struct gxp_dev *gxp, struct scatterlist *sg,
 			     int nents, enum dma_data_direction direction)
 {
-	/* Syncing is not domain specific. Just call through to DMA API */
+	/*
+	 * Syncing is not domain specific. Just call through to DMA API.
+	 *
+	 * This works even for buffers not mapped via the DMA API, since the
+	 * dma-iommu implementation syncs buffers by their physical address
+	 * ranges, taken from the scatterlist, without using the IOVA.
+	 */
 	dma_sync_sg_for_cpu(gxp->dev, sg, nents, direction);
 }
 
 void gxp_dma_sync_sg_for_device(struct gxp_dev *gxp, struct scatterlist *sg,
 				int nents, enum dma_data_direction direction)
 {
-	/* Syncing is not domain specific. Just call through to DMA API */
+	/*
+	 * Syncing is not domain specific. Just call through to DMA API.
+	 *
+	 * This works even for buffers not mapped via the DMA API, since the
+	 * dma-iommu implementation syncs buffers by their physical address
+	 * ranges, taken from the scatterlist, without using the IOVA.
+	 */
 	dma_sync_sg_for_device(gxp->dev, sg, nents, direction);
 }
 

@@ -9,9 +9,11 @@
 #include <linux/bits.h>
 #include <linux/io.h>
 #include <linux/pm_runtime.h>
+#include <linux/thermal.h> /* for fixing bug in gs_tmu_v3 */
 #include <linux/types.h>
 #include <linux/workqueue.h>
 #include <soc/google/exynos_pm_qos.h>
+#include <soc/google/gs_tmu_v3.h>
 
 #include <gcip/gcip-pm.h>
 
@@ -64,7 +66,7 @@ static struct gxp_pm_device_ops gxp_aur_ops = {
 
 static int gxp_pm_blkpwr_up(struct gxp_dev *gxp)
 {
-	int ret = 0;
+	int ret;
 
 	/*
 	 * This function is equivalent to pm_runtime_get_sync, but will prevent
@@ -72,27 +74,38 @@ static int gxp_pm_blkpwr_up(struct gxp_dev *gxp)
 	 * only returns either 0 for success or an errno on failure.
 	 */
 	ret = pm_runtime_resume_and_get(gxp->dev);
-	if (ret)
+	if (ret) {
 		dev_err(gxp->dev,
 			"pm_runtime_resume_and_get returned %d during blk up\n",
 			ret);
-	return ret;
+		return ret;
+	}
+	/* Inform TMU the block is up. */
+	ret = set_acpm_tj_power_status(TZ_AUR, true);
+	if (ret) {
+		pm_runtime_put_sync(gxp->dev);
+		dev_err(gxp->dev,
+			"set Tj power status on blk up failed: %d\n", ret);
+		return ret;
+	}
+	return 0;
 }
 
 static int gxp_pm_blkpwr_down(struct gxp_dev *gxp)
 {
-	int ret = 0;
+	int ret;
 
-	/*
-	 * Need to put TOP LPM into active state before blk off
-	 * b/189396709
-	 */
+	/* Need to put TOP LPM into active state before blk off. */
 	if (!gxp_lpm_wait_state_eq(gxp, LPM_PSM_TOP, LPM_ACTIVE_STATE)) {
 		dev_err(gxp->dev,
 			"failed to force TOP LPM to PS0 during blk down\n");
 		return -EAGAIN;
 	}
 
+	ret = set_acpm_tj_power_status(TZ_AUR, false);
+	if (ret)
+		dev_err(gxp->dev,
+			"set Tj power status on blk down failed: %d\n", ret);
 	ret = pm_runtime_put_sync(gxp->dev);
 	if (ret)
 		/*

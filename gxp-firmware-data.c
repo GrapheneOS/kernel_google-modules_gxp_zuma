@@ -94,10 +94,8 @@ static void _gxp_fw_data_populate_vd_cfg(struct gxp_dev *gxp,
 	struct gxp_vd_descriptor *vd_desc;
 	int i;
 
-	if (!gxp_core_boot(gxp)) {
-		dev_info(gxp->dev, "Skip setting VD and core CFG");
+	if (!gxp_core_boot(gxp))
 		return;
-	}
 	if (!vd->vd_cfg.vaddr || !vd->core_cfg.vaddr) {
 		dev_warn(
 			gxp->dev,

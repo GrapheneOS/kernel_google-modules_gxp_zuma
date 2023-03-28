@@ -126,16 +126,32 @@ static void gxp_uci_mailbox_manager_release_unconsumed_async_resps(
 	/*
 	 * From here it is guaranteed that no responses will access @vd and be handled by arrived
 	 * or timedout callbacks. Therefore, @dest_queue will not be changed anymore.
+	 *
+	 * We don't have to care about the `gxp_uci_wait_async_response` function is being called
+	 * in the middle because the meaning of this function is called is that @vd is being
+	 * released and the `gxp_uci_wait_async_response` function will never be called anymore.
 	 */
 
-	/* Clean up unconsumed responses in the @dest_queue. */
+	/*
+	 * Clean up responses in the @dest_queue.
+	 * Responses in this queue are arrived/timedout which means they are removed from the
+	 * @wait_queue and put into the @dest_queue. However, the runtime hasn't consumed them via
+	 * the `gxp_uci_wait_async_response` function yet. Therefore, we have to remove them from
+	 * the queue and release their awaiter.
+	 */
 	list_for_each_entry_safe (
 		cur, nxt, &vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
 		dest_list_entry) {
 		list_del(&cur->dest_list_entry);
+		gcip_mailbox_release_awaiter(cur->awaiter);
 	}
 
-	/* Clean up @wait_queue and release awaiters. */
+	/*
+	 * Clean up responses in the @wait_queue.
+	 * Responses in this queue are not arrived/timedout yet which means they are still in the
+	 * @wait_queue and not put into the @dest_queue. Therefore, we have to remove them from the
+	 * queue and release their awaiter.
+	 */
 	list_for_each_entry_safe (
 		cur, nxt, &vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
 		wait_list_entry) {

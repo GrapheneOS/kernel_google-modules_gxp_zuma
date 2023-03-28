@@ -665,3 +665,37 @@ void gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,
 		dev_err(gxp->dev, "failed to send rkci resp %llu (%d)",
 			rkci_cmd->seq, ret);
 }
+
+int gxp_kci_set_device_properties(struct gxp_kci *gkci,
+				  struct gxp_dev_prop *dev_prop)
+{
+	struct gcip_kci_command_element cmd = {
+		.code = GCIP_KCI_CODE_SET_DEVICE_PROPERTIES,
+	};
+	struct gxp_mapped_resource buf;
+	int ret = 0;
+
+	if (!gkci || !gkci->mbx)
+		return -ENODEV;
+
+	mutex_lock(&dev_prop->lock);
+	if (!dev_prop->initialized)
+		goto out;
+
+	if (gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(dev_prop->opaque))) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	memcpy(buf.vaddr, &dev_prop->opaque, sizeof(dev_prop->opaque));
+
+	cmd.dma.address = buf.daddr;
+	cmd.dma.size = sizeof(dev_prop->opaque);
+
+	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
+	gxp_mcu_mem_free_data(gkci->mcu, &buf);
+
+out:
+	mutex_unlock(&dev_prop->lock);
+	return ret;
+}
