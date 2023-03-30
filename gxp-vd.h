@@ -446,6 +446,37 @@ void gxp_vd_invalidate(struct gxp_dev *gxp, struct gxp_virtual_device *vd);
 void gxp_vd_generate_debug_dump(struct gxp_dev *gxp,
 				struct gxp_virtual_device *vd, uint core_list);
 
+#if GXP_HAS_MCU
+/*
+ * Releases the vmbox which is allocated to @vd.
+ *
+ * This function will call the `RELEASE_VMBOX` KCI and will always set @vd->client_id to -1. If the
+ * vmbox was linked to the offload vmbox, it will also call the `gxp_vd_unlink_offload_vmbox`
+ * function first internally.
+ *
+ * @gxp: The GXP device to obtain the handler for.
+ * @vd: The virtual device to release its vmbox.
+ */
+void gxp_vd_release_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd);
+
+/*
+ * Unlinks the linkage of the vmbox of @vd to the offload chip vmbox.
+ *
+ * This function will call the `UNLINK_OFFLOAD_VMBOX` KCI to unlink the vmboxes and will always set
+ * @vd->tpu_client_id to -1.
+ *
+ * @gxp: The GXP device to obtain the handler for.
+ * @vd: The virtual device to unlink vmboxes.
+ * @offload_client_id: The client ID of the offload chip.
+ * @offload_chip_type: The type of the offload chip. (See enum gcip_kci_offload_chip_type.)
+ */
+void gxp_vd_unlink_offload_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
+				 u32 offload_client_id, u8 offload_chip_type);
+#else /* !GXP_HAS_MCU */
+#define gxp_vd_release_vmbox(...)
+#define gxp_vd_unlink_offload_vmbox(...)
+#endif /* GXP_HAS_MCU */
+
 /*
  * An ID between 0~GXP_NUM_CORES-1 and is unique to each VD.
  * Only used in direct mode.

@@ -15,13 +15,7 @@
 #include "gxp-mcu-platform.h"
 #include "gxp-mcu.h"
 #include "gxp-usage-stats.h"
-
-#define KCI_RETURN_CORE_LIST_MASK 0xFF00
-#define KCI_RETURN_CORE_LIST_SHIFT 8
-#define KCI_RETURN_ERROR_CODE_MASK (BIT(KCI_RETURN_CORE_LIST_SHIFT) - 1u)
-#define KCI_RETURN_GET_CORE_LIST(ret)                                          \
-	((KCI_RETURN_CORE_LIST_MASK & (ret)) >> KCI_RETURN_CORE_LIST_SHIFT)
-#define KCI_RETURN_GET_ERROR_CODE(ret) (KCI_RETURN_ERROR_CODE_MASK & (ret))
+#include "gxp-vd.h"
 
 #if IS_ENABLED(CONFIG_GXP_TEST)
 char *gxp_work_mode_name = "mcu";
@@ -88,35 +82,6 @@ static int allocate_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 	return 0;
 }
 
-static void release_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
-{
-	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
-	uint core_list;
-	int ret;
-
-	if (vd->client_id < 0)
-		return;
-
-	ret = gxp_kci_release_vmbox(kci, vd->client_id);
-	if (!ret)
-		goto out;
-	if (ret > 0 &&
-	    KCI_RETURN_GET_ERROR_CODE(ret) == GCIP_KCI_ERROR_ABORTED) {
-		core_list = KCI_RETURN_GET_CORE_LIST(ret);
-		dev_err(gxp->dev,
-			"Firmware failed to gracefully release a VMBox for client %d, core_list=%d",
-			vd->client_id, core_list);
-		gxp_vd_invalidate(gxp, vd);
-		gxp_vd_generate_debug_dump(gxp, vd, core_list);
-	} else {
-		dev_err(gxp->dev,
-			"Failed to request releasing VMBox for client %d: %d",
-			vd->client_id, ret);
-	}
-out:
-	vd->client_id = -1;
-}
-
 static int gxp_mcu_link_offload_vmbox(struct gxp_dev *gxp,
 				      struct gxp_virtual_device *vd,
 				      u32 offload_client_id,
@@ -134,24 +99,6 @@ static int gxp_mcu_link_offload_vmbox(struct gxp_dev *gxp,
 			ret);
 
 	return ret;
-}
-
-static void gxp_mcu_unlink_offload_vmbox(struct gxp_dev *gxp,
-					 struct gxp_virtual_device *vd,
-					 u32 offload_client_id,
-					 u8 offload_chip_type)
-{
-	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
-	int ret;
-
-	ret = gxp_kci_link_unlink_offload_vmbox(kci, vd->client_id,
-						offload_client_id,
-						offload_chip_type, false);
-	if (ret)
-		dev_err(gxp->dev,
-			"Failed to unlink offload VMBox for client %d, offload client %u, offload chip type %d: %d",
-			vd->client_id, offload_client_id, offload_chip_type,
-			ret);
 }
 
 static int gxp_mcu_platform_after_vd_block_ready(struct gxp_dev *gxp,
@@ -177,7 +124,7 @@ static int gxp_mcu_platform_after_vd_block_ready(struct gxp_dev *gxp,
 	return 0;
 
 err_release_vmbox:
-	release_vmbox(gxp, vd);
+	gxp_vd_release_vmbox(gxp, vd);
 	return ret;
 }
 
@@ -189,10 +136,7 @@ gxp_mcu_platform_before_vd_block_unready(struct gxp_dev *gxp,
 		return;
 	if (vd->client_id < 0 || vd->mcu_crashed)
 		return;
-	if (vd->tpu_client_id >= 0)
-		gxp_mcu_unlink_offload_vmbox(gxp, vd, vd->tpu_client_id,
-					     GCIP_KCI_OFFLOAD_CHIP_TYPE_TPU);
-	release_vmbox(gxp, vd);
+	gxp_vd_release_vmbox(gxp, vd);
 }
 
 static int gxp_mcu_pm_after_blk_on(struct gxp_dev *gxp)
@@ -260,15 +204,11 @@ static int gxp_mcu_after_map_tpu_mbx_queue(struct gxp_dev *gxp,
 	return 0;
 }
 
-static void gxp_mcu_before_unmap_tpu_mbx_queue(struct gxp_dev *gxp,
-					       struct gxp_client *client)
+static void gxp_mcu_before_unmap_tpu_mbx_queue(struct gxp_dev *gxp, struct gxp_client *client)
 {
 	struct gxp_virtual_device *vd = client->vd;
 
-	if (vd->client_id >= 0 && vd->tpu_client_id >= 0)
-		gxp_mcu_unlink_offload_vmbox(gxp, vd, vd->tpu_client_id,
-					     GCIP_KCI_OFFLOAD_CHIP_TYPE_TPU);
-	vd->tpu_client_id = -1;
+	gxp_vd_unlink_offload_vmbox(gxp, vd, vd->tpu_client_id, GCIP_KCI_OFFLOAD_CHIP_TYPE_TPU);
 }
 
 #endif /* HAS_TPU_EXT */

@@ -582,9 +582,9 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp,
 	struct gxp_core_dump_header *core_dump_header =
 		&core_dump->core_dump_header[core_id];
 	struct gxp_core_header *core_header = &core_dump_header->core_header;
-	int virt_core;
 	int ret = 0;
 #if HAS_COREDUMP
+	int virt_core;
 	struct gxp_common_dump *common_dump = mgr->common_dump;
 	int i;
 	int seg_idx = 0;
