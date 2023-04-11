@@ -1441,7 +1441,7 @@ gxp_get_interface_version(struct gxp_client *client,
 	ibuf.version_minor = GXP_INTERFACE_VERSION_MINOR;
 	memset(ibuf.version_build, 0, GXP_INTERFACE_VERSION_BUILD_BUFFER_SIZE);
 	ret = snprintf(ibuf.version_build,
-		       GXP_INTERFACE_VERSION_BUILD_BUFFER_SIZE - 1,
+		       GXP_INTERFACE_VERSION_BUILD_BUFFER_SIZE - 1, "%s",
 		       get_driver_commit());
 
 	if (ret < 0 || ret >= GXP_INTERFACE_VERSION_BUILD_BUFFER_SIZE) {
