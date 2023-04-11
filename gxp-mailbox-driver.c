@@ -301,6 +301,11 @@ void gxp_mailbox_set_resp_queue_head(struct gxp_mailbox *mailbox, u32 value)
 	gxp_mailbox_write_resp_queue_head(mailbox, value);
 }
 
+void gxp_mailbox_set_control(struct gxp_mailbox *mailbox, u32 val)
+{
+	data_write(mailbox, MBOX_DATA_CONTROL_OFFSET, val);
+}
+
 int gxp_mailbox_inc_cmd_queue_tail_nolock(struct gxp_mailbox *mailbox, u32 inc,
 					  u32 wrap_bit)
 {

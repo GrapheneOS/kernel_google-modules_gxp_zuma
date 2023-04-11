@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP MCU telemetry support
  *
@@ -198,6 +198,8 @@ static int telemetry_mmap_buffer(void *args)
 	unsigned long orig_pgoff = vma->vm_pgoff;
 	int ret;
 
+	if (!vma_data)
+		return -ENOMEM;
 	vma_data->tel = tel;
 	refcount_set(&vma_data->ref_count, 1);
 

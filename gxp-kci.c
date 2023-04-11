@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Kernel Control Interface, implements the protocol between DSP Kernel driver and MCU firmware.
  *
@@ -14,6 +14,7 @@
 
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
+#include "gxp-debug-dump.h"
 #include "gxp-dma.h"
 #include "gxp-kci.h"
 #include "gxp-lpm.h"
@@ -129,11 +130,30 @@ static void gxp_kci_handle_rkci(struct gxp_kci *gkci,
 		gxp_kci_resp_rkci_ack(gkci, resp);
 		break;
 	}
-	case GCIP_RKCI_CLIENT_FATAL_ERROR_NOTIFY:
-		/* TODO(b/265092842): Create a debug dump of corresponding cores (resp->status). */
-		gxp_vd_invalidate(gxp, resp->retval);
+	case GCIP_RKCI_CLIENT_FATAL_ERROR_NOTIFY: {
+		uint core_list = (uint)(resp->status);
+		int client_id = (int)(resp->retval);
+		/*
+		 * core_list param is used for generating debug dumps of respective
+		 * cores in core_list. Dumps are not required to be generated for
+		 * secure client and hence resetting it irrespective of debug dumps
+		 * being enabled or not.
+		 */
+		if (client_id == SECURE_CLIENT_ID)
+			core_list = 0;
+		/*
+		 * Inside gxp_vd_invalidate_with_client_id() after invalidating the client, debug
+		 * dump if enabled would be checked and processed for individual cores in
+		 * core_list. Due to debug dump processing being a time consuming task
+		 * rkci ack is sent first to unblock the mcu to send furhter rkci's. Client
+		 * lock inside gxp_vd_invalidate_with_client_id() would make sure the correctness
+		 * of the logic against possible concurrent scenarios.
+		 */
 		gxp_kci_resp_rkci_ack(gkci, resp);
+		gxp_vd_invalidate_with_client_id(gxp, client_id, core_list);
+
 		break;
+	}
 	default:
 		dev_warn(gxp->dev, "Unrecognized reverse KCI request: %#x",
 			 resp->code);
@@ -644,4 +664,38 @@ void gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,
 	if (ret)
 		dev_err(gxp->dev, "failed to send rkci resp %llu (%d)",
 			rkci_cmd->seq, ret);
+}
+
+int gxp_kci_set_device_properties(struct gxp_kci *gkci,
+				  struct gxp_dev_prop *dev_prop)
+{
+	struct gcip_kci_command_element cmd = {
+		.code = GCIP_KCI_CODE_SET_DEVICE_PROPERTIES,
+	};
+	struct gxp_mapped_resource buf;
+	int ret = 0;
+
+	if (!gkci || !gkci->mbx)
+		return -ENODEV;
+
+	mutex_lock(&dev_prop->lock);
+	if (!dev_prop->initialized)
+		goto out;
+
+	if (gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(dev_prop->opaque))) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	memcpy(buf.vaddr, &dev_prop->opaque, sizeof(dev_prop->opaque));
+
+	cmd.dma.address = buf.daddr;
+	cmd.dma.size = sizeof(dev_prop->opaque);
+
+	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
+	gxp_mcu_mem_free_data(gkci->mcu, &buf);
+
+out:
+	mutex_unlock(&dev_prop->lock);
+	return ret;
 }

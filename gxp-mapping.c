@@ -6,15 +6,50 @@
  */
 
 #include <linux/dma-mapping.h>
+#include <linux/ktime.h>
 #include <linux/mm.h>
 #include <linux/mmap_lock.h>
+#include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 
+#include "gxp-client.h"
 #include "gxp-debug-dump.h"
 #include "gxp-dma.h"
 #include "gxp-internal.h"
 #include "gxp-mapping.h"
+
+#if IS_ENABLED(CONFIG_GXP_TEST)
+/* expose this variable to have unit tests set it dynamically */
+bool gxp_log_iova;
+#else
+static bool gxp_log_iova;
+#endif
+
+module_param_named(log_iova, gxp_log_iova, bool, 0660);
+
+void gxp_mapping_iova_log(struct gxp_client *client, struct gxp_mapping *map,
+			  u8 mask)
+{
+	static bool is_first_log = true;
+	struct device *dev = client->gxp->dev;
+	const char *op = mask & GXP_IOVA_LOG_MAP ? "MAP" : "UNMAP";
+	const char *buf_type = mask & GXP_IOVA_LOG_DMABUF ? "DMABUF" : "BUFFER";
+
+	if (likely(!gxp_log_iova))
+		return;
+
+	if (is_first_log) {
+		dev_info(
+			dev,
+			"iova_log_start: operation, buf_type, tgid, pid, host_address, device_address, size");
+		is_first_log = false;
+	}
+
+	dev_info(dev, "iova_log: %s, %s, %d, %d, %#llx, %#llx, %zu", op,
+		 buf_type, client->pid, client->tgid, map->host_address,
+		 map->device_address, map->size);
+}
 
 /* Destructor for a mapping created with `gxp_mapping_create()` */
 static void destroy_mapping(struct gxp_mapping *mapping)
@@ -56,7 +91,7 @@ static void destroy_mapping(struct gxp_mapping *mapping)
 }
 
 struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
-				       struct gxp_iommu_domain *domain,
+				       struct gcip_iommu_domain *domain,
 				       u64 user_address, size_t size, u32 flags,
 				       enum dma_data_direction dir)
 {
@@ -237,6 +272,13 @@ int gxp_mapping_sync(struct gxp_mapping *mapping, u32 offset, u32 size,
 	}
 
 	/*
+	 * Since the scatter-gather list of the mapping is modified while it is
+	 * being synced, only one sync for a given mapping can occur at a time.
+	 * Rather than maintain a mutex for every mapping, lock the mapping list
+	 * mutex, making all syncs mutually exclusive.
+	 */
+	mutex_lock(&mapping->sync_lock);
+	/*
 	 * Mappings are created at a PAGE_SIZE granularity, however other data
 	 * which is not part of the mapped buffer may be present in the first
 	 * and last pages of the buffer's scattergather list.
@@ -267,16 +309,8 @@ int gxp_mapping_sync(struct gxp_mapping *mapping, u32 offset, u32 size,
 	/* Make sure a valid starting scatterlist was found for the start */
 	if (!start_sg) {
 		ret = -EINVAL;
-		goto out;
+		goto out_unlock;
 	}
-
-	/*
-	 * Since the scatter-gather list of the mapping is modified while it is
-	 * being synced, only one sync for a given mapping can occur at a time.
-	 * Rather than maintain a mutex for every mapping, lock the mapping list
-	 * mutex, making all syncs mutually exclusive.
-	 */
-	mutex_lock(&mapping->sync_lock);
 
 	start_sg->offset += start_diff;
 	start_sg->dma_address += start_diff;
@@ -301,8 +335,8 @@ int gxp_mapping_sync(struct gxp_mapping *mapping, u32 offset, u32 size,
 	start_sg->length += start_diff;
 	start_sg->dma_length += start_diff;
 
+out_unlock:
 	mutex_unlock(&mapping->sync_lock);
-
 out:
 	gxp_mapping_put(mapping);
 

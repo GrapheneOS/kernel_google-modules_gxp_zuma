@@ -26,7 +26,7 @@
 				PSM_CURR_STATE_MASK;                           \
 			if (condition)                                         \
 				break;                                         \
-			udelay(1 * GXP_TIME_DELAY_FACTOR);                     \
+			udelay(2 * GXP_TIME_DELAY_FACTOR);                     \
 			i--;                                                   \
 		}                                                              \
 		return i != 0;                                                 \

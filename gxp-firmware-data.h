@@ -9,9 +9,13 @@
 #ifndef __GXP_FIRMWARE_DATA_H__
 #define __GXP_FIRMWARE_DATA_H__
 
+#include <linux/sizes.h>
+
 #include "gxp-dma.h"
 #include "gxp-internal.h"
 #include "gxp-vd.h"
+
+#define GXP_FW_DATA_SYSCFG_SIZE SZ_8K
 
 enum gxp_fw_data_protocol {
 	/* Use the per-VD configuration region. */
@@ -31,35 +35,20 @@ enum gxp_fw_data_protocol {
 int gxp_fw_data_init(struct gxp_dev *gxp);
 
 /**
- * gxp_fw_data_create_app() - Allocates HW and memory resources needed to create
- *                            a GXP device application (1:1 with a GXP driver
- *                            virtual device) used by the specified physical
- *                            cores.
- * @gxp: The parent GXP device
- * @vd: The virtual device this app is being created for
- *
- * Return:
- * ptr     - A pointer of the newly created application handle, an error pointer
- *           (PTR_ERR) otherwise.
- * -ENOMEM - Insufficient memory to create the application
- */
-void *gxp_fw_data_create_app(struct gxp_dev *gxp,
-			     struct gxp_virtual_device *vd);
-
-/**
- * gxp_fw_data_destroy_app() - Deallocates the HW and memory resources used by
- *                             the specified application.
- * @gxp: The parent GXP device
- * @application: The handle to the application to deallocate
- */
-void gxp_fw_data_destroy_app(struct gxp_dev *gxp, void *application);
-
-/**
  * gxp_fw_data_destroy() - Destroys the FW data manager submodule and free all
  *                         its resources.
  * @gxp: The parent GXP device
  */
 void gxp_fw_data_destroy(struct gxp_dev *gxp);
+
+/**
+ * gxp_fw_data_populate_vd_cfg() - Sets up the resources to VD's per-core config
+ *                                 regions and per-VD config regions.
+ * @gxp: The parent GXP device
+ * @vd: The virtual device to be populated for
+ */
+void gxp_fw_data_populate_vd_cfg(struct gxp_dev *gxp,
+				 struct gxp_virtual_device *vd);
 
 /**
  * gxp_fw_data_set_core_telemetry_descriptors() - Set new logging or tracing
@@ -105,5 +94,38 @@ static inline bool gxp_fw_data_use_per_vd_config(struct gxp_virtual_device *vd)
 {
 	return vd->config_version >= FW_DATA_PROTOCOL_PER_VD_CONFIG;
 }
+
+/**
+ * gxp_fw_data_resource() - Returns the resource of data region for host<->core
+ *		            communication.
+ * @gxp: The GXP device
+ *
+ * This function requires either @gxp->fwdatabuf or @gxp->shared_buf be
+ * initialized, so it couldn't be called during device probe time.
+ *
+ * Return: The resource.
+ */
+struct gxp_mapped_resource gxp_fw_data_resource(struct gxp_dev *gxp);
+
+/**
+ * gxp_fw_data_system_cfg() - Returns the pointer to the system config region.
+ * @gxp: The GXP device
+ *
+ * This function requires either @gxp->fwdatabuf or @gxp->shared_buf be
+ * initialized, so it couldn't be called during device probe time.
+ *
+ * Return: The pointer. This function never fails.
+ */
+void *gxp_fw_data_system_cfg(struct gxp_dev *gxp);
+
+/**
+ * gxp_fw_data_populate_system_config() - Populate settings onto firmware system
+ *                                        config region.
+ * @gxp: The GXP device
+ *
+ * This function is expected to be called after "after_probe" in the probe
+ * procedure since it uses gxp_fw_data_system_cfg().
+ */
+void gxp_fw_data_populate_system_config(struct gxp_dev *gxp);
 
 #endif /* __GXP_FIRMWARE_DATA_H__ */

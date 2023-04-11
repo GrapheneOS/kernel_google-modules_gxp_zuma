@@ -16,6 +16,16 @@
 
 #include "gxp-internal.h"
 
+#if IS_ENABLED(CONFIG_GXP_TEST)
+/* expose this variable to have unit tests set it dynamically */
+extern bool gxp_log_iova;
+#endif
+
+#define GXP_IOVA_LOG_UNMAP (0u << 0)
+#define GXP_IOVA_LOG_MAP (1u << 0)
+#define GXP_IOVA_LOG_BUFFER (0u << 1)
+#define GXP_IOVA_LOG_DMABUF (1u << 1)
+
 struct gxp_mapping {
 	struct rb_node node;
 	refcount_t refcount;
@@ -27,7 +37,7 @@ struct gxp_mapping {
 	 */
 	u64 host_address;
 	struct gxp_dev *gxp;
-	struct gxp_iommu_domain *domain;
+	struct gcip_iommu_domain *domain;
 	/*
 	 * `device_address` and `size` are the base address and size of the
 	 * user buffer a mapping represents.
@@ -55,6 +65,18 @@ struct gxp_mapping {
 };
 
 /**
+ * gxp_mapping_iova_log() - Log IOVA mapping details
+ * @client: The client to create/destroy the mapping for
+ * @map: The mapping being handled
+ * @mask: The mask combination of GXP_IOVA_LOG_*
+ *
+ * Log IOVA mapping details for each map/unmap operation.
+ * Log the field names of the data before first mapping is logged.
+ */
+void gxp_mapping_iova_log(struct gxp_client *client, struct gxp_mapping *map,
+			  u8 mask);
+
+/**
  * gxp_mapping_create() - Create a mapping for a user buffer
  * @gxp: The GXP device to create the mapping for
  * @domain: The iommu domain the mapping for
@@ -74,7 +96,7 @@ struct gxp_mapping {
  *            to map the buffer for the device.
  */
 struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
-				       struct gxp_iommu_domain *domain,
+				       struct gcip_iommu_domain *domain,
 				       u64 user_address, size_t size, u32 flags,
 				       enum dma_data_direction dir);
 

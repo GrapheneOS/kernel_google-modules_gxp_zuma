@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP SSMT driver.
  *
@@ -11,12 +11,12 @@
 #include "gxp-internal.h"
 #include "gxp-ssmt.h"
 
-static inline void ssmt_set_vid_for_sid(void __iomem *ssmt, uint vid, uint sid)
+static inline void ssmt_set_vid_for_idx(void __iomem *ssmt, uint vid, uint idx)
 {
 	/* NS_READ_STREAM_VID_<sid> */
-	writel(vid, ssmt + 0x1000u + 0x4u * sid);
+	writel(vid, ssmt + 0x1000u + 0x4u * idx);
 	/* NS_WRITE_STREAM_VID_<sid> */
-	writel(vid, ssmt + 0x1200u + 0x4u * sid);
+	writel(vid, ssmt + 0x1200u + 0x4u * idx);
 }
 
 int gxp_ssmt_init(struct gxp_dev *gxp, struct gxp_ssmt *ssmt)
@@ -69,7 +69,25 @@ void gxp_ssmt_set_core_vid(struct gxp_ssmt *ssmt, uint core, uint vid)
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(sids); i++) {
-		ssmt_set_vid_for_sid(ssmt->idma_ssmt_base, vid, sids[i]);
-		ssmt_set_vid_for_sid(ssmt->inst_data_ssmt_base, vid, sids[i]);
+		ssmt_set_vid_for_idx(ssmt->idma_ssmt_base, vid, sids[i]);
+		ssmt_set_vid_for_idx(ssmt->inst_data_ssmt_base, vid, sids[i]);
+	}
+}
+
+void gxp_ssmt_set_bypass(struct gxp_ssmt *ssmt)
+{
+	u32 mode;
+	uint core, i;
+
+	mode = readl(ssmt->idma_ssmt_base + SSMT_CFG_OFFSET);
+	if (mode == SSMT_MODE_CLIENT) {
+		for (i = 0; i < MAX_NUM_CONTEXTS; i++) {
+			ssmt_set_vid_for_idx(ssmt->idma_ssmt_base, i, i);
+			ssmt_set_vid_for_idx(ssmt->inst_data_ssmt_base, i, i);
+		}
+	} else {
+		for (core = 0; core < GXP_NUM_CORES; core++)
+			gxp_ssmt_set_core_vid(ssmt, core,
+					      SSMT_CLAMP_MODE_BYPASS);
 	}
 }

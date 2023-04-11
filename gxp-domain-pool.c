@@ -6,25 +6,44 @@
  */
 
 #include <linux/iommu.h>
+#include <linux/moduleparam.h>
 #include <linux/slab.h>
 
-#include <gcip/gcip-domain-pool.h>
+#include <gcip/gcip-iommu.h>
 
 #include "gxp-dma.h"
 #include "gxp-domain-pool.h"
 
-int gxp_domain_pool_init(struct gxp_dev *gxp, struct gcip_domain_pool *pool,
-			 unsigned int size)
+/* If true, enable GCIP custom IOVA allocator. */
+static bool gxp_gcip_dma_window_enable = true;
+module_param_named(gcip_dma_window_enable, gxp_gcip_dma_window_enable, bool,
+		   0660);
+
+/*
+ * See enum gcip_iommu_domain_type.
+ * Default(0) = utilizing iova_domain
+ */
+static int gxp_gcip_iommu_domain_type;
+module_param_named(gcip_iommu_domain_type, gxp_gcip_iommu_domain_type, int,
+		   0660);
+
+int gxp_domain_pool_init(struct gxp_dev *gxp,
+			 struct gcip_iommu_domain_pool *pool, unsigned int size)
 {
-	int ret = gcip_domain_pool_init(gxp->dev, pool, size);
+	int ret = gcip_iommu_domain_pool_init(pool, gxp->dev, 0, 0, SZ_4K, size,
+					      gxp_gcip_iommu_domain_type);
 	__maybe_unused int i;
 
 	if (ret)
 		return ret;
 
+	if (!gxp_gcip_dma_window_enable)
+		gcip_iommu_domain_pool_enable_legacy_mode(pool);
+	gcip_iommu_domain_pool_enable_best_fit_algo(pool);
+
 #if IS_ENABLED(CONFIG_GXP_GEM5)
 	for (i = 0; i < size; i++) {
-		struct iommu_domain *domain = pool->array[i];
+		struct iommu_domain *domain = pool->domain_pool.array[i];
 
 		/*
 		 * Gem5 uses arm-smmu-v3 which requires domain finalization to do iommu map. Calling
@@ -36,7 +55,7 @@ int gxp_domain_pool_init(struct gxp_dev *gxp, struct gcip_domain_pool *pool,
 			dev_err(gxp->dev,
 				"Failed to attach device to iommu domain %d of %u, ret=%d\n",
 				i + 1, size, ret);
-			gxp_domain_pool_destroy(pool);
+			gcip_iommu_domain_pool_destroy(pool);
 			return ret;
 		}
 
@@ -47,33 +66,25 @@ int gxp_domain_pool_init(struct gxp_dev *gxp, struct gcip_domain_pool *pool,
 	return 0;
 }
 
-struct gxp_iommu_domain *gxp_domain_pool_alloc(struct gcip_domain_pool *pool)
+struct gcip_iommu_domain *
+gxp_domain_pool_alloc(struct gcip_iommu_domain_pool *pool)
 {
-	struct iommu_domain *domain = gcip_domain_pool_alloc(pool);
-	struct gxp_iommu_domain *gdomain;
+	struct gcip_iommu_domain *gdomain =
+		gcip_iommu_domain_pool_alloc_domain(pool);
 
-	if (!domain)
+	if (IS_ERR_OR_NULL(gdomain))
 		return NULL;
-
-	gdomain = kmalloc(sizeof(*gdomain), GFP_KERNEL);
-	if (!gdomain) {
-		gcip_domain_pool_free(pool, domain);
-		return NULL;
-	}
-
-	gdomain->domain = domain;
 
 	return gdomain;
 }
 
-void gxp_domain_pool_free(struct gcip_domain_pool *pool,
-			  struct gxp_iommu_domain *gdomain)
+void gxp_domain_pool_free(struct gcip_iommu_domain_pool *pool,
+			  struct gcip_iommu_domain *gdomain)
 {
-	gcip_domain_pool_free(pool, gdomain->domain);
-	kfree(gdomain);
+	gcip_iommu_domain_pool_free_domain(pool, gdomain);
 }
 
-void gxp_domain_pool_destroy(struct gcip_domain_pool *pool)
+void gxp_domain_pool_destroy(struct gcip_iommu_domain_pool *pool)
 {
-	gcip_domain_pool_destroy(pool);
+	gcip_iommu_domain_pool_destroy(pool);
 }

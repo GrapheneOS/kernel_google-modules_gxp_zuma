@@ -22,6 +22,7 @@ gxp-objs += \
 		gxp-doorbell.o \
 		gxp-eventfd.o \
 		gxp-firmware-data.o \
+		gxp-firmware-loader.o \
 		gxp-firmware.o \
 		gxp-lpm.o \
 		gxp-mailbox-manager.o \
@@ -29,11 +30,9 @@ gxp-objs += \
 		gxp-mapping.o \
 		gxp-mb-notification.o \
 		gxp-pm.o \
-		gxp-range-alloc.o \
 		gxp-ssmt.o \
 		gxp-thermal.o \
-		gxp-vd.o \
-		gxp-wakelock.o
+		gxp-vd.o
 
 
 ifeq ($(GXP_CHIP),CALLISTO)
@@ -69,11 +68,11 @@ M ?= $(shell pwd)
 
 # Obtain the current git commit hash for logging on probe
 GIT_PATH=$(shell cd $(KERNEL_SRC); readlink -e $(M))
-ifeq ($(shell git --git-dir=$(GIT_PATH)/.git rev-parse --is-inside-work-tree),true)
-        GIT_REPO_STATE=$(shell (git --git-dir=$(GIT_PATH)/.git --work-tree=$(GIT_PATH) status --porcelain | grep -q .) && echo -dirty)
-        ccflags-y       += -DGIT_REPO_TAG=\"$(shell git --git-dir=$(GIT_PATH)/.git rev-parse --short HEAD)$(GIT_REPO_STATE)\"
-else
-        ccflags-y       += -DGIT_REPO_TAG=\"Not\ a\ git\ repository\"
+GIT_BIN=/usr/bin/git
+GIT=$(GIT_BIN) -C $(GIT_PATH)
+ifeq ($(shell $(GIT) rev-parse --is-inside-work-tree),true)
+        GIT_REPO_STATE=$(shell ($(GIT) --work-tree=$(GIT_PATH) status --porcelain | grep -q .) && echo -dirty)
+        ccflags-y       += -DGIT_REPO_TAG=\"$(shell $(GIT) rev-parse --short HEAD)$(GIT_REPO_STATE)\"
 endif
 
 # If building via make directly, specify target platform by adding

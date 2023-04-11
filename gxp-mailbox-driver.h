@@ -75,6 +75,8 @@ void gxp_mailbox_set_cmd_queue_tail(struct gxp_mailbox *mailbox, u32 value);
 /* Sets mailbox->resp_queue_head and corresponding CSR on device. */
 void gxp_mailbox_set_resp_queue_head(struct gxp_mailbox *mailbox, u32 value);
 
+void gxp_mailbox_set_control(struct gxp_mailbox *mailbox, u32 val);
+
 /*
  * Increases the command queue tail by @inc.
  *
