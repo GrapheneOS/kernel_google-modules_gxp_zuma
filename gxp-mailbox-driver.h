@@ -145,7 +145,7 @@ u32 gxp_mailbox_gcip_ops_get_cmd_queue_tail(struct gcip_mailbox *mailbox);
 void gxp_mailbox_gcip_ops_inc_cmd_queue_tail(struct gcip_mailbox *mailbox,
 					     u32 inc);
 int gxp_mailbox_gcip_ops_acquire_cmd_queue_lock(struct gcip_mailbox *mailbox,
-						bool try);
+						bool try, bool *atomic);
 void gxp_mailbox_gcip_ops_release_cmd_queue_lock(struct gcip_mailbox *mailbox);
 
 u32 gxp_mailbox_gcip_ops_get_resp_queue_size(struct gcip_mailbox *mailbox);
@@ -154,7 +154,7 @@ u32 gxp_mailbox_gcip_ops_get_resp_queue_tail(struct gcip_mailbox *mailbox);
 void gxp_mailbox_gcip_ops_inc_resp_queue_head(struct gcip_mailbox *mailbox,
 					      u32 inc);
 int gxp_mailbox_gcip_ops_acquire_resp_queue_lock(struct gcip_mailbox *mailbox,
-						 bool try);
+						 bool try, bool *atomic);
 void gxp_mailbox_gcip_ops_release_resp_queue_lock(struct gcip_mailbox *mailbox);
 
 void gxp_mailbox_gcip_ops_acquire_wait_list_lock(struct gcip_mailbox *mailbox,

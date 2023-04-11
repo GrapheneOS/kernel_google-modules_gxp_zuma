@@ -24,7 +24,6 @@
 #include "gxp-ssmt.h"
 #include "gxp.h"
 
-#define CREATE_TRACE_POINTS
 #include <trace/events/gxp.h>
 
 struct gxp_dma_iommu_manager {
@@ -727,11 +726,12 @@ void gxp_dma_sync_sg_for_device(struct gxp_dev *gxp, struct scatterlist *sg,
 struct sg_table *
 gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
 			      struct gcip_iommu_domain *gdomain,
-			      struct dma_buf_attachment *attachment,
+			      struct dma_buf_attachment *attachment, u32 flags,
 			      enum dma_data_direction direction)
 {
 	struct sg_table *sgt;
-	int prot = dma_info_to_prot(direction, /*coherent=*/0, /*attrs=*/0);
+	bool coherent = flags & GXP_MAP_COHERENT ? true : false;
+	int prot = dma_info_to_prot(direction, coherent, /*attrs=*/0);
 	ssize_t size_mapped;
 	int ret;
 

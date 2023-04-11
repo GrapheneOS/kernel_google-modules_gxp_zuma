@@ -14,7 +14,6 @@ gxp-objs += \
 		gxp-client.o \
 		gxp-core-telemetry.o \
 		gxp-debug-dump.o \
-		gxp-debugfs.o \
 		gxp-dma-fence.o \
 		gxp-dma-iommu.o \
 		gxp-dmabuf.o \
@@ -32,6 +31,7 @@ gxp-objs += \
 		gxp-pm.o \
 		gxp-ssmt.o \
 		gxp-thermal.o \
+		gxp-trace.o \
 		gxp-vd.o
 
 
@@ -39,6 +39,7 @@ ifeq ($(GXP_CHIP),CALLISTO)
 
 gxp-objs += \
 		callisto-platform.o \
+		callisto-pm.o \
 		gsx01-mailbox-driver.o \
 		gxp-dci.o \
 		gxp-kci.o \

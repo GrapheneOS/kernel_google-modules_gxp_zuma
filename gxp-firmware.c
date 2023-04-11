@@ -21,6 +21,7 @@
 #include <gcip/gcip-image-config.h>
 
 #include "gxp-bpm.h"
+#include "gxp-client.h"
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
@@ -41,6 +42,7 @@
 #endif
 
 #define FW_HEADER_SIZE		GCIP_FW_HEADER_SIZE
+#define DEBUGFS_FIRMWARE_RUN "firmware_run"
 
 static int gxp_dsp_fw_auth_disable;
 module_param_named(dsp_fw_auth_disable, gxp_dsp_fw_auth_disable, int, 0660);
@@ -573,6 +575,129 @@ static const struct attribute_group gxp_firmware_attr_group = {
 	.attrs = dev_attrs,
 };
 
+static int debugfs_firmware_run_set(void *data, u64 val)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
+	struct gxp_client *client;
+	int ret = 0;
+	uint core;
+	bool acquired_block_wakelock;
+
+	ret = gxp_firmware_loader_load_if_needed(gxp);
+	if (ret) {
+		dev_err(gxp->dev, "Unable to load firmware files\n");
+		return ret;
+	}
+
+	mutex_lock(&gxp->debugfs_client_lock);
+
+	if (val) {
+		if (gxp->debugfs_client) {
+			dev_err(gxp->dev, "Firmware is already running!\n");
+			ret = -EIO;
+			goto out;
+		}
+
+		/*
+		 * Since this debugfs node destroys, then creates new fw_data,
+		 * and runs firmware on every DSP core, it cannot be run if
+		 * any of the cores already has a VD running on it.
+		 */
+		down_write(&gxp->vd_semaphore);
+		for (core = 0; core < GXP_NUM_CORES; core++) {
+			if (gxp->core_to_vd[core]) {
+				dev_err(gxp->dev,
+					"Unable to run firmware with debugfs while other clients are running\n");
+				ret = -EBUSY;
+				up_write(&gxp->vd_semaphore);
+				goto out;
+			}
+		}
+		up_write(&gxp->vd_semaphore);
+
+		client = gxp_client_create(gxp);
+		if (IS_ERR(client)) {
+			dev_err(gxp->dev, "Failed to create client\n");
+			goto out;
+		}
+		gxp->debugfs_client = client;
+
+		mutex_lock(&gxp->client_list_lock);
+		list_add(&client->list_entry, &gxp->client_list);
+		mutex_unlock(&gxp->client_list_lock);
+
+		down_write(&client->semaphore);
+
+		ret = gxp_client_allocate_virtual_device(client, GXP_NUM_CORES,
+							 0);
+		if (ret) {
+			dev_err(gxp->dev, "Failed to allocate VD\n");
+			goto err_destroy_client;
+		}
+
+		ret = gxp_client_acquire_block_wakelock(
+			client, &acquired_block_wakelock);
+		if (ret) {
+			dev_err(gxp->dev, "Failed to acquire BLOCK wakelock\n");
+			goto err_destroy_client;
+		}
+
+		ret = gxp_client_acquire_vd_wakelock(client, uud_states);
+		if (ret) {
+			dev_err(gxp->dev, "Failed to acquire VD wakelock\n");
+			goto err_release_block_wakelock;
+		}
+
+		up_write(&client->semaphore);
+	} else {
+		if (!gxp->debugfs_client) {
+			dev_err(gxp->dev, "Firmware is not running!\n");
+			ret = -EIO;
+			goto out;
+		}
+
+		/*
+		 * Cleaning up the client will stop the VD it owns and release
+		 * the BLOCK wakelock it is holding.
+		 */
+		goto out_destroy_client;
+	}
+
+out:
+	mutex_unlock(&gxp->debugfs_client_lock);
+
+	return ret;
+
+err_release_block_wakelock:
+	gxp_client_release_block_wakelock(client);
+err_destroy_client:
+	up_write(&client->semaphore);
+out_destroy_client:
+	mutex_lock(&gxp->client_list_lock);
+	list_del(&gxp->debugfs_client->list_entry);
+	mutex_unlock(&gxp->client_list_lock);
+
+	/* Destroying a client cleans up any VDss or wakelocks it held. */
+	gxp_client_destroy(gxp->debugfs_client);
+	gxp->debugfs_client = NULL;
+	mutex_unlock(&gxp->debugfs_client_lock);
+	return ret;
+}
+
+static int debugfs_firmware_run_get(void *data, u64 *val)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
+
+	down_read(&gxp->vd_semaphore);
+	*val = gxp->firmware_mgr->firmware_running;
+	up_read(&gxp->vd_semaphore);
+
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(debugfs_firmware_run_fops, debugfs_firmware_run_get,
+			 debugfs_firmware_run_set, "%llx\n");
+
 int gxp_fw_init(struct gxp_dev *gxp)
 {
 	u32 ver, proc_id;
@@ -658,6 +783,10 @@ int gxp_fw_init(struct gxp_dev *gxp)
 		goto out_fw_destroy;
 
 	mgr->firmware_running = 0;
+
+	debugfs_create_file(DEBUGFS_FIRMWARE_RUN, 0600, gxp->d_entry, gxp,
+			    &debugfs_firmware_run_fops);
+
 	return 0;
 
 out_fw_destroy:
@@ -672,6 +801,15 @@ void gxp_fw_destroy(struct gxp_dev *gxp)
 
 	if (IS_GXP_TEST && !mgr)
 		return;
+
+	debugfs_remove(debugfs_lookup(DEBUGFS_FIRMWARE_RUN, gxp->d_entry));
+	/*
+	 * Now that debugfs is torn down, and no other calls to
+	 * `debugfs_firmware_run_set()` can occur, destroy any client that may
+	 * have been left running.
+	 */
+	if (gxp->debugfs_client)
+		gxp_client_destroy(gxp->debugfs_client);
 
 	device_remove_group(gxp->dev, &gxp_firmware_attr_group);
 

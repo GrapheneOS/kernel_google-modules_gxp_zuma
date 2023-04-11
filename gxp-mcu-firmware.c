@@ -76,8 +76,7 @@ int gxp_mcu_firmware_load(struct gxp_dev *gxp, char *fw_name,
 	struct device *dev = gxp->dev;
 	struct gcip_image_config *imgcfg;
 	struct gcip_common_image_header *hdr;
-	size_t offset, size;
-	bool is_signed;
+	size_t size;
 
 	mutex_lock(&mcu_fw->lock);
 	if (mcu_fw->status == GCIP_FW_LOADING ||
@@ -99,15 +98,13 @@ int gxp_mcu_firmware_load(struct gxp_dev *gxp, char *fw_name,
 
 	hdr = (struct gcip_common_image_header *)(*fw)->data;
 
-	is_signed = is_signed_firmware(*fw, hdr);
-
-	if (is_signed) {
-		offset = GCIP_FW_HEADER_SIZE;
-		size = (*fw)->size - GCIP_FW_HEADER_SIZE;
-	} else {
-		offset = 0;
-		size = (*fw)->size;
+	if (!is_signed_firmware(*fw, hdr)) {
+		dev_err(dev, "Invalid firmware format %s", fw_name);
+		ret = -EINVAL;
+		goto err_release_firmware;
 	}
+
+	size = (*fw)->size - GCIP_FW_HEADER_SIZE;
 
 	if (size > mcu_fw->image_buf.size) {
 		dev_err(dev, "firmware %s size %#zx exceeds buffer size %#llx",
@@ -116,43 +113,41 @@ int gxp_mcu_firmware_load(struct gxp_dev *gxp, char *fw_name,
 		goto err_release_firmware;
 	}
 
-	if (is_signed) {
-		imgcfg = get_image_config_from_hdr(hdr);
-		if (!imgcfg) {
-			dev_err(dev, "Unsupported image header generation");
-			ret = -EINVAL;
-			goto err_release_firmware;
-		}
-		/* Initialize the secure telemetry buffers if available */
-		if (imgcfg->secure_telemetry_region_start) {
-			ret = gxp_secure_core_telemetry_init(
-				gxp, imgcfg->secure_telemetry_region_start);
-			if (ret)
-				dev_warn(
-					dev,
-					"Secure telemetry initialization failed.");
-		}
-		ret = gcip_image_config_parse(&mcu_fw->cfg_parser, imgcfg);
-		if (ret)
-			dev_err(dev, "image config parsing failed: %d", ret);
-		mcu_fw->is_secure = !gcip_image_config_is_ns(imgcfg);
-	} else {
-		ret = gxp_iommu_map(gxp, gxp_iommu_get_domain_for_dev(gxp),
-				    mcu_fw->image_buf.daddr,
-				    mcu_fw->image_buf.paddr,
-				    mcu_fw->image_buf.size,
-				    IOMMU_READ | IOMMU_WRITE);
-		mcu_fw->is_secure = false;
-	}
-
-	if (ret)
+	imgcfg = get_image_config_from_hdr(hdr);
+	if (!imgcfg) {
+		dev_err(dev, "Unsupported image header generation");
+		ret = -EINVAL;
 		goto err_release_firmware;
+	}
+	/* Initialize the secure telemetry buffers if available. */
+	if (imgcfg->secure_telemetry_region_start) {
+		ret = gxp_secure_core_telemetry_init(
+			gxp, imgcfg->secure_telemetry_region_start);
+		if (ret)
+			dev_warn(dev,
+				 "Secure telemetry initialization failed.");
+	}
+	ret = gcip_image_config_parse(&mcu_fw->cfg_parser, imgcfg);
+	if (ret) {
+		dev_err(dev, "image config parsing failed: %d", ret);
+		goto err_release_firmware;
+	}
+	if (!gcip_image_config_is_ns(imgcfg) && !gxp->gsa_dev) {
+		dev_err(dev,
+			"Can't run MCU in secure mode without the GSA device");
+		ret = -EINVAL;
+		goto err_clear_config;
+	}
+	mcu_fw->is_secure = !gcip_image_config_is_ns(imgcfg);
 
-	memcpy(mcu_fw->image_buf.vaddr, (*fw)->data + offset, size);
+	memcpy(mcu_fw->image_buf.vaddr, (*fw)->data + GCIP_FW_HEADER_SIZE,
+	       size);
 out:
 	mutex_unlock(&mcu_fw->lock);
 	return 0;
 
+err_clear_config:
+	gcip_image_config_clear(&mcu_fw->cfg_parser);
 err_release_firmware:
 	release_firmware(*fw);
 err_out:
@@ -163,9 +158,7 @@ err_out:
 
 void gxp_mcu_firmware_unload(struct gxp_dev *gxp, const struct firmware *fw)
 {
-	struct gcip_common_image_header *hdr;
 	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
-	bool is_signed;
 
 	mutex_lock(&mcu_fw->lock);
 	if (mcu_fw->status == GCIP_FW_INVALID) {
@@ -173,15 +166,7 @@ void gxp_mcu_firmware_unload(struct gxp_dev *gxp, const struct firmware *fw)
 		mutex_unlock(&mcu_fw->lock);
 		return;
 	}
-	hdr = (struct gcip_common_image_header *)fw->data;
-	is_signed = is_signed_firmware(fw, hdr);
-	if (is_signed)
-		gcip_image_config_clear(&mcu_fw->cfg_parser);
-	else
-		gxp_iommu_unmap(mcu_fw->gxp,
-				gxp_iommu_get_domain_for_dev(mcu_fw->gxp),
-				mcu_fw->image_buf.daddr,
-				mcu_fw->image_buf.size);
+	gcip_image_config_clear(&mcu_fw->cfg_parser);
 	mcu_fw->status = GCIP_FW_INVALID;
 	mutex_unlock(&mcu_fw->lock);
 }
@@ -266,8 +251,10 @@ static int gxp_mcu_firmware_power_up(struct gxp_mcu_firmware *mcu_fw)
 
 	if (mcu_fw->is_secure) {
 		state = gsa_send_dsp_cmd(gxp->gsa_dev, GSA_DSP_START);
-		if (state != GSA_DSP_STATE_RUNNING)
+		if (state != GSA_DSP_STATE_RUNNING) {
+			ret = -EIO;
 			goto err_lpm_down;
+		}
 	} else {
 		program_iremap_csr(gxp, &mcu_fw->image_buf);
 		/* Raise wakeup doorbell */

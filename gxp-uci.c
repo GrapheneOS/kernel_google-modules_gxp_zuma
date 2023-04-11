@@ -162,7 +162,7 @@ static void gxp_uci_mailbox_manager_release_unconsumed_async_resps(
 
 static void gxp_uci_mailbox_manager_set_ops(struct gxp_mailbox_manager *mgr)
 {
-	/* This operator will be used only from the gxp-debugfs.c. */
+	/* This operator will be used only from the debugfs. */
 	mgr->execute_cmd = gxp_uci_mailbox_manager_execute_cmd;
 	/*
 	 * Most mailbox manager operators are used by the `gxp-common-platform.c` when the device

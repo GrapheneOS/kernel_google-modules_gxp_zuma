@@ -30,7 +30,6 @@
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
-#include "gxp-debugfs.h"
 #include "gxp-dma-fence.h"
 #include "gxp-dma.h"
 #include "gxp-dmabuf.h"
@@ -1249,7 +1248,7 @@ static int gxp_map_dmabuf(struct gxp_client *client,
 	}
 
 	mapping = gxp_dmabuf_map(gxp, client->vd->domain, ibuf.dmabuf_fd,
-				 /*gxp_dma_flags=*/0,
+				 ibuf.flags,
 				 mapping_flags_to_dma_dir(ibuf.flags));
 	if (IS_ERR(mapping)) {
 		ret = PTR_ERR(mapping);
@@ -1422,7 +1421,7 @@ out:
 static inline const char *get_driver_commit(void)
 {
 #if IS_ENABLED(CONFIG_MODULE_SCMVERSION)
-	return THIS_MODULE->scmversion;
+	return THIS_MODULE->scmversion ?: "scmversion missing";
 #elif defined(GIT_REPO_TAG)
 	return GIT_REPO_TAG;
 #else
@@ -1764,6 +1763,72 @@ static const struct file_operations gxp_fops = {
 	.unlocked_ioctl = gxp_ioctl,
 };
 
+static int debugfs_cmu_mux1_set(void *data, u64 val)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
+
+	if (IS_ERR_OR_NULL(gxp->cmu.vaddr)) {
+		dev_err(gxp->dev, "CMU registers are not mapped");
+		return -ENODEV;
+	}
+	if (val > 1) {
+		dev_err(gxp->dev,
+			"Incorrect val for cmu_mux1, only 0 and 1 allowed\n");
+		return -EINVAL;
+	}
+
+	writel(val << 4, gxp->cmu.vaddr + PLL_CON0_PLL_AUR);
+	return 0;
+}
+
+static int debugfs_cmu_mux1_get(void *data, u64 *val)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
+
+	if (IS_ERR_OR_NULL(gxp->cmu.vaddr)) {
+		dev_err(gxp->dev, "CMU registers are not mapped");
+		return -ENODEV;
+	}
+	*val = readl(gxp->cmu.vaddr + PLL_CON0_PLL_AUR);
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(debugfs_cmu_mux1_fops, debugfs_cmu_mux1_get,
+			 debugfs_cmu_mux1_set, "%llu\n");
+
+static int debugfs_cmu_mux2_set(void *data, u64 val)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
+
+	if (IS_ERR_OR_NULL(gxp->cmu.vaddr)) {
+		dev_err(gxp->dev, "CMU registers are not mapped");
+		return -ENODEV;
+	}
+	if (val > 1) {
+		dev_err(gxp->dev,
+			"Incorrect val for cmu_mux2, only 0 and 1 allowed\n");
+		return -EINVAL;
+	}
+
+	writel(val << 4, gxp->cmu.vaddr + PLL_CON0_NOC_USER);
+	return 0;
+}
+
+static int debugfs_cmu_mux2_get(void *data, u64 *val)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
+
+	if (IS_ERR_OR_NULL(gxp->cmu.vaddr)) {
+		dev_err(gxp->dev, "CMU registers are not mapped");
+		return -ENODEV;
+	}
+	*val = readl(gxp->cmu.vaddr + PLL_CON0_NOC_USER);
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(debugfs_cmu_mux2_fops, debugfs_cmu_mux2_get,
+			 debugfs_cmu_mux2_set, "%llu\n");
+
 static int gxp_set_reg_resources(struct platform_device *pdev, struct gxp_dev *gxp)
 {
 	struct device *dev = gxp->dev;
@@ -1841,6 +1906,12 @@ static int gxp_set_reg_resources(struct platform_device *pdev, struct gxp_dev *g
 			return -ENODEV;
 		}
 	}
+
+	/* Will be removed by gxp_remove_debugdir. */
+	debugfs_create_file("cmumux1", 0600, gxp->d_entry, gxp,
+			    &debugfs_cmu_mux1_fops);
+	debugfs_create_file("cmumux2", 0600, gxp->d_entry, gxp,
+			    &debugfs_cmu_mux2_fops);
 
 	return 0;
 }
@@ -1993,6 +2064,31 @@ static __exit void gxp_fs_exit(void)
 	class_destroy(gxp_class);
 }
 
+static void gxp_remove_debugdir(struct gxp_dev *gxp)
+{
+	if (!gxp->d_entry)
+		return;
+
+	debugfs_remove_recursive(gxp->d_entry);
+}
+
+/*
+ * Creates the GXP debug FS directory and assigns to @gxp->d_entry.
+ * On failure a warning is logged and @gxp->d_entry is NULL.
+ */
+static void gxp_create_debugdir(struct gxp_dev *gxp)
+{
+	gxp->d_entry = debugfs_create_dir(GXP_NAME, NULL);
+	if (IS_ERR_OR_NULL(gxp->d_entry)) {
+		dev_warn(gxp->dev, "Create debugfs dir failed: %d",
+			 PTR_ERR_OR_ZERO(gxp->d_entry));
+		gxp->d_entry = NULL;
+	}
+
+	mutex_init(&gxp->debugfs_client_lock);
+	gxp->debugfs_wakelock_held = false;
+}
+
 static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_dev *gxp)
 {
 	struct device *dev = &pdev->dev;
@@ -2000,6 +2096,8 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	u64 prop;
 
 	dev_notice(dev, "Probing gxp driver with commit %s\n", get_driver_commit());
+
+	gxp_create_debugdir(gxp);
 
 	platform_set_drvdata(pdev, gxp);
 	gxp->dev = dev;
@@ -2012,8 +2110,6 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	ret = gxp_set_reg_resources(pdev, gxp);
 	if (ret)
 		return ret;
-
-	gxp_create_debugdir(gxp);
 
 	ret = gxp_pm_init(gxp);
 	if (ret) {
@@ -2140,7 +2236,6 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	if (ret)
 		goto err_before_remove;
 
-	gxp_create_debugfs(gxp);
 	gxp_debug_pointer = gxp;
 
 	dev_info(dev, "Probe finished");
@@ -2167,7 +2262,7 @@ err_free_domain_pool:
 	kfree(gxp->domain_pool);
 err_debug_dump_exit:
 	gxp_debug_dump_exit(gxp);
-	/* mailbox manager init doesn't need revert */
+	gxp_mailbox_destroy_manager(gxp, gxp->mailbox_mgr);
 err_dma_exit:
 	gxp_dma_exit(gxp);
 err_put_tpu_dev:
@@ -2183,15 +2278,10 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 {
 	struct gxp_dev *gxp = platform_get_drvdata(pdev);
 
-	/*
-	 * Call gxp_thermal_exit before gxp_remove_debugdir since it will
-	 * remove its own debugfs.
-	 */
-	gxp_thermal_exit(gxp);
-	gxp_remove_debugdir(gxp);
 	gxp_device_remove(gxp);
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);
+	gxp_thermal_exit(gxp);
 	gxp_core_telemetry_exit(gxp);
 	gxp_fw_data_destroy(gxp);
 	gxp_vd_destroy(gxp);
@@ -2200,10 +2290,12 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 	gxp_domain_pool_destroy(gxp->domain_pool);
 	kfree(gxp->domain_pool);
 	gxp_debug_dump_exit(gxp);
+	gxp_mailbox_destroy_manager(gxp, gxp->mailbox_mgr);
 	gxp_dma_exit(gxp);
 	gxp_put_tpu_dev(gxp);
 	gxp_put_gsa_dev(gxp);
 	gxp_pm_destroy(gxp);
+	gxp_remove_debugdir(gxp);
 
 	gxp_debug_pointer = NULL;
 

@@ -11,7 +11,10 @@
 #if !defined(_TRACE_GXP_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_GXP_H
 
+#include <linux/stringify.h>
 #include <linux/tracepoint.h>
+
+#define GXP_TRACE_SYSTEM __stringify(TRACE_SYSTEM)
 
 TRACE_EVENT(gxp_dma_map_sg_start,
 

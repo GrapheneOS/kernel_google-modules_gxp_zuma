@@ -65,6 +65,8 @@ enum gsa_dsp_cmd {
  */
 static inline int gsa_send_dsp_cmd(struct device *gsa, enum gsa_dsp_cmd cmd)
 {
+	if (cmd == GSA_DSP_START)
+		return GSA_DSP_STATE_RUNNING;
 	return GSA_DSP_STATE_INACTIVE;
 }
 
