@@ -9,12 +9,14 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 
+#include <gcip/gcip-pm.h>
+
 #include "gxp-client.h"
 #include "gxp-dma.h"
 #include "gxp-internal.h"
 #include "gxp-pm.h"
 #include "gxp-vd.h"
-#include "gxp-wakelock.h"
+#include "gxp.h"
 
 struct gxp_client *gxp_client_create(struct gxp_dev *gxp)
 {
@@ -40,13 +42,16 @@ void gxp_client_destroy(struct gxp_client *client)
 	struct gxp_dev *gxp = client->gxp;
 	int core;
 
-	if (client->vd && client->has_block_wakelock)
-		gxp_vd_block_unready(client->vd);
-
 	if (client->vd && client->vd->state != GXP_VD_OFF) {
-		down_read(&gxp->vd_semaphore);
+		down_write(&gxp->vd_semaphore);
 		gxp_vd_stop(client->vd);
-		up_read(&gxp->vd_semaphore);
+		up_write(&gxp->vd_semaphore);
+	}
+
+	if (client->vd && client->has_block_wakelock) {
+		down_write(&gxp->vd_semaphore);
+		gxp_vd_block_unready(client->vd);
+		up_write(&gxp->vd_semaphore);
 	}
 
 	for (core = 0; core < GXP_NUM_CORES; core++) {
@@ -54,19 +59,13 @@ void gxp_client_destroy(struct gxp_client *client)
 			gxp_eventfd_put(client->mb_eventfds[core]);
 	}
 
-	if (client->vd_invalid_eventfd)
-		gxp_eventfd_put(client->vd_invalid_eventfd);
-
 #if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&             \
 	!IS_ENABLED(CONFIG_GXP_GEM5)
 	if (client->tpu_file) {
 		if (client->vd) {
 			if (gxp->before_unmap_tpu_mbx_queue)
 				gxp->before_unmap_tpu_mbx_queue(gxp, client);
-			/*
-			 * TODO(b/237624453): remove '|| 1' once the MCU supports DSP->TPU interop
-			 */
-			if (gxp_is_direct_mode(gxp) || 1)
+			if (gxp_is_direct_mode(gxp))
 				gxp_dma_unmap_tpu_buffer(gxp,
 							 client->vd->domain,
 							 client->mbx_desc);
@@ -77,7 +76,7 @@ void gxp_client_destroy(struct gxp_client *client)
 #endif
 
 	if (client->has_block_wakelock) {
-		gxp_wakelock_release(client->gxp);
+		gcip_pm_put(client->gxp->power_mgr->pm);
 		gxp_pm_update_requested_power_states(
 			gxp, client->requested_states, off_states);
 	}
@@ -181,7 +180,7 @@ int gxp_client_acquire_block_wakelock(struct gxp_client *client,
 
 	lockdep_assert_held(&client->semaphore);
 	if (!client->has_block_wakelock) {
-		ret = gxp_wakelock_acquire(gxp);
+		ret = gcip_pm_get(gxp->power_mgr->pm);
 		if (ret)
 			return ret;
 		*acquired_wakelock = true;
@@ -208,7 +207,7 @@ int gxp_client_acquire_block_wakelock(struct gxp_client *client,
 
 err_wakelock_release:
 	if (*acquired_wakelock) {
-		gxp_wakelock_release(gxp);
+		gcip_pm_put(gxp->power_mgr->pm);
 		*acquired_wakelock = false;
 	}
 	return ret;
@@ -222,13 +221,15 @@ void gxp_client_release_block_wakelock(struct gxp_client *client)
 	if (!client->has_block_wakelock)
 		return;
 
-	if (client->vd)
+	gxp_client_release_vd_wakelock(client);
+
+	if (client->vd) {
+		down_write(&gxp->vd_semaphore);
 		gxp_vd_block_unready(client->vd);
+		up_write(&gxp->vd_semaphore);
+	}
 
-	if (client->has_vd_wakelock)
-		gxp_client_release_vd_wakelock(client);
-
-	gxp_wakelock_release(gxp);
+	gcip_pm_put(gxp->power_mgr->pm);
 	client->has_block_wakelock = false;
 }
 

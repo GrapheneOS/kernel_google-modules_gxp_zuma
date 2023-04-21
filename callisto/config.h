@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Include all configuration files for Callisto.
  *
@@ -34,11 +34,9 @@
 #define GXP_SHARED_BUFFER_SIZE SZ_512K
 /* Size of slice per VD. */
 #define GXP_SHARED_SLICE_SIZE SZ_32K
-/* TODO(b/265730182): set to 7 */
-#define GXP_NUM_SHARED_SLICES 16
+/* The max number of active virtual devices. */
+#define GXP_NUM_SHARED_SLICES 7
 
-/* TODO(b/234098135): remove this when FW supports suspend / resume */
-#define DISABLE_VD_SUSPEND_RESUME_SUPPORT
 /*
  * Can be coherent with AP
  *
@@ -47,6 +45,11 @@
  * specifying in DT so as to support both coherent and non-coherent buffers.
  */
 #define GXP_IS_DMA_COHERENT
+
+/* HW watchdog */
+#define GXP_WDG_DT_IRQ_INDEX 5
+#define GXP_WDG_ENABLE_BIT 0
+#define GXP_WDG_INT_CLEAR_BIT 5
 
 #include "config-pwr-state.h"
 #include "context.h"

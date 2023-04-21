@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP user command interface.
  *
@@ -100,13 +100,14 @@ static void gxp_uci_mailbox_manager_release_unconsumed_async_resps(
 		wait_list_entry) {
 		cur->wait_queue = NULL;
 	}
+	vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue_closed = true;
 
 	spin_unlock_irqrestore(&vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
 			       flags);
 
 	/*
-	 * From here it is guaranteed that @wait_queue will not be manipulated by the arrived
-	 * callback.
+	 * From here it is guaranteed that @wait_queue will not be manipulated by the arrived,
+	 * timedout callback or `gxp_uci_send_command`.
 	 */
 
 	/*
@@ -125,16 +126,32 @@ static void gxp_uci_mailbox_manager_release_unconsumed_async_resps(
 	/*
 	 * From here it is guaranteed that no responses will access @vd and be handled by arrived
 	 * or timedout callbacks. Therefore, @dest_queue will not be changed anymore.
+	 *
+	 * We don't have to care about the `gxp_uci_wait_async_response` function is being called
+	 * in the middle because the meaning of this function is called is that @vd is being
+	 * released and the `gxp_uci_wait_async_response` function will never be called anymore.
 	 */
 
-	/* Clean up unconsumed responses in the @dest_queue. */
+	/*
+	 * Clean up responses in the @dest_queue.
+	 * Responses in this queue are arrived/timedout which means they are removed from the
+	 * @wait_queue and put into the @dest_queue. However, the runtime hasn't consumed them via
+	 * the `gxp_uci_wait_async_response` function yet. Therefore, we have to remove them from
+	 * the queue and release their awaiter.
+	 */
 	list_for_each_entry_safe (
 		cur, nxt, &vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
 		dest_list_entry) {
 		list_del(&cur->dest_list_entry);
+		gcip_mailbox_release_awaiter(cur->awaiter);
 	}
 
-	/* Clean up @wait_queue and release awaiters. */
+	/*
+	 * Clean up responses in the @wait_queue.
+	 * Responses in this queue are not arrived/timedout yet which means they are still in the
+	 * @wait_queue and not put into the @dest_queue. Therefore, we have to remove them from the
+	 * queue and release their awaiter.
+	 */
 	list_for_each_entry_safe (
 		cur, nxt, &vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
 		wait_list_entry) {
@@ -210,6 +227,34 @@ static void gxp_uci_set_resp_elem_status(struct gcip_mailbox *mailbox,
 	elem->code = status;
 }
 
+static int
+gxp_uci_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
+				 struct gcip_mailbox_resp_awaiter *awaiter)
+{
+	struct gxp_uci_async_response *async_resp;
+	struct mailbox_resp_queue *mailbox_resp_queue;
+	int ret = 0;
+
+	if (!awaiter)
+		return 0;
+
+	async_resp = awaiter->data;
+	mailbox_resp_queue = container_of(
+		async_resp->wait_queue, struct mailbox_resp_queue, wait_queue);
+
+	spin_lock(async_resp->queue_lock);
+	if (mailbox_resp_queue->wait_queue_closed) {
+		ret = -EIO;
+	} else {
+		async_resp->awaiter = awaiter;
+		list_add_tail(&async_resp->wait_list_entry,
+			      async_resp->wait_queue);
+	}
+	spin_unlock(async_resp->queue_lock);
+
+	return ret;
+}
+
 static void
 gxp_uci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
 			       struct gcip_mailbox_resp_awaiter *awaiter)
@@ -233,10 +278,8 @@ gxp_uci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
 
 	list_add_tail(&async_resp->dest_list_entry, async_resp->dest_queue);
 
-	if (async_resp->eventfd) {
+	if (async_resp->eventfd)
 		gxp_eventfd_signal(async_resp->eventfd);
-		gxp_eventfd_put(async_resp->eventfd);
-	}
 
 	wake_up(async_resp->dest_queue_waitq);
 out:
@@ -274,10 +317,8 @@ gxp_uci_handle_awaiter_timedout(struct gcip_mailbox *mailbox,
 			      async_resp->dest_queue);
 		spin_unlock_irqrestore(async_resp->queue_lock, flags);
 
-		if (async_resp->eventfd) {
+		if (async_resp->eventfd)
 			gxp_eventfd_signal(async_resp->eventfd);
-			gxp_eventfd_put(async_resp->eventfd);
-		}
 
 		wake_up(async_resp->dest_queue_waitq);
 	} else {
@@ -292,6 +333,8 @@ static void gxp_uci_release_awaiter_data(void *data)
 	struct gxp_uci_async_response *async_resp = data;
 
 	gxp_vd_release_credit(async_resp->vd);
+	if (async_resp->eventfd)
+		gxp_eventfd_put(async_resp->eventfd);
 	kfree(async_resp);
 }
 
@@ -318,6 +361,7 @@ static const struct gcip_mailbox_ops gxp_uci_gcip_mbx_ops = {
 	.release_wait_list_lock = gxp_mailbox_gcip_ops_release_wait_list_lock,
 	.wait_for_cmd_queue_not_full =
 		gxp_mailbox_gcip_ops_wait_for_cmd_queue_not_full,
+	.before_enqueue_wait_list = gxp_uci_before_enqueue_wait_list,
 	.after_enqueue_cmd = gxp_mailbox_gcip_ops_after_enqueue_cmd,
 	.after_fetch_resps = gxp_mailbox_gcip_ops_after_fetch_resps,
 	.handle_awaiter_arrived = gxp_uci_handle_awaiter_arrived,
@@ -438,6 +482,7 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 			 struct gxp_eventfd *eventfd)
 {
 	struct gxp_uci_async_response *async_resp;
+	struct gcip_mailbox_resp_awaiter *awaiter;
 	int ret;
 
 	if (!gxp_vd_has_and_use_credit(vd))
@@ -465,19 +510,22 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 	else
 		async_resp->eventfd = NULL;
 
-	async_resp->awaiter = gxp_mailbox_put_cmd(
-		uci->mbx, cmd, &async_resp->resp, async_resp);
-	if (IS_ERR(async_resp->awaiter)) {
-		ret = PTR_ERR(async_resp->awaiter);
+	/*
+	 * @async_resp->awaiter will be set from the `gxp_uci_before_enqueue_wait_list`
+	 * callback.
+	 */
+	awaiter = gxp_mailbox_put_cmd(uci->mbx, cmd, &async_resp->resp,
+				      async_resp);
+	if (IS_ERR(awaiter)) {
+		ret = PTR_ERR(awaiter);
 		goto err_free_resp;
 	}
-
-	/* Put async_resp into the waiting queue. */
-	list_add_tail(&async_resp->wait_list_entry, wait_queue);
 
 	return 0;
 
 err_free_resp:
+	if (async_resp->eventfd)
+		gxp_eventfd_put(async_resp->eventfd);
 	kfree(async_resp);
 err_release_credit:
 	gxp_vd_release_credit(vd);

@@ -9,6 +9,8 @@
 
 #include <soc/google/exynos_pm_qos.h>
 
+#include <gcip/gcip-pm.h>
+
 #include "gxp-internal.h"
 
 #define AUR_DVFS_MIN_RATE AUR_UUD_RATE
@@ -105,6 +107,7 @@ static const struct gxp_power_states uud_states = { AUR_UUD, AUR_MEM_UNDEFINED,
 
 struct gxp_power_manager {
 	struct gxp_dev *gxp;
+	struct gcip_pm *pm;
 	struct mutex pm_lock;
 	uint pwr_state_req_count[AUR_NUM_POWER_STATE];
 	uint low_clkmux_pwr_state_req_count[AUR_NUM_POWER_STATE];
@@ -173,6 +176,16 @@ int gxp_pm_blk_off(struct gxp_dev *gxp);
  * * true       - blk is turned off.
  */
 bool gxp_pm_is_blk_down(struct gxp_dev *gxp, uint timeout_ms);
+
+/**
+ * gxp_pm_blk_reboot() - Reboot the blk.
+ * @gxp: The GXP device to reboot
+ * @timeout_ms: Wait for the block to be turned off for this duration.
+ *
+ * Return:
+ * * 0       - BLK rebooted successfully
+ */
+int gxp_pm_blk_reboot(struct gxp_dev *gxp, uint timeout_ms);
 
 /**
  * gxp_pm_get_blk_state() - Get the blk power state

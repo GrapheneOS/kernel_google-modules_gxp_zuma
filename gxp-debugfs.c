@@ -7,12 +7,15 @@
 
 #include <linux/acpm_dvfs.h>
 
+#include <gcip/gcip-pm.h>
+
 #include "gxp-client.h"
 #include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
 #include "gxp-debugfs.h"
 #include "gxp-dma.h"
 #include "gxp-firmware-data.h"
+#include "gxp-firmware-loader.h"
 #include "gxp-firmware.h"
 #include "gxp-internal.h"
 #include "gxp-notification.h"
@@ -20,7 +23,6 @@
 #include "gxp-mailbox.h"
 #include "gxp-pm.h"
 #include "gxp-vd.h"
-#include "gxp-wakelock.h"
 #include "gxp.h"
 
 #if GXP_HAS_MCU
@@ -135,9 +137,9 @@ static int gxp_firmware_run_set(void *data, u64 val)
 	uint core;
 	bool acquired_block_wakelock;
 
-	ret = gxp_firmware_request_if_needed(gxp);
+	ret = gxp_firmware_loader_load_if_needed(gxp);
 	if (ret) {
-		dev_err(gxp->dev, "Unable to request dsp firmware files\n");
+		dev_err(gxp->dev, "Unable to load firmware files\n");
 		return ret;
 	}
 
@@ -166,13 +168,6 @@ static int gxp_firmware_run_set(void *data, u64 val)
 			}
 		}
 		up_write(&gxp->vd_semaphore);
-
-		/*
-		 * Cleanup any bad state or corruption the device might've
-		 * caused
-		 */
-		gxp_fw_data_destroy(gxp);
-		gxp_fw_data_init(gxp);
 
 		client = gxp_client_create(gxp);
 		if (IS_ERR(client)) {
@@ -273,11 +268,9 @@ static int gxp_wakelock_set(void *data, u64 val)
 			goto out;
 		}
 
-		ret = gxp_wakelock_acquire(gxp);
+		ret = gcip_pm_get(gxp->power_mgr->pm);
 		if (ret) {
-			dev_err(gxp->dev,
-				"Failed to acquire debugfs wakelock ret=%d\n",
-				ret);
+			dev_err(gxp->dev, "gcip_pm_get failed ret=%d\n", ret);
 			goto out;
 		}
 		gxp->debugfs_wakelock_held = true;
@@ -291,7 +284,7 @@ static int gxp_wakelock_set(void *data, u64 val)
 			goto out;
 		}
 
-		gxp_wakelock_release(gxp);
+		gcip_pm_put(gxp->power_mgr->pm);
 		gxp->debugfs_wakelock_held = false;
 		gxp_pm_update_requested_power_states(gxp, uud_states,
 						     off_states);
@@ -379,13 +372,7 @@ static int gxp_log_buff_set(void *data, u64 val)
 
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
-	if (!gxp->core_telemetry_mgr->logging_buff_data_legacy) {
-		dev_err(gxp->dev, "Logging buffer has not been created");
-		mutex_unlock(&gxp->core_telemetry_mgr->lock);
-		return -ENODEV;
-	}
-
-	buffers = gxp->core_telemetry_mgr->logging_buff_data_legacy->buffers;
+	buffers = gxp->core_telemetry_mgr->logging_buff_data->buffers;
 	for (i = 0; i < GXP_NUM_CORES; i++) {
 		ptr = buffers[i].vaddr;
 		*ptr = val;
@@ -403,14 +390,7 @@ static int gxp_log_buff_get(void *data, u64 *val)
 
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
-	if (!gxp->core_telemetry_mgr->logging_buff_data_legacy) {
-		dev_err(gxp->dev, "Logging buffer has not been created");
-		mutex_unlock(&gxp->core_telemetry_mgr->lock);
-		return -ENODEV;
-	}
-
-	buffers = gxp->core_telemetry_mgr->logging_buff_data_legacy->buffers;
-
+	buffers = gxp->core_telemetry_mgr->logging_buff_data->buffers;
 	*val = *(u64 *)(buffers[0].vaddr);
 
 	mutex_unlock(&gxp->core_telemetry_mgr->lock);
@@ -510,10 +490,19 @@ static int gxp_cmu_mux2_get(void *data, u64 *val)
 DEFINE_DEBUGFS_ATTRIBUTE(gxp_cmu_mux2_fops, gxp_cmu_mux2_get, gxp_cmu_mux2_set,
 			 "%llu\n");
 
-void gxp_create_debugfs(struct gxp_dev *gxp)
+void gxp_create_debugdir(struct gxp_dev *gxp)
 {
 	gxp->d_entry = debugfs_create_dir(GXP_NAME, NULL);
-	if (IS_ERR_OR_NULL(gxp->d_entry))
+	if (IS_ERR_OR_NULL(gxp->d_entry)) {
+		dev_warn(gxp->dev, "Create debugfs dir failed: %d",
+			 PTR_ERR_OR_ZERO(gxp->d_entry));
+		gxp->d_entry = NULL;
+	}
+}
+
+void gxp_create_debugfs(struct gxp_dev *gxp)
+{
+	if (!gxp->d_entry)
 		return;
 
 	mutex_init(&gxp->debugfs_client_lock);
@@ -540,9 +529,9 @@ void gxp_create_debugfs(struct gxp_dev *gxp)
 			    &gxp_cmu_mux2_fops);
 }
 
-void gxp_remove_debugfs(struct gxp_dev *gxp)
+void gxp_remove_debugdir(struct gxp_dev *gxp)
 {
-	if (IS_GXP_TEST && !gxp->d_entry)
+	if (!gxp->d_entry)
 		return;
 	debugfs_remove_recursive(gxp->d_entry);
 

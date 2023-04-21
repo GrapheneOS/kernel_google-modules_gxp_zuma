@@ -8,7 +8,7 @@
 #ifndef __GXP_DOMAIN_POOL_H__
 #define __GXP_DOMAIN_POOL_H__
 
-#include <gcip/gcip-domain-pool.h>
+#include <gcip/gcip-iommu.h>
 
 #include "gxp-dma.h"
 
@@ -22,19 +22,21 @@
  *
  * returns 0 on success or negative error value.
  */
-int gxp_domain_pool_init(struct gxp_dev *gxp, struct gcip_domain_pool *pool,
+int gxp_domain_pool_init(struct gxp_dev *gxp,
+			 struct gcip_iommu_domain_pool *pool,
 			 unsigned int size);
 
 /*
  * Allocates a domain from the pool
  * returns NULL on error.
  */
-struct gxp_iommu_domain *gxp_domain_pool_alloc(struct gcip_domain_pool *pool);
+struct gcip_iommu_domain *
+gxp_domain_pool_alloc(struct gcip_iommu_domain_pool *pool);
 
 /* Releases a domain from the pool. */
-void gxp_domain_pool_free(struct gcip_domain_pool *pool,
-			  struct gxp_iommu_domain *gdomain);
+void gxp_domain_pool_free(struct gcip_iommu_domain_pool *pool,
+			  struct gcip_iommu_domain *gdomain);
 
 /* Cleans up all resources used by the domain pool. */
-void gxp_domain_pool_destroy(struct gcip_domain_pool *pool);
+void gxp_domain_pool_destroy(struct gcip_iommu_domain_pool *pool);
 #endif /* __GXP_DOMAIN_POOL_H__ */

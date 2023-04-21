@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Kernel Control Interface, implements the protocol between DSP Kernel driver and MCU firmware.
  *
@@ -232,5 +232,12 @@ int gxp_kci_link_unlink_offload_vmbox(
  */
 void gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,
 			   struct gcip_kci_response_element *rkci_cmd);
+
+/*
+ * Send device properties to firmware.
+ * The device_prop KCI will be sent only when it is initialized.
+ */
+int gxp_kci_set_device_properties(struct gxp_kci *gkci,
+				  struct gxp_dev_prop *device_prop);
 
 #endif /* __GXP_KCI_H__ */

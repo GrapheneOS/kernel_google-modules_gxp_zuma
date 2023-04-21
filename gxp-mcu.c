@@ -1,19 +1,16 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Structures and helpers for managing GXP MicroController Unit.
  *
  * Copyright (C) 2022 Google LLC
  */
 
-#include <linux/iommu.h>
 #include <linux/sizes.h>
 
 #include <gcip/gcip-mem-pool.h>
 
 #include "gxp-config.h"
-#include "gxp-dma.h"
 #include "gxp-internal.h"
-#include "gxp-mailbox.h"
 #include "gxp-mcu-firmware.h"
 #include "gxp-mcu.h"
 #include "gxp-uci.h"
@@ -74,43 +71,6 @@ static int gxp_mcu_mem_pools_init(struct gxp_dev *gxp, struct gxp_mcu *mcu)
 	return 0;
 }
 
-static void gxp_mcu_unmap_resources(struct gxp_mcu *mcu)
-{
-	struct gxp_dev *gxp = mcu->gxp;
-	struct gxp_iommu_domain *gdomain = gxp_iommu_get_domain_for_dev(gxp);
-	int i;
-
-	for (i = GXP_NUM_CORES; i < GXP_NUM_MAILBOXES; i++)
-		iommu_unmap(gdomain->domain, gxp->mbx[i].daddr, gxp->mbx[i].size);
-}
-
-static int gxp_mcu_map_resources(struct gxp_dev *gxp, struct gxp_mcu *mcu)
-{
-	struct gxp_iommu_domain *gdomain = gxp_iommu_get_domain_for_dev(gxp);
-	int i, ret;
-
-	for (i = GXP_NUM_CORES; i < GXP_NUM_MAILBOXES; i++) {
-		gxp->mbx[i].daddr = GXP_MCU_NS_MAILBOX(i - GXP_NUM_CORES);
-		ret = iommu_map(gdomain->domain, gxp->mbx[i].daddr,
-				gxp->mbx[i].paddr +
-					MAILBOX_DEVICE_INTERFACE_OFFSET,
-				gxp->mbx[i].size, IOMMU_READ | IOMMU_WRITE);
-		if (ret)
-			goto err;
-	}
-
-	return ret;
-
-err:
-	/*
-	 * Attempt to unmap all resources.
-	 * Any resource that hadn't been mapped yet will cause `iommu_unmap()`
-	 * to return immediately, so its safe to try to unmap everything.
-	 */
-	gxp_mcu_unmap_resources(mcu);
-	return ret;
-}
-
 static void gxp_mcu_mem_pools_exit(struct gxp_mcu *mcu)
 {
 	gcip_mem_pool_exit(&mcu->remap_secure_pool);
@@ -156,16 +116,13 @@ int gxp_mcu_init(struct gxp_dev *gxp, struct gxp_mcu *mcu)
 	ret = gxp_alloc_shared_buffer(gxp, mcu);
 	if (ret)
 		goto err_pools_exit;
-	ret = gxp_mcu_map_resources(gxp, mcu);
-	if (ret)
-		goto err_free_shared_buffer;
 	/*
 	 * MCU telemetry must be initialized before UCI and KCI to match the
 	 * .log_buffer address in the firmware linker.ld.
 	 */
 	ret = gxp_mcu_telemetry_init(mcu);
 	if (ret)
-		goto err_mcu_unmap_resources;
+		goto err_free_shared_buffer;
 	ret = gxp_uci_init(mcu);
 	if (ret)
 		goto err_telemetry_exit;
@@ -178,8 +135,6 @@ err_uci_exit:
 	gxp_uci_exit(&mcu->uci);
 err_telemetry_exit:
 	gxp_mcu_telemetry_exit(mcu);
-err_mcu_unmap_resources:
-	gxp_mcu_unmap_resources(mcu);
 err_free_shared_buffer:
 	gxp_free_shared_buffer(mcu);
 err_pools_exit:
@@ -194,7 +149,6 @@ void gxp_mcu_exit(struct gxp_mcu *mcu)
 	gxp_kci_exit(&mcu->kci);
 	gxp_uci_exit(&mcu->uci);
 	gxp_mcu_telemetry_exit(mcu);
-	gxp_mcu_unmap_resources(mcu);
 	gxp_free_shared_buffer(mcu);
 	gxp_mcu_mem_pools_exit(mcu);
 	gxp_mcu_firmware_exit(&mcu->fw);

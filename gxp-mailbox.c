@@ -33,7 +33,7 @@
 #endif
 
 /* Timeout of 1s by default */
-int gxp_mbx_timeout = 1000;
+int gxp_mbx_timeout = 2000;
 module_param_named(mbx_timeout, gxp_mbx_timeout, int, 0660);
 
 /*

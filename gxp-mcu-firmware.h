@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * GXP MicroController Unit firmware management.
  *
@@ -24,8 +24,7 @@ struct gxp_mcu_firmware {
 	enum gcip_fw_status status;
 	struct gcip_fw_info fw_info;
 	struct gcip_image_config_parser cfg_parser;
-	const char *name; /* the firmware name last loaded */
-	bool is_signed;
+	bool is_secure;
 };
 
 /*
@@ -38,7 +37,7 @@ int gxp_mcu_firmware_init(struct gxp_dev *gxp, struct gxp_mcu_firmware *mcu_fw);
 void gxp_mcu_firmware_exit(struct gxp_mcu_firmware *mcu_fw);
 
 /*
- * Loads and runs the MCU firmware. The firmware is ready to serve when this
+ * Runs the MCU firmware. The firmware is ready to serve when this
  * call succeeds.
  *
  * Returns 0 on success, a negative errno on failure.
@@ -49,6 +48,19 @@ int gxp_mcu_firmware_run(struct gxp_mcu_firmware *mcu_fw);
  * Stops the running MCU firmware.
  */
 void gxp_mcu_firmware_stop(struct gxp_mcu_firmware *mcu_fw);
+
+/*
+ * Loads MCU firmware into memories and parses the image config.
+ *
+ * Returns 0 on success, a negative errno on failure.
+ */
+int gxp_mcu_firmware_load(struct gxp_dev *gxp, char *fw_name,
+			  const struct firmware **fw);
+
+/*
+ * Unloads MCU firmware.
+ */
+void gxp_mcu_firmware_unload(struct gxp_dev *gxp, const struct firmware *fw);
 
 /*
  * Returns the pointer of MCU firmware associated with the GXP device object.
@@ -63,10 +75,11 @@ struct gxp_mcu_firmware *gxp_mcu_firmware_of(struct gxp_dev *gxp);
 
 /*
  * Handles the MCU firmware crash. It will handle the crash only when the @crash_type is
- * GCIP_FW_CRASH_UNRECOVERABLE_FAULT. Otherwise, it will ignore that crash.
+ * GCIP_FW_CRASH_UNRECOVERABLE_FAULT or GCIP_FW_CRASH_HW_WDG_TIMEOUT. Otherwise, it will ignore
+ * that crash.
  *
- * This function will be called from the `gxp-kci.c` when GCIP_RKCI_FIRMWARE_CRASH RKCI is arrived
- * from the MCU firmware side.
+ * This function will be called from the `gxp-kci.c` when GCIP_RKCI_FIRMWARE_CRASH RKCI is received
+ * from the MCU firmware side or from the HW watchdog IRQ handler.
  */
 void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 				    enum gcip_fw_crash_type crash_type);

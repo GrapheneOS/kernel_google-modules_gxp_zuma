@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP platform driver utilities.
  *
@@ -9,11 +9,12 @@
 #include <linux/platform_data/sscoredump.h>
 #endif
 
+#include <linux/bitops.h>
+#include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
@@ -23,17 +24,20 @@
 #include <linux/uidgid.h>
 
 #include <gcip/gcip-dma-fence.h>
+#include <gcip/gcip-pm.h>
 
 #include "gxp-client.h"
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
 #include "gxp-debugfs.h"
+#include "gxp-dma-fence.h"
 #include "gxp-dma.h"
 #include "gxp-dmabuf.h"
 #include "gxp-domain-pool.h"
 #include "gxp-firmware.h"
 #include "gxp-firmware-data.h"
+#include "gxp-firmware-loader.h"
 #include "gxp-internal.h"
 #include "gxp-lpm.h"
 #include "gxp-mailbox.h"
@@ -43,11 +47,9 @@
 #include "gxp-pm.h"
 #include "gxp-thermal.h"
 #include "gxp-vd.h"
-#include "gxp-wakelock.h"
 #include "gxp.h"
 
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) && !IS_ENABLED(CONFIG_GXP_GEM5)
-#define HAS_TPU_EXT
+#if HAS_TPU_EXT
 #include <soc/google/tpu-ext.h>
 #endif
 
@@ -57,7 +59,12 @@
 #include "gxp-dci.h"
 #endif
 
+/* We will only have one gxp device */
+#define GXP_DEV_COUNT 1
+
 static struct gxp_dev *gxp_debug_pointer;
+static struct class *gxp_class;
+static dev_t gxp_base_devno;
 
 /* Caller needs to hold client->semaphore for reading */
 static bool check_client_has_available_vd_wakelock(struct gxp_client *client,
@@ -140,17 +147,14 @@ static const uint aur_memory_state_array[MEMORY_POWER_STATE_MAX + 1] = {
 static int gxp_open(struct inode *inode, struct file *file)
 {
 	struct gxp_client *client;
-	struct gxp_dev *gxp = container_of(file->private_data, struct gxp_dev,
-					   misc_dev);
+	struct gxp_dev *gxp =
+		container_of(inode->i_cdev, struct gxp_dev, char_dev);
 	int ret = 0;
 
-	/* If this is the first call to open(), request the firmware files */
-	ret = gxp_firmware_request_if_needed(gxp);
-	if (ret) {
-		dev_err(gxp->dev,
-			"Failed to request dsp firmware files (ret=%d)\n", ret);
+	/* If this is the first call to open(), load the firmware files */
+	ret = gxp_firmware_loader_load_if_needed(gxp);
+	if (ret)
 		return ret;
-	}
 
 	client = gxp_client_create(gxp);
 	if (IS_ERR(client))
@@ -177,13 +181,6 @@ static int gxp_release(struct inode *inode, struct file *file)
 	 */
 	if (!client)
 		return 0;
-
-	if (client->enabled_core_telemetry_logging)
-		gxp_core_telemetry_disable(client->gxp,
-					   GXP_TELEMETRY_TYPE_LOGGING);
-	if (client->enabled_core_telemetry_tracing)
-		gxp_core_telemetry_disable(client->gxp,
-					   GXP_TELEMETRY_TYPE_TRACING);
 
 	mutex_lock(&client->gxp->client_list_lock);
 	list_del(&client->list_entry);
@@ -258,6 +255,9 @@ static int gxp_map_buffer(struct gxp_client *client,
 		goto error_remove;
 	}
 
+	gxp_mapping_iova_log(client, map,
+			     GXP_IOVA_LOG_MAP | GXP_IOVA_LOG_BUFFER);
+
 	/*
 	 * The virtual device acquired its own reference to the mapping when
 	 * it was stored in the VD's records. Release the reference from
@@ -309,16 +309,18 @@ static int gxp_unmap_buffer(struct gxp_client *client,
 	} else if (!map->host_address) {
 		dev_err(gxp->dev, "dma-bufs must be unmapped via GXP_UNMAP_DMABUF\n");
 		ret = -EINVAL;
-		goto out;
+		goto out_put;
 	}
 
 	WARN_ON(map->host_address != ibuf.host_address);
 
 	gxp_vd_mapping_remove(client->vd, map);
+	gxp_mapping_iova_log(client, map,
+			     GXP_IOVA_LOG_UNMAP | GXP_IOVA_LOG_BUFFER);
 
+out_put:
 	/* Release the reference from gxp_vd_mapping_search() */
 	gxp_mapping_put(map);
-
 out:
 	up_read(&client->semaphore);
 
@@ -818,59 +820,7 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
-static int gxp_enable_core_telemetry(struct gxp_client *client,
-				     __u8 __user *argp)
-{
-	struct gxp_dev *gxp = client->gxp;
-	__u8 type;
-	int ret;
-
-	if (copy_from_user(&type, argp, sizeof(type)))
-		return -EFAULT;
-
-	if (type != GXP_TELEMETRY_TYPE_LOGGING &&
-	    type != GXP_TELEMETRY_TYPE_TRACING)
-		return -EINVAL;
-
-	ret = gxp_core_telemetry_enable(gxp, type);
-
-	/*
-	 * Record what core telemetry types this client enabled so they can be
-	 * cleaned-up if the client closes without disabling them.
-	 */
-	if (!ret && type == GXP_TELEMETRY_TYPE_LOGGING)
-		client->enabled_core_telemetry_logging = true;
-	if (!ret && type == GXP_TELEMETRY_TYPE_TRACING)
-		client->enabled_core_telemetry_tracing = true;
-
-	return ret;
-}
-
-static int gxp_disable_core_telemetry(struct gxp_client *client,
-				      __u8 __user *argp)
-{
-	struct gxp_dev *gxp = client->gxp;
-	__u8 type;
-	int ret;
-
-	if (copy_from_user(&type, argp, sizeof(type)))
-		return -EFAULT;
-
-	if (type != GXP_TELEMETRY_TYPE_LOGGING &&
-	    type != GXP_TELEMETRY_TYPE_TRACING)
-		return -EINVAL;
-
-	ret = gxp_core_telemetry_disable(gxp, type);
-
-	if (!ret && type == GXP_TELEMETRY_TYPE_LOGGING)
-		client->enabled_core_telemetry_logging = false;
-	if (!ret && type == GXP_TELEMETRY_TYPE_TRACING)
-		client->enabled_core_telemetry_tracing = false;
-
-	return ret;
-}
-
-#ifdef HAS_TPU_EXT
+#if HAS_TPU_EXT
 
 /*
  * Map TPU mailboxes to IOVA.
@@ -888,8 +838,8 @@ static int map_tpu_mbx_queue(struct gxp_client *client,
 
 	down_read(&gxp->vd_semaphore);
 
-	core_count = client->vd->num_cores;
 	phys_core_list = client->vd->core_list;
+	core_count = hweight_long(phys_core_list);
 
 	mbx_info = kmalloc(
 		sizeof(struct edgetpu_ext_mailbox_info) +
@@ -972,8 +922,7 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 	int ret = 0;
 
 	if (!gxp->tpu_dev.mbx_paddr) {
-		dev_err(gxp->dev, "%s: TPU is not available for interop\n",
-			__func__);
+		dev_err(gxp->dev, "TPU is not available for interop\n");
 		return -EINVAL;
 	}
 
@@ -1009,8 +958,7 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 		goto out_unlock_client_semaphore;
 	}
 
-	/* TODO(b/237624453): remove '|| 1' once the MCU supports DSP->TPU interop */
-	if (gxp_is_direct_mode(gxp) || 1) {
+	if (gxp_is_direct_mode(gxp)) {
 		ret = map_tpu_mbx_queue(client, &ibuf);
 		if (ret)
 			goto err_fput_tpu_file;
@@ -1025,7 +973,8 @@ static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
 	goto out_unlock_client_semaphore;
 
 err_unmap_tpu_mbx_queue:
-	unmap_tpu_mbx_queue(client, &ibuf);
+	if (gxp_is_direct_mode(gxp))
+		unmap_tpu_mbx_queue(client, &ibuf);
 err_fput_tpu_file:
 	fput(client->tpu_file);
 	client->tpu_file = NULL;
@@ -1063,8 +1012,7 @@ static int gxp_unmap_tpu_mbx_queue(struct gxp_client *client,
 	if (gxp->before_unmap_tpu_mbx_queue)
 		gxp->before_unmap_tpu_mbx_queue(gxp, client);
 
-	/* TODO(b/237624453): remove '|| 1' once the MCU supports DSP->TPU interop */
-	if (gxp_is_direct_mode(gxp) || 1)
+	if (gxp_is_direct_mode(gxp))
 		unmap_tpu_mbx_queue(client, &ibuf);
 
 	fput(client->tpu_file);
@@ -1151,6 +1099,41 @@ out:
 	return ret;
 }
 
+static bool validate_wake_lock_power(struct gxp_dev *gxp,
+				     struct gxp_acquire_wakelock_ioctl *arg)
+{
+	if (arg->gxp_power_state == GXP_POWER_STATE_OFF) {
+		dev_err(gxp->dev,
+			"GXP_POWER_STATE_OFF is not a valid value when acquiring a wakelock\n");
+		return false;
+	}
+	if (arg->gxp_power_state < GXP_POWER_STATE_OFF ||
+	    arg->gxp_power_state >= GXP_NUM_POWER_STATES) {
+		dev_err(gxp->dev, "Requested power state is invalid\n");
+		return false;
+	}
+	if ((arg->memory_power_state < MEMORY_POWER_STATE_MIN ||
+	     arg->memory_power_state > MEMORY_POWER_STATE_MAX) &&
+	    arg->memory_power_state != MEMORY_POWER_STATE_UNDEFINED) {
+		dev_err(gxp->dev,
+			"Requested memory power state %d is invalid\n",
+			arg->memory_power_state);
+		return false;
+	}
+
+	if (arg->gxp_power_state == GXP_POWER_STATE_READY) {
+		dev_warn_once(
+			gxp->dev,
+			"GXP_POWER_STATE_READY is deprecated, please set GXP_POWER_LOW_FREQ_CLKMUX with GXP_POWER_STATE_UUD state");
+		arg->gxp_power_state = GXP_POWER_STATE_UUD;
+	}
+	if (arg->flags & GXP_POWER_NON_AGGRESSOR)
+		dev_warn_once(
+			gxp->dev,
+			"GXP_POWER_NON_AGGRESSOR is deprecated, no operation here");
+	return true;
+}
+
 static int gxp_acquire_wake_lock(struct gxp_client *client,
 				 struct gxp_acquire_wakelock_ioctl __user *argp)
 {
@@ -1164,36 +1147,9 @@ static int gxp_acquire_wake_lock(struct gxp_client *client,
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
 
-	if (ibuf.gxp_power_state == GXP_POWER_STATE_OFF) {
-		dev_err(gxp->dev,
-			"GXP_POWER_STATE_OFF is not a valid value when acquiring a wakelock\n");
+	if ((ibuf.components_to_wake & WAKELOCK_VIRTUAL_DEVICE) &&
+	    !validate_wake_lock_power(gxp, &ibuf))
 		return -EINVAL;
-	}
-	if (ibuf.gxp_power_state < GXP_POWER_STATE_OFF ||
-	    ibuf.gxp_power_state >= GXP_NUM_POWER_STATES) {
-		dev_err(gxp->dev, "Requested power state is invalid\n");
-		return -EINVAL;
-	}
-	if ((ibuf.memory_power_state < MEMORY_POWER_STATE_MIN ||
-	     ibuf.memory_power_state > MEMORY_POWER_STATE_MAX) &&
-	    ibuf.memory_power_state != MEMORY_POWER_STATE_UNDEFINED) {
-		dev_err(gxp->dev,
-			"Requested memory power state %d is invalid\n",
-			ibuf.memory_power_state);
-		return -EINVAL;
-	}
-
-	if (ibuf.gxp_power_state == GXP_POWER_STATE_READY) {
-		dev_warn_once(
-			gxp->dev,
-			"GXP_POWER_STATE_READY is deprecated, please set GXP_POWER_LOW_FREQ_CLKMUX with GXP_POWER_STATE_UUD state");
-		ibuf.gxp_power_state = GXP_POWER_STATE_UUD;
-	}
-
-	if(ibuf.flags & GXP_POWER_NON_AGGRESSOR)
-		dev_warn_once(
-			gxp->dev,
-			"GXP_POWER_NON_AGGRESSOR is deprecated, no operation here");
 
 	down_write(&client->semaphore);
 	if ((ibuf.components_to_wake & WAKELOCK_VIRTUAL_DEVICE) &&
@@ -1316,6 +1272,9 @@ static int gxp_map_dmabuf(struct gxp_client *client,
 		ret = -EFAULT;
 	}
 
+	gxp_mapping_iova_log(client, mapping,
+			     GXP_IOVA_LOG_MAP | GXP_IOVA_LOG_DMABUF);
+
 out_put:
 	/*
 	 * Release the reference from creating the dmabuf mapping
@@ -1370,6 +1329,9 @@ static int gxp_unmap_dmabuf(struct gxp_client *client,
 
 	/* Remove the mapping from its VD, releasing the VD's reference */
 	gxp_vd_mapping_remove(client->vd, mapping);
+
+	gxp_mapping_iova_log(client, mapping,
+			     GXP_IOVA_LOG_UNMAP | GXP_IOVA_LOG_DMABUF);
 
 	/* Release the reference from gxp_vd_mapping_search() */
 	gxp_mapping_put(mapping);
@@ -1457,6 +1419,17 @@ out:
 	return ret;
 }
 
+static inline const char *get_driver_commit(void)
+{
+#if IS_ENABLED(CONFIG_MODULE_SCMVERSION)
+	return THIS_MODULE->scmversion;
+#elif defined(GIT_REPO_TAG)
+	return GIT_REPO_TAG;
+#else
+	return "Unknown";
+#endif
+}
+
 static int
 gxp_get_interface_version(struct gxp_client *client,
 			  struct gxp_interface_version_ioctl __user *argp)
@@ -1468,13 +1441,13 @@ gxp_get_interface_version(struct gxp_client *client,
 	ibuf.version_minor = GXP_INTERFACE_VERSION_MINOR;
 	memset(ibuf.version_build, 0, GXP_INTERFACE_VERSION_BUILD_BUFFER_SIZE);
 	ret = snprintf(ibuf.version_build,
-		       GXP_INTERFACE_VERSION_BUILD_BUFFER_SIZE - 1,
-		       GIT_REPO_TAG);
+		       GXP_INTERFACE_VERSION_BUILD_BUFFER_SIZE - 1, "%s",
+		       get_driver_commit());
 
 	if (ret < 0 || ret >= GXP_INTERFACE_VERSION_BUILD_BUFFER_SIZE) {
 		dev_warn(
 			client->gxp->dev,
-			"Buffer size insufficient to hold GIT_REPO_TAG (size=%d)\n",
+			"Buffer size insufficient to hold git build info (size=%d)\n",
 			ret);
 	}
 
@@ -1539,6 +1512,57 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
+static int
+gxp_create_sync_fence(struct gxp_client *client,
+		      struct gxp_create_sync_fence_data __user *datap)
+{
+	struct gxp_dev *gxp = client->gxp;
+	struct gxp_create_sync_fence_data data;
+	int ret;
+
+	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
+		return -EFAULT;
+	down_read(&client->semaphore);
+	if (client->vd) {
+		ret = gxp_dma_fence_create(gxp, client->vd, &data);
+	} else {
+		dev_warn(gxp->dev, "client creating sync fence has no VD");
+		ret = -EINVAL;
+	}
+	up_read(&client->semaphore);
+	if (ret)
+		return ret;
+
+	if (copy_to_user((void __user *)datap, &data, sizeof(data)))
+		ret = -EFAULT;
+	return ret;
+}
+
+static int
+gxp_signal_sync_fence(struct gxp_signal_sync_fence_data __user *datap)
+{
+	struct gxp_signal_sync_fence_data data;
+
+	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
+		return -EFAULT;
+	return gcip_dma_fence_signal(data.fence, data.error, false);
+}
+
+static int gxp_sync_fence_status(struct gxp_sync_fence_status __user *datap)
+{
+	struct gxp_sync_fence_status data;
+	int ret;
+
+	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
+		return -EFAULT;
+	ret = gcip_dma_fence_status(data.fence, &data.status);
+	if (ret)
+		return ret;
+	if (copy_to_user((void __user *)datap, &data, sizeof(data)))
+		ret = -EFAULT;
+	return ret;
+}
+
 static int gxp_register_invalidated_eventfd(
 	struct gxp_client *client,
 	struct gxp_register_invalidated_eventfd_ioctl __user *argp)
@@ -1552,16 +1576,21 @@ static int gxp_register_invalidated_eventfd(
 
 	down_write(&client->semaphore);
 
+	if (!gxp_client_has_available_vd(client,
+					 "GXP_REGISTER_INVALIDATED_EVENTFD")) {
+		ret = -ENODEV;
+		goto out;
+	}
+
 	eventfd = gxp_eventfd_create(ibuf.eventfd);
 	if (IS_ERR(eventfd)) {
 		ret = PTR_ERR(eventfd);
 		goto out;
 	}
 
-	if (client->vd_invalid_eventfd)
-		gxp_eventfd_put(client->vd_invalid_eventfd);
-	client->vd_invalid_eventfd = eventfd;
-
+	if (client->vd->invalidate_eventfd)
+		gxp_eventfd_put(client->vd->invalidate_eventfd);
+	client->vd->invalidate_eventfd = eventfd;
 out:
 	up_write(&client->semaphore);
 	return ret;
@@ -1571,14 +1600,24 @@ static int gxp_unregister_invalidated_eventfd(
 	struct gxp_client *client,
 	struct gxp_register_invalidated_eventfd_ioctl __user *argp)
 {
+	struct gxp_dev *gxp = client->gxp;
+	int ret = 0;
+
 	down_write(&client->semaphore);
 
-	if (client->vd_invalid_eventfd)
-		gxp_eventfd_put(client->vd_invalid_eventfd);
-	client->vd_invalid_eventfd = NULL;
+	if (!client->vd) {
+		dev_err(gxp->dev,
+			"GXP_UNREGISTER_INVALIDATED_EVENTFD requires the client allocate a VIRTUAL_DEVICE\n");
+		ret = -ENODEV;
+		goto out;
+	}
 
+	if (client->vd->invalidate_eventfd)
+		gxp_eventfd_put(client->vd->invalidate_eventfd);
+	client->vd->invalidate_eventfd = NULL;
+out:
 	up_write(&client->semaphore);
-	return 0;
+	return ret;
 }
 
 static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
@@ -1624,12 +1663,6 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 	case GXP_ETM_GET_TRACE_INFO_COMMAND:
 		ret = gxp_etm_get_trace_info_command(client, argp);
 		break;
-	case GXP_ENABLE_CORE_TELEMETRY:
-		ret = gxp_enable_core_telemetry(client, argp);
-		break;
-	case GXP_DISABLE_CORE_TELEMETRY:
-		ret = gxp_disable_core_telemetry(client, argp);
-		break;
 	case GXP_MAP_TPU_MBX_QUEUE:
 		ret = gxp_map_tpu_mbx_queue(client, argp);
 		break;
@@ -1672,6 +1705,15 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 	case GXP_TRIGGER_DEBUG_DUMP:
 		ret = gxp_trigger_debug_dump(client, argp);
 		break;
+	case GXP_CREATE_SYNC_FENCE:
+		ret = gxp_create_sync_fence(client, argp);
+		break;
+	case GXP_SIGNAL_SYNC_FENCE:
+		ret = gxp_signal_sync_fence(argp);
+		break;
+	case GXP_SYNC_FENCE_STATUS:
+		ret = gxp_sync_fence_status(argp);
+		break;
 	case GXP_REGISTER_INVALIDATED_EVENTFD:
 		ret = gxp_register_invalidated_eventfd(client, argp);
 		break;
@@ -1706,12 +1748,8 @@ static int gxp_mmap(struct file *file, struct vm_area_struct *vma)
 	case GXP_MMAP_CORE_TRACE_BUFFER_OFFSET:
 		return gxp_core_telemetry_mmap_buffers(
 			client->gxp, GXP_TELEMETRY_TYPE_TRACING, vma);
-	case GXP_MMAP_CORE_LOG_BUFFER_OFFSET_LEGACY:
-		return gxp_core_telemetry_mmap_buffers_legacy(
-			client->gxp, GXP_TELEMETRY_TYPE_LOGGING, vma);
-	case GXP_MMAP_CORE_TRACE_BUFFER_OFFSET_LEGACY:
-		return gxp_core_telemetry_mmap_buffers_legacy(
-			client->gxp, GXP_TELEMETRY_TYPE_TRACING, vma);
+	case GXP_MMAP_SECURE_CORE_LOG_BUFFER_OFFSET:
+		return gxp_secure_core_telemetry_mmap_buffers(client->gxp, vma);
 	default:
 		return -EINVAL;
 	}
@@ -1751,6 +1789,8 @@ static int gxp_set_reg_resources(struct platform_device *pdev, struct gxp_dev *g
 		gxp->cmu.paddr = r->start;
 		gxp->cmu.size = resource_size(r);
 		gxp->cmu.vaddr = devm_ioremap_resource(dev, r);
+		if (IS_ERR_OR_NULL(gxp->cmu.vaddr))
+			dev_warn(dev, "Failed to map CMU registers\n");
 	}
 	/*
 	 * TODO (b/224685748): Remove this block after CMU CSR is supported
@@ -1888,13 +1928,78 @@ static void gxp_put_gsa_dev(struct gxp_dev *gxp)
 	put_device(gxp->gsa_dev);
 }
 
+static int gxp_device_add(struct gxp_dev *gxp)
+{
+	int ret;
+	struct device *dev;
+
+	dev_dbg(gxp->dev, "adding interface: %s", GXP_NAME);
+
+	gxp->char_dev_no = MKDEV(MAJOR(gxp_base_devno), 0);
+	cdev_init(&gxp->char_dev, &gxp_fops);
+	ret = cdev_add(&gxp->char_dev, gxp->char_dev_no, 1);
+	if (ret) {
+		dev_err(gxp->dev, "error %d adding cdev for dev %d:%d\n", ret,
+			MAJOR(gxp->char_dev_no), MINOR(gxp->char_dev_no));
+		return ret;
+	}
+
+	/*
+	 * We only need char_dev_no for device_destroy, no need to record the
+	 * returned dev.
+	 */
+	dev = device_create(gxp_class, gxp->dev, gxp->char_dev_no, gxp, "%s",
+			    GXP_NAME);
+	if (IS_ERR(dev)) {
+		ret = PTR_ERR(dev);
+		dev_err(gxp->dev, "failed to create char device: %d\n", ret);
+		cdev_del(&gxp->char_dev);
+		return ret;
+	}
+
+	return 0;
+}
+
+static void gxp_device_remove(struct gxp_dev *gxp)
+{
+	device_destroy(gxp_class, gxp->char_dev_no);
+	cdev_del(&gxp->char_dev);
+}
+
+static __init int gxp_fs_init(void)
+{
+	int ret;
+
+	gxp_class = class_create(THIS_MODULE, GXP_NAME);
+	if (IS_ERR(gxp_class)) {
+		pr_err(GXP_NAME " error creating gxp class: %ld\n",
+		       PTR_ERR(gxp_class));
+		return PTR_ERR(gxp_class);
+	}
+
+	ret = alloc_chrdev_region(&gxp_base_devno, 0, GXP_DEV_COUNT, GXP_NAME);
+	if (ret) {
+		pr_err(GXP_NAME " char device registration failed: %d\n", ret);
+		class_destroy(gxp_class);
+		return ret;
+	}
+	pr_debug(GXP_NAME " registered major=%d\n", MAJOR(gxp_base_devno));
+	return 0;
+}
+
+static __exit void gxp_fs_exit(void)
+{
+	unregister_chrdev_region(gxp_base_devno, GXP_DEV_COUNT);
+	class_destroy(gxp_class);
+}
+
 static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_dev *gxp)
 {
 	struct device *dev = &pdev->dev;
 	int ret;
 	u64 prop;
 
-	dev_notice(dev, "Probing gxp driver with commit %s\n", GIT_REPO_TAG);
+	dev_notice(dev, "Probing gxp driver with commit %s\n", get_driver_commit());
 
 	platform_set_drvdata(pdev, gxp);
 	gxp->dev = dev;
@@ -1908,16 +2013,12 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	if (ret)
 		return ret;
 
-	ret = gxp_wakelock_init(gxp);
-	if (ret) {
-		dev_err(dev, "failed to init wakelock: %d", ret);
-		return ret;
-	}
+	gxp_create_debugdir(gxp);
 
 	ret = gxp_pm_init(gxp);
 	if (ret) {
 		dev_err(dev, "Failed to init power management (ret=%d)\n", ret);
-		goto err_wakelock_destroy;
+		goto err_remove_debugdir;
 	}
 
 	gxp_get_gsa_dev(gxp);
@@ -1953,14 +2054,19 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 
 	mutex_init(&gxp->pin_user_pages_lock);
 	mutex_init(&gxp->secure_vd_lock);
+	mutex_init(&gxp->device_prop.lock);
 
 	gxp->domain_pool = kmalloc(sizeof(*gxp->domain_pool), GFP_KERNEL);
 	if (!gxp->domain_pool) {
 		ret = -ENOMEM;
 		goto err_debug_dump_exit;
 	}
-	ret = gxp_domain_pool_init(gxp, gxp->domain_pool,
-				   GXP_NUM_PREALLOCATED_DOMAINS);
+	if (gxp_is_direct_mode(gxp))
+		ret = gxp_domain_pool_init(gxp, gxp->domain_pool,
+					   GXP_NUM_CORES);
+	else
+		ret = gxp_domain_pool_init(gxp, gxp->domain_pool,
+					   GXP_NUM_SHARED_SLICES);
 	if (ret) {
 		dev_err(dev,
 			"Failed to initialize IOMMU domain pool (ret=%d)\n",
@@ -1976,6 +2082,12 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		goto err_domain_pool_destroy;
 	}
 
+	ret = gxp_firmware_loader_init(gxp);
+	if (ret) {
+		dev_err(dev, "Failed to initialize firmware loader (ret=%d)\n",
+			ret);
+		goto err_fw_destroy;
+	}
 	gxp_dma_init_default_resources(gxp);
 	gxp_vd_init(gxp);
 
@@ -1999,11 +2111,10 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		dev_err(dev, "Failed to initialize core telemetry (ret=%d)", ret);
 		goto err_fw_data_destroy;
 	}
-	gxp->thermal_mgr = gxp_thermal_init(gxp);
-	if (IS_ERR(gxp->thermal_mgr)) {
-		ret = PTR_ERR(gxp->thermal_mgr);
+
+	ret = gxp_thermal_init(gxp);
+	if (ret)
 		dev_warn(dev, "Failed to init thermal driver: %d\n", ret);
-	}
 
 	gxp->gfence_mgr = gcip_dma_fence_manager_create(gxp->dev);
 	if (IS_ERR(gxp->gfence_mgr)) {
@@ -2019,15 +2130,15 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		if (ret)
 			goto err_dma_fence_destroy;
 	}
+	/*
+	 * We only know where the system config region is after after_probe is
+	 * done so this can't be called earlier.
+	 */
+	gxp_fw_data_populate_system_config(gxp);
 
-	gxp->misc_dev.minor = MISC_DYNAMIC_MINOR;
-	gxp->misc_dev.name = GXP_NAME;
-	gxp->misc_dev.fops = &gxp_fops;
-	ret = misc_register(&gxp->misc_dev);
-	if (ret) {
-		dev_err(dev, "Failed to register misc device: %d", ret);
+	ret = gxp_device_add(gxp);
+	if (ret)
 		goto err_before_remove;
-	}
 
 	gxp_create_debugfs(gxp);
 	gxp_debug_pointer = gxp;
@@ -2041,12 +2152,14 @@ err_before_remove:
 err_dma_fence_destroy:
 	/* DMA fence manager creation doesn't need revert */
 err_thermal_destroy:
-	/* thermal init doesn't need revert */
+	gxp_thermal_exit(gxp);
 	gxp_core_telemetry_exit(gxp);
 err_fw_data_destroy:
 	gxp_fw_data_destroy(gxp);
 err_vd_destroy:
 	gxp_vd_destroy(gxp);
+	gxp_firmware_loader_destroy(gxp);
+err_fw_destroy:
 	gxp_fw_destroy(gxp);
 err_domain_pool_destroy:
 	gxp_domain_pool_destroy(gxp->domain_pool);
@@ -2061,8 +2174,8 @@ err_put_tpu_dev:
 	gxp_put_tpu_dev(gxp);
 	gxp_put_gsa_dev(gxp);
 	gxp_pm_destroy(gxp);
-err_wakelock_destroy:
-	/* wakelock init doesn't need revert */
+err_remove_debugdir:
+	gxp_remove_debugdir(gxp);
 	return ret;
 }
 
@@ -2070,13 +2183,19 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 {
 	struct gxp_dev *gxp = platform_get_drvdata(pdev);
 
-	gxp_remove_debugfs(gxp);
-	misc_deregister(&gxp->misc_dev);
+	/*
+	 * Call gxp_thermal_exit before gxp_remove_debugdir since it will
+	 * remove its own debugfs.
+	 */
+	gxp_thermal_exit(gxp);
+	gxp_remove_debugdir(gxp);
+	gxp_device_remove(gxp);
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);
 	gxp_core_telemetry_exit(gxp);
 	gxp_fw_data_destroy(gxp);
 	gxp_vd_destroy(gxp);
+	gxp_firmware_loader_destroy(gxp);
 	gxp_fw_destroy(gxp);
 	gxp_domain_pool_destroy(gxp->domain_pool);
 	kfree(gxp->domain_pool);
@@ -2091,20 +2210,62 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static int __init gxp_common_platform_init(void)
+{
+	gxp_common_platform_reg_sscd();
+	return gxp_fs_init();
+}
+
+static void __exit gxp_common_platform_exit(void)
+{
+	gxp_fs_exit();
+	gxp_common_platform_unreg_sscd();
+}
+
 #if IS_ENABLED(CONFIG_PM_SLEEP)
 
 static int gxp_platform_suspend(struct device *dev)
 {
 	struct gxp_dev *gxp = dev_get_drvdata(dev);
+	struct gxp_client *client;
 
-	return gxp_wakelock_suspend(gxp);
+	if (!gcip_pm_is_powered(gxp->power_mgr->pm))
+		return 0;
+
+	/* Log clients currently holding a wakelock */
+	if (!mutex_trylock(&gxp->client_list_lock)) {
+		dev_warn_ratelimited(
+			gxp->dev,
+			"Unable to get client list lock on suspend failure\n");
+		return -EAGAIN;
+	}
+
+	list_for_each_entry(client, &gxp->client_list, list_entry) {
+		if (!down_read_trylock(&client->semaphore)) {
+			dev_warn_ratelimited(
+				gxp->dev,
+				"Unable to acquire client lock (tgid=%d pid=%d)\n",
+				client->tgid, client->pid);
+			continue;
+		}
+
+		if (client->has_block_wakelock)
+			dev_warn_ratelimited(
+				gxp->dev,
+				"Cannot suspend with client holding wakelock (tgid=%d pid=%d)\n",
+				client->tgid, client->pid);
+
+		up_read(&client->semaphore);
+	}
+
+	mutex_unlock(&gxp->client_list_lock);
+
+	return -EAGAIN;
 }
 
 static int gxp_platform_resume(struct device *dev)
 {
-	struct gxp_dev *gxp = dev_get_drvdata(dev);
-
-	return gxp_wakelock_resume(gxp);
+	return 0;
 }
 
 static const struct dev_pm_ops gxp_pm_ops = {

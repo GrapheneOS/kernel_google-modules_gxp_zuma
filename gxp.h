@@ -13,7 +13,7 @@
 
 /* Interface Version */
 #define GXP_INTERFACE_VERSION_MAJOR 1
-#define GXP_INTERFACE_VERSION_MINOR 7
+#define GXP_INTERFACE_VERSION_MINOR 13
 #define GXP_INTERFACE_VERSION_BUILD 0
 
 /*
@@ -21,6 +21,7 @@
  * Requested size will be divided evenly among all cores. The whole buffer
  * must be page-aligned, and the size of each core's buffer must be a multiple
  * of PAGE_SIZE.
+ * These macros have become obsolete now.
  */
 #define GXP_MMAP_CORE_LOG_BUFFER_OFFSET_LEGACY 0x10000
 #define GXP_MMAP_CORE_TRACE_BUFFER_OFFSET_LEGACY 0x20000
@@ -32,6 +33,9 @@
 /* mmap offsets for core logging and tracing buffers */
 #define GXP_MMAP_CORE_LOG_BUFFER_OFFSET 0x50000
 #define GXP_MMAP_CORE_TRACE_BUFFER_OFFSET 0x60000
+
+/* mmap offset for secure core logging and tracing */
+#define GXP_MMAP_SECURE_CORE_LOG_BUFFER_OFFSET 0x70000
 
 #define GXP_IOCTL_BASE 0xEE
 
@@ -391,6 +395,8 @@ struct gxp_etm_get_trace_info_ioctl {
  * If firmware is already running on any cores, they will be signaled to begin
  * logging/tracing to their buffers. Any cores booting after this call will
  * begin logging/tracing as soon as their firmware is able to.
+ *
+ * This has become obsolete and will return -ENOTTY.
  */
 #define GXP_ENABLE_CORE_TELEMETRY _IOWR(GXP_IOCTL_BASE, 11, __u8)
 
@@ -401,10 +407,15 @@ struct gxp_etm_get_trace_info_ioctl {
  *
  * This call will block until any running cores have been notified and ACKed
  * that they have disabled the specified telemetry type.
+ *
+ * This has become obsolete and will return -ENOTTY.
  */
 #define GXP_DISABLE_CORE_TELEMETRY _IOWR(GXP_IOCTL_BASE, 12, __u8)
 
-/* For backward compatibility. */
+/*
+ * For backward compatibility.
+ * These macros have become obsolete now.
+ */
 #define GXP_ENABLE_TELEMETRY GXP_ENABLE_CORE_TELEMETRY
 #define GXP_DISABLE_TELEMETRY GXP_DISABLE_CORE_TELEMETRY
 
@@ -1015,5 +1026,22 @@ struct gxp_register_invalidated_eventfd_ioctl {
 
 #define GXP_UNREGISTER_INVALIDATED_EVENTFD                                     \
 	_IOW(GXP_IOCTL_BASE, 36, struct gxp_register_invalidated_eventfd_ioctl)
+
+/* The size of device properties pre-agreed with firmware */
+#define GXP_DEV_PROP_SIZE 256
+/*
+ * struct gxp_set_device_properties_ioctl
+ * @opaque:		Device properties defined by runtime and firmware.
+ */
+struct gxp_set_device_properties_ioctl {
+	__u8 opaque[GXP_DEV_PROP_SIZE];
+};
+
+/*
+ * Registers device properties which will be passed down to firmware on every
+ * MCU boot.
+ */
+#define GXP_SET_DEVICE_PROPERTIES                                              \
+	_IOW(GXP_IOCTL_BASE, 37, struct gxp_set_device_properties_ioctl)
 
 #endif /* __GXP_H__ */

@@ -51,7 +51,7 @@ static void destroy_dmabuf_mapping(struct gxp_mapping *mapping)
 }
 
 struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp,
-				   struct gxp_iommu_domain *domain, int fd,
+				   struct gcip_iommu_domain *domain, int fd,
 				   u32 flags, enum dma_data_direction dir)
 {
 	struct dma_buf *dmabuf;
@@ -101,6 +101,7 @@ struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp,
 	dmabuf_mapping->mapping.domain = domain;
 	dmabuf_mapping->mapping.device_address = sg_dma_address(sgt->sgl);
 	dmabuf_mapping->mapping.dir = dir;
+	dmabuf_mapping->mapping.size = dmabuf->size;
 	dmabuf_mapping->dmabuf = dmabuf;
 	dmabuf_mapping->attachment = attachment;
 	dmabuf_mapping->sgt = sgt;

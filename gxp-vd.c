@@ -22,8 +22,10 @@
 #include "gxp-dma.h"
 #include "gxp-domain-pool.h"
 #include "gxp-doorbell.h"
-#include "gxp-firmware.h"
+#include "gxp-eventfd.h"
 #include "gxp-firmware-data.h"
+#include "gxp-firmware-loader.h"
+#include "gxp-firmware.h"
 #include "gxp-host-device-structs.h"
 #include "gxp-internal.h"
 #include "gxp-lpm.h"
@@ -31,7 +33,8 @@
 #include "gxp-notification.h"
 #include "gxp-pm.h"
 #include "gxp-vd.h"
-#include "gxp-wakelock.h"
+
+#include <trace/events/gxp.h>
 
 static inline void hold_core_in_reset(struct gxp_dev *gxp, uint core)
 {
@@ -58,7 +61,8 @@ void gxp_vd_destroy(struct gxp_dev *gxp)
 }
 
 /* Allocates an SGT and map @daddr to it. */
-static int map_ns_region(struct gxp_virtual_device *vd, dma_addr_t daddr, size_t size)
+static int map_ns_region(struct gxp_virtual_device *vd, dma_addr_t daddr,
+			 size_t size)
 {
 	struct gxp_dev *gxp = vd->gxp;
 	struct sg_table *sgt;
@@ -119,26 +123,25 @@ static void unmap_ns_region(struct gxp_virtual_device *vd, dma_addr_t daddr)
 static int map_core_shared_buffer(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
-	struct iommu_domain *domain = vd->domain->domain;
 	const size_t shared_size = GXP_SHARED_SLICE_SIZE;
 
 	if (!gxp->shared_buf.paddr)
 		return 0;
-	return iommu_map(domain, gxp->shared_buf.daddr,
-			 gxp->shared_buf.paddr + shared_size * vd->slice_index,
-			 shared_size, IOMMU_READ | IOMMU_WRITE);
+	return gxp_iommu_map(gxp, vd->domain, gxp->shared_buf.daddr,
+			     gxp->shared_buf.paddr +
+				     shared_size * vd->slice_index,
+			     shared_size, IOMMU_READ | IOMMU_WRITE);
 }
 
 /* Reverts map_core_shared_buffer. */
 static void unmap_core_shared_buffer(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
-	struct iommu_domain *domain = vd->domain->domain;
 	const size_t shared_size = GXP_SHARED_SLICE_SIZE;
 
 	if (!gxp->shared_buf.paddr)
 		return;
-	iommu_unmap(domain, gxp->shared_buf.daddr, shared_size);
+	gxp_iommu_unmap(gxp, vd->domain, gxp->shared_buf.daddr, shared_size);
 }
 
 /* Maps @res->daddr to @res->paddr to @vd->domain. */
@@ -147,8 +150,8 @@ static int map_resource(struct gxp_virtual_device *vd,
 {
 	if (res->daddr == 0)
 		return 0;
-	return iommu_map(vd->domain->domain, res->daddr, res->paddr, res->size,
-			 IOMMU_READ | IOMMU_WRITE);
+	return gxp_iommu_map(vd->gxp, vd->domain, res->daddr, res->paddr,
+			     res->size, IOMMU_READ | IOMMU_WRITE);
 }
 
 /* Reverts map_resource. */
@@ -157,7 +160,39 @@ static void unmap_resource(struct gxp_virtual_device *vd,
 {
 	if (res->daddr == 0)
 		return;
-	iommu_unmap(vd->domain->domain, res->daddr, res->size);
+	gxp_iommu_unmap(vd->gxp, vd->domain, res->daddr, res->size);
+}
+
+/*
+ * System config region needs to be mapped as first page RO and remaining RW.
+ *
+ * Use unmap_resource() to release mapped resource.
+ */
+static int map_sys_cfg_resource(struct gxp_virtual_device *vd,
+				struct gxp_mapped_resource *res)
+{
+	struct gxp_dev *gxp = vd->gxp;
+	int ret;
+	const size_t ro_size = PAGE_SIZE;
+
+	if (res->daddr == 0)
+		return 0;
+	if (res->size != GXP_FW_DATA_SYSCFG_SIZE) {
+		dev_err(gxp->dev, "invalid system cfg size: %#llx", res->size);
+		return -EINVAL;
+	}
+	ret = gxp_iommu_map(gxp, vd->domain, res->daddr, res->paddr, ro_size,
+			    IOMMU_READ);
+	if (ret)
+		return ret;
+	ret = gxp_iommu_map(gxp, vd->domain, res->daddr + ro_size,
+			    res->paddr + ro_size, res->size - ro_size,
+			    IOMMU_READ | IOMMU_WRITE);
+	if (ret) {
+		gxp_iommu_unmap(gxp, vd->domain, res->daddr, ro_size);
+		return ret;
+	}
+	return 0;
 }
 
 /*
@@ -200,32 +235,19 @@ static int map_cfg_regions(struct gxp_virtual_device *vd,
 			   struct gcip_image_config *img_cfg)
 {
 	struct gxp_dev *gxp = vd->gxp;
-	struct gxp_mapped_resource *pool;
-	struct gxp_mapped_resource res, tmp;
+	struct gxp_mapped_resource pool;
+	struct gxp_mapped_resource res;
 	size_t offset;
 	int ret;
 
-	if (img_cfg->num_iommu_mappings < 2)
+	if (img_cfg->num_iommu_mappings < 3)
 		return map_core_shared_buffer(vd);
-
-	/*
-	 * For direct mode, the config regions are programmed by host (us); for
-	 * MCU mode, the config regions are programmed by MCU.
-	 */
-	if (gxp_is_direct_mode(gxp)) {
-		tmp = gxp->fwdatabuf;
-		/* Leave the first piece be used for gxp_fw_data_init() */
-		tmp.vaddr += tmp.size / 2;
-		tmp.paddr += tmp.size / 2;
-		pool = &tmp;
-	} else {
-		pool = &gxp->shared_buf;
-	}
+	pool = gxp_fw_data_resource(gxp);
 
 	assign_resource(&res, img_cfg, CORE_CFG_REGION_IDX);
 	offset = vd->slice_index * GXP_SHARED_SLICE_SIZE;
-	res.vaddr = pool->vaddr + offset;
-	res.paddr = pool->paddr + offset;
+	res.vaddr = pool.vaddr + offset;
+	res.paddr = pool.paddr + offset;
 	ret = map_resource(vd, &res);
 	if (ret) {
 		dev_err(gxp->dev, "map core config %pad -> offset %#zx failed",
@@ -236,8 +258,8 @@ static int map_cfg_regions(struct gxp_virtual_device *vd,
 
 	assign_resource(&res, img_cfg, VD_CFG_REGION_IDX);
 	offset += vd->core_cfg.size;
-	res.vaddr = pool->vaddr + offset;
-	res.paddr = pool->paddr + offset;
+	res.vaddr = pool.vaddr + offset;
+	res.paddr = pool.paddr + offset;
 	ret = map_resource(vd, &res);
 	if (ret) {
 		dev_err(gxp->dev, "map VD config %pad -> offset %#zx failed",
@@ -254,16 +276,11 @@ static int map_cfg_regions(struct gxp_virtual_device *vd,
 		ret = -ENOSPC;
 		goto err_unmap_vd;
 	}
-	/*
-	 * It's okay when mappings[sys_cfg_region_idx] is not set, in which case
-	 * map_resource does nothing.
-	 */
 	assign_resource(&res, img_cfg, SYS_CFG_REGION_IDX);
-	/* Use the end of the shared region for system cfg. */
-	offset = GXP_SHARED_BUFFER_SIZE - res.size;
-	res.vaddr = pool->vaddr + offset;
-	res.paddr = pool->paddr + offset;
-	ret = map_resource(vd, &res);
+	res.vaddr = gxp_fw_data_system_cfg(gxp);
+	offset = res.vaddr - pool.vaddr;
+	res.paddr = pool.paddr + offset;
+	ret = map_sys_cfg_resource(vd, &res);
 	if (ret) {
 		dev_err(gxp->dev, "map sys config %pad -> offset %#zx failed",
 			&res.daddr, offset);
@@ -314,9 +331,9 @@ static void gxp_vd_imgcfg_unmap(void *data, dma_addr_t daddr, size_t size,
 	unmap_ns_region(vd, daddr);
 }
 
-static int map_fw_image_config(struct gxp_dev *gxp,
-			       struct gxp_virtual_device *vd,
-			       struct gxp_firmware_manager *fw_mgr)
+static int
+map_fw_image_config(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
+		    struct gxp_firmware_loader_manager *fw_loader_mgr)
 {
 	int ret;
 	struct gcip_image_config *cfg;
@@ -325,12 +342,7 @@ static int map_fw_image_config(struct gxp_dev *gxp,
 		.unmap = gxp_vd_imgcfg_unmap,
 	};
 
-	/*
-	 * Allow to skip for test suites need VD but doesn't need the FW module.
-	 */
-	if (IS_ENABLED(CONFIG_GXP_TEST) && !fw_mgr)
-		return 0;
-	cfg = &fw_mgr->img_cfg;
+	cfg = &fw_loader_mgr->core_img_cfg;
 	ret = gcip_image_config_parser_init(&vd->cfg_parser, &gxp_vd_imgcfg_ops,
 					    gxp->dev, vd);
 	/* parser_init() never fails unless we pass invalid OPs. */
@@ -347,13 +359,6 @@ static int map_fw_image_config(struct gxp_dev *gxp,
 		gcip_image_config_clear(&vd->cfg_parser);
 		return ret;
 	}
-	vd->fw_ro_size = cfg->firmware_size;
-	/*
-	 * To be compatible with image config without setting firmware_size,
-	 * fall back to map the whole region to carveout.
-	 */
-	if (vd->fw_ro_size == 0)
-		vd->fw_ro_size = gxp->fwbufs[0].size;
 
 	return 0;
 }
@@ -365,100 +370,18 @@ static void unmap_fw_image_config(struct gxp_dev *gxp,
 	gcip_image_config_clear(&vd->cfg_parser);
 }
 
-/*
- * For each core,
- *  - fw_rw_size = fwbufs[core].size - fw_ro_size
- *  - allocates rwdata_sgt[core] with size fw_rw_size
- *  - maps fwbufs[core].daddr -> fwbufs[core].paddr with size fw_ro_size
- *  - maps fwbufs[core].daddr + fw_ro_size -> rwdata_sgt[core]
- */
-static int alloc_and_map_fw_image(struct gxp_dev *gxp,
-				  struct gxp_virtual_device *vd)
+static int map_fw_image(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
-	size_t ro_size = vd->fw_ro_size, rw_size;
-	struct iommu_domain *domain = vd->domain->domain;
-	int i, ret;
-
-	/* Maps all FW regions together and no rwdata_sgt in this case. */
-	if (ro_size == gxp->fwbufs[0].size)
-		return iommu_map(domain, gxp->fwbufs[0].daddr,
-				 gxp->fwbufs[0].paddr, ro_size * GXP_NUM_CORES,
-				 IOMMU_READ | IOMMU_WRITE);
-
-	dev_info(gxp->dev, "mapping firmware RO size %#zx", ro_size);
-	rw_size = gxp->fwbufs[0].size - ro_size;
-	for (i = 0; i < GXP_NUM_CORES; i++) {
-		vd->rwdata_sgt[i] =
-			gcip_alloc_noncontiguous(gxp->dev, rw_size, GFP_KERNEL);
-		if (!vd->rwdata_sgt[i]) {
-			dev_err(gxp->dev,
-				"allocate firmware data for core %d failed", i);
-			ret = -ENOMEM;
-			goto err_free_sgt;
-		}
-	}
-	for (i = 0; i < GXP_NUM_CORES; i++) {
-		ret = iommu_map(domain, gxp->fwbufs[i].daddr,
-				gxp->fwbufs[i].paddr, ro_size,
-				IOMMU_READ | IOMMU_WRITE);
-		if (ret) {
-			dev_err(gxp->dev, "map firmware RO for core %d failed",
-				i);
-			goto err_unmap;
-		}
-		ret = gxp_dma_map_iova_sgt(gxp, vd->domain,
-					   gxp->fwbufs[i].daddr + ro_size,
-					   vd->rwdata_sgt[i],
-					   IOMMU_READ | IOMMU_WRITE);
-		if (ret) {
-			dev_err(gxp->dev, "map firmware RW for core %d failed",
-				i);
-			iommu_unmap(domain, gxp->fwbufs[i].daddr, ro_size);
-			goto err_unmap;
-		}
-	}
-	return 0;
-
-err_unmap:
-	while (i--) {
-		iommu_unmap(domain, gxp->fwbufs[i].daddr, ro_size);
-		gxp_dma_unmap_iova_sgt(gxp, vd->domain,
-				       gxp->fwbufs[i].daddr + ro_size,
-				       vd->rwdata_sgt[i]);
-	}
-err_free_sgt:
-	for (i = 0; i < GXP_NUM_CORES; i++) {
-		if (vd->rwdata_sgt[i])
-			gcip_free_noncontiguous(vd->rwdata_sgt[i]);
-		vd->rwdata_sgt[i] = NULL;
-	}
-	return ret;
+	/* Maps all FW regions together. */
+	return gxp_iommu_map(gxp, vd->domain, gxp->fwbufs[0].daddr,
+			     gxp->fwbufs[0].paddr,
+			     gxp->fwbufs[0].size * GXP_NUM_CORES, IOMMU_READ);
 }
 
-static void unmap_and_free_fw_image(struct gxp_dev *gxp,
-				    struct gxp_virtual_device *vd)
+static void unmap_fw_image(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
-	size_t ro_size = vd->fw_ro_size;
-	struct iommu_domain *domain = vd->domain->domain;
-	int i;
-
-	if (ro_size == gxp->fwbufs[0].size) {
-		iommu_unmap(domain, gxp->fwbufs[0].daddr,
-			    ro_size * GXP_NUM_CORES);
-		return;
-	}
-
-	for (i = 0; i < GXP_NUM_CORES; i++) {
-		iommu_unmap(domain, gxp->fwbufs[i].daddr, ro_size);
-		gxp_dma_unmap_iova_sgt(gxp, vd->domain,
-				       gxp->fwbufs[i].daddr + ro_size,
-				       vd->rwdata_sgt[i]);
-	}
-	for (i = 0; i < GXP_NUM_CORES; i++) {
-		if (vd->rwdata_sgt[i])
-			gcip_free_noncontiguous(vd->rwdata_sgt[i]);
-		vd->rwdata_sgt[i] = NULL;
-	}
+	gxp_iommu_unmap(gxp, vd->domain, gxp->fwbufs[0].daddr,
+			gxp->fwbufs[0].size * GXP_NUM_CORES);
 }
 
 static int map_core_telemetry_buffers(struct gxp_dev *gxp,
@@ -566,7 +489,7 @@ static int assign_cores(struct gxp_virtual_device *vd)
 	uint core;
 	uint available_cores = 0;
 
-	if (!gxp_core_boot) {
+	if (!gxp_core_boot(gxp)) {
 		/* We don't do core assignment when cores are managed by MCU. */
 		vd->core_list = BIT(GXP_NUM_CORES) - 1;
 		return 0;
@@ -596,7 +519,7 @@ static void unassign_cores(struct gxp_virtual_device *vd)
 	struct gxp_dev *gxp = vd->gxp;
 	uint core;
 
-	if (!gxp_core_boot)
+	if (!gxp_core_boot(gxp))
 		return;
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (gxp->core_to_vd[core] == vd)
@@ -643,8 +566,7 @@ static void vd_restore_doorbells(struct gxp_virtual_device *vd)
 static void set_config_version(struct gxp_dev *gxp,
 			       struct gxp_virtual_device *vd)
 {
-	if (gxp->firmware_mgr && vd->sys_cfg.daddr)
-		vd->config_version = gxp->firmware_mgr->img_cfg.config_version;
+	vd->config_version = gxp->fw_loader_mgr->core_img_cfg.config_version;
 	/*
 	 * Let gxp_dma_map_core_resources() map this region only when using the
 	 * legacy protocol.
@@ -655,12 +577,32 @@ static void set_config_version(struct gxp_dev *gxp,
 		gxp->fwdatabuf.daddr = 0;
 }
 
+static void debug_dump_lock(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
+{
+	if (!mutex_trylock(&vd->debug_dump_lock)) {
+		/*
+		 * Release @gxp->vd_semaphore to let other virtual devices proceed
+		 * their works and wait for the debug dump to finish.
+		 */
+		up_write(&gxp->vd_semaphore);
+		mutex_lock(&vd->debug_dump_lock);
+		down_write(&gxp->vd_semaphore);
+	}
+}
+
+static inline void debug_dump_unlock(struct gxp_virtual_device *vd)
+{
+	mutex_unlock(&vd->debug_dump_lock);
+}
+
 struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 					   u16 requested_cores)
 {
 	struct gxp_virtual_device *vd;
 	int i;
 	int err;
+
+	trace_gxp_vd_allocate_start(requested_cores);
 
 	lockdep_assert_held_write(&gxp->vd_semaphore);
 	/* Assumes 0 < requested_cores <= GXP_NUM_CORES */
@@ -682,6 +624,9 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	vd->credit = GXP_COMMAND_CREDIT_PER_VD;
 	vd->first_open = true;
 	vd->vdid = atomic_inc_return(&gxp->next_vdid);
+	mutex_init(&vd->fence_list_lock);
+	INIT_LIST_HEAD(&vd->gxp_fence_list);
+	mutex_init(&vd->debug_dump_lock);
 
 	vd->domain = gxp_domain_pool_alloc(gxp->domain_pool);
 	if (!vd->domain) {
@@ -721,25 +666,18 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	 * Here assumes firmware is requested before allocating a VD, which is
 	 * true because we request firmware on first GXP device open.
 	 */
-	err = map_fw_image_config(gxp, vd, gxp->firmware_mgr);
+	err = map_fw_image_config(gxp, vd, gxp->fw_loader_mgr);
 	if (err)
 		goto error_unassign_cores;
 
 	set_config_version(gxp, vd);
-	if (gxp->data_mgr) {
-		/* After map_fw_image_config because it needs vd->sys_cfg. */
-		vd->fw_app = gxp_fw_data_create_app(gxp, vd);
-		if (IS_ERR(vd->fw_app)) {
-			err = PTR_ERR(vd->fw_app);
-			vd->fw_app = NULL;
-			goto error_unmap_imgcfg;
-		}
-	}
+	/* After map_fw_image_config because it needs vd->vd/core_cfg. */
+	gxp_fw_data_populate_vd_cfg(gxp, vd);
 	err = gxp_dma_map_core_resources(gxp, vd->domain, vd->core_list,
 					 vd->slice_index);
 	if (err)
-		goto error_destroy_fw_data;
-	err = alloc_and_map_fw_image(gxp, vd);
+		goto error_unmap_imgcfg;
+	err = map_fw_image(gxp, vd);
 	if (err)
 		goto error_unmap_core_resources;
 	err = map_core_telemetry_buffers(gxp, vd, vd->core_list);
@@ -749,16 +687,16 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	if (err)
 		goto error_unmap_core_telemetry_buffer;
 
+	trace_gxp_vd_allocate_end(vd->vdid);
+
 	return vd;
 
 error_unmap_core_telemetry_buffer:
 	unmap_core_telemetry_buffers(gxp, vd, vd->core_list);
 error_unmap_fw_data:
-	unmap_and_free_fw_image(gxp, vd);
+	unmap_fw_image(gxp, vd);
 error_unmap_core_resources:
 	gxp_dma_unmap_core_resources(gxp, vd->domain, vd->core_list);
-error_destroy_fw_data:
-	gxp_fw_data_destroy_app(gxp, vd->fw_app);
 error_unmap_imgcfg:
 	unmap_fw_image_config(gxp, vd);
 error_unassign_cores:
@@ -782,8 +720,12 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	struct gxp_mapping *mapping;
 	struct gxp_dev *gxp = vd->gxp;
 	uint core_list = vd->core_list;
+	int vdid = vd->vdid;
+
+	trace_gxp_vd_release_start(vdid);
 
 	lockdep_assert_held_write(&gxp->vd_semaphore);
+	debug_dump_lock(gxp, vd);
 
 	if (vd->is_secure) {
 		mutex_lock(&gxp->secure_vd_lock);
@@ -793,9 +735,8 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 
 	unmap_debug_dump_buffer(gxp, vd);
 	unmap_core_telemetry_buffers(gxp, vd, core_list);
-	unmap_and_free_fw_image(gxp, vd);
+	unmap_fw_image(gxp, vd);
 	gxp_dma_unmap_core_resources(gxp, vd->domain, core_list);
-	gxp_fw_data_destroy_app(gxp, vd->fw_app);
 	unmap_fw_image_config(gxp, vd);
 	unassign_cores(vd);
 
@@ -818,33 +759,47 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	if (vd->slice_index >= 0)
 		ida_free(&vd->gxp->shared_slice_idp, vd->slice_index);
 	gxp_domain_pool_free(vd->gxp->domain_pool, vd->domain);
+
+	if (vd->invalidate_eventfd)
+		gxp_eventfd_put(vd->invalidate_eventfd);
+	vd->invalidate_eventfd = NULL;
+
 	vd->state = GXP_VD_RELEASED;
+	debug_dump_unlock(vd);
 	gxp_vd_put(vd);
+
+	trace_gxp_vd_release_end(vdid);
 }
 
 int gxp_vd_block_ready(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
+	enum gxp_virtual_device_state orig_state;
 	int ret;
+
+	trace_gxp_vd_block_ready_start(vd->vdid);
 
 	lockdep_assert_held_write(&gxp->vd_semaphore);
 
-	if (vd->state == GXP_VD_SUSPENDED)
-		return 0;
-	if (vd->state != GXP_VD_OFF)
+	orig_state = vd->state;
+	if (orig_state != GXP_VD_OFF && orig_state != GXP_VD_SUSPENDED)
 		return -EINVAL;
 	ret = gxp_dma_domain_attach_device(gxp, vd->domain, vd->core_list);
 	if (ret)
 		return ret;
-	vd->state = GXP_VD_READY;
+	if (orig_state == GXP_VD_OFF)
+		vd->state = GXP_VD_READY;
 	if (gxp->after_vd_block_ready) {
 		ret = gxp->after_vd_block_ready(gxp, vd);
 		if (ret) {
 			gxp_dma_domain_detach_device(gxp, vd->domain);
-			vd->state = GXP_VD_OFF;
+			vd->state = orig_state;
 			return ret;
 		}
 	}
+
+	trace_gxp_vd_block_ready_end(vd->vdid);
+
 	return 0;
 }
 
@@ -852,19 +807,29 @@ void gxp_vd_block_unready(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
 
+	trace_gxp_vd_block_unready_start(vd->vdid);
+
+	lockdep_assert_held_write(&gxp->vd_semaphore);
+
 	if (gxp->before_vd_block_unready)
 		gxp->before_vd_block_unready(gxp, vd);
+	if (vd->state == GXP_VD_READY)
+		vd->state = GXP_VD_OFF;
+	gxp_dma_domain_detach_device(gxp, vd->domain);
+
+	trace_gxp_vd_block_unready_end(vd->vdid);
 }
 
 int gxp_vd_run(struct gxp_virtual_device *vd)
 {
 	struct gxp_dev *gxp = vd->gxp;
-	int ret = 0;
+	int ret;
+	enum gxp_virtual_device_state orig_state = vd->state;
 
-	lockdep_assert_held(&gxp->vd_semaphore);
-	if (vd->state != GXP_VD_READY && vd->state != GXP_VD_OFF)
+	lockdep_assert_held_write(&gxp->vd_semaphore);
+	if (orig_state != GXP_VD_READY && orig_state != GXP_VD_OFF)
 		return -EINVAL;
-	if (vd->state == GXP_VD_OFF) {
+	if (orig_state == GXP_VD_OFF) {
 		ret = gxp_vd_block_ready(vd);
 		/*
 		 * The failure of `gxp_vd_block_ready` function means following two things:
@@ -885,16 +850,23 @@ int gxp_vd_run(struct gxp_virtual_device *vd)
 		if (ret)
 			goto err_vd_unavailable;
 	}
+
+	debug_dump_lock(gxp, vd);
 	/* Clear all doorbells */
 	vd_restore_doorbells(vd);
 	ret = gxp_firmware_run(gxp, vd, vd->core_list);
 	if (ret)
 		goto err_vd_block_unready;
 	vd->state = GXP_VD_RUNNING;
-	return ret;
+	debug_dump_unlock(vd);
+
+	return 0;
 
 err_vd_block_unready:
-	gxp_vd_block_unready(vd);
+	debug_dump_unlock(vd);
+	/* Run this only when gxp_vd_block_ready was executed. */
+	if (orig_state == GXP_VD_OFF)
+		gxp_vd_block_unready(vd);
 err_vd_unavailable:
 	vd->state = GXP_VD_UNAVAILABLE;
 	return ret;
@@ -926,28 +898,43 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 	uint core_list = vd->core_list;
 	uint lpm_state;
 
-	lockdep_assert_held(&gxp->vd_semaphore);
-	if ((vd->state == GXP_VD_OFF || vd->state == GXP_VD_READY ||
+	lockdep_assert_held_write(&gxp->vd_semaphore);
+	debug_dump_lock(gxp, vd);
+
+	if (gxp_core_boot(gxp) &&
+	    (vd->state == GXP_VD_OFF || vd->state == GXP_VD_READY ||
 	     vd->state == GXP_VD_RUNNING) &&
 	    gxp_pm_get_blk_state(gxp) != AUR_OFF) {
-		/*
-		 * Put all cores in the VD into reset so they can not wake each other up
-		 */
+
 		for (phys_core = 0; phys_core < GXP_NUM_CORES; phys_core++) {
 			if (core_list & BIT(phys_core)) {
-				lpm_state = gxp_lpm_get_state(
-					gxp, CORE_TO_PSM(phys_core));
-				if (lpm_state != LPM_PG_STATE)
+
+				lpm_state = gxp_lpm_get_state(gxp, CORE_TO_PSM(phys_core));
+
+				if (lpm_state == LPM_ACTIVE_STATE) {
+					/*
+					 * If the core is in PS0 (not idle), it should
+					 * be held in reset before attempting SW PG.
+					 */
 					hold_core_in_reset(gxp, phys_core);
+				} else {
+					/*
+					 * If the core is idle and has already transtioned to PS1,
+					 * we can attempt HW PG. In this case, we should ensure
+					 * that the core doesn't get awakened by an external
+					 * interrupt source before we attempt to HW PG the core.
+					 */
+					gxp_firmware_disable_ext_interrupts(gxp, phys_core);
+				}
 			}
 		}
 	}
 
 	gxp_firmware_stop(gxp, vd, core_list);
-	if (vd->state == GXP_VD_READY || vd->state == GXP_VD_RUNNING ||
-	    vd->state == GXP_VD_UNAVAILABLE)
-		gxp_dma_domain_detach_device(gxp, vd->domain);
-	vd->state = GXP_VD_OFF;
+	if (vd->state != GXP_VD_UNAVAILABLE)
+		vd->state = GXP_VD_OFF;
+
+	debug_dump_unlock(vd);
 }
 
 static inline uint select_core(struct gxp_virtual_device *vd, uint virt_core,
@@ -998,16 +985,21 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 	u32 boot_state;
 	uint failed_cores = 0;
 
-#ifdef DISABLE_VD_SUSPEND_RESUME_SUPPORT
-	if (!gxp_is_direct_mode(gxp))
+	if (!gxp_is_direct_mode(gxp) && gxp_core_boot(gxp))
 		return gxp_vd_stop(vd);
-#endif
 	lockdep_assert_held_write(&gxp->vd_semaphore);
-	dev_info(gxp->dev, "Suspending VD ...\n");
+	debug_dump_lock(gxp, vd);
+
+	dev_info(gxp->dev, "Suspending VD vdid=%d client_id=%d...\n", vd->vdid,
+		 vd->client_id);
 	if (vd->state == GXP_VD_SUSPENDED) {
 		dev_err(gxp->dev,
 			"Attempt to suspend a virtual device twice\n");
-		return;
+		goto out;
+	}
+	if (!gxp_core_boot(gxp)) {
+		vd->state = GXP_VD_SUSPENDED;
+		goto out;
 	}
 	gxp_pm_force_clkmux_normal(gxp);
 	/*
@@ -1074,7 +1066,6 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 					     LPM_CG_STATE);
 		}
 	}
-	gxp_dma_domain_detach_device(gxp, vd->domain);
 	if (vd->state == GXP_VD_UNAVAILABLE) {
 		/* shutdown all cores if virtual device is unavailable */
 		for (phys_core = 0; phys_core < GXP_NUM_CORES; phys_core++)
@@ -1088,6 +1079,8 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 		vd->state = GXP_VD_SUSPENDED;
 	}
 	gxp_pm_resume_clkmux(gxp);
+out:
+	debug_dump_unlock(vd);
 }
 
 /*
@@ -1105,11 +1098,18 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 	uint failed_cores = 0;
 
 	lockdep_assert_held_write(&gxp->vd_semaphore);
-	dev_info(gxp->dev, "Resuming VD ...\n");
+	debug_dump_lock(gxp, vd);
+	dev_info(gxp->dev, "Resuming VD vdid=%d client_id=%d...\n", vd->vdid,
+		 vd->client_id);
 	if (vd->state != GXP_VD_SUSPENDED) {
 		dev_err(gxp->dev,
 			"Attempt to resume a virtual device which was not suspended\n");
-		return -EBUSY;
+		ret = -EBUSY;
+		goto out;
+	}
+	if (!gxp_core_boot(gxp)) {
+		vd->state = GXP_VD_RUNNING;
+		goto out;
 	}
 	gxp_pm_force_clkmux_normal(gxp);
 	curr_blk_switch_count = gxp_pm_get_blk_switch_count(gxp);
@@ -1117,7 +1117,6 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 	/* Restore the doorbells state for this VD. */
 	vd_restore_doorbells(vd);
 
-	gxp_dma_domain_attach_device(gxp, vd->domain, core_list);
 	/*
 	 * Start the resume process for all of this VD's cores without waiting
 	 * for completion.
@@ -1199,11 +1198,12 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 			if (core_list & BIT(phys_core))
 				gxp_pm_core_off(gxp, phys_core);
 		}
-		gxp_dma_domain_detach_device(gxp, vd->domain);
 	} else {
 		vd->state = GXP_VD_RUNNING;
 	}
 	gxp_pm_resume_clkmux(gxp);
+out:
+	debug_dump_unlock(vd);
 	return ret;
 }
 
@@ -1225,6 +1225,26 @@ int gxp_vd_virt_core_to_phys_core(struct gxp_virtual_device *vd, u16 virt_core)
 
 	dev_dbg(gxp->dev, "No mapping for virtual core %u\n", virt_core);
 	return -EINVAL;
+}
+
+int gxp_vd_phys_core_to_virt_core(struct gxp_virtual_device *vd, u32 phys_core)
+{
+	struct gxp_dev *gxp = vd->gxp;
+
+	lockdep_assert_held(&vd->debug_dump_lock);
+
+	if (!gxp_is_direct_mode(gxp)) {
+		dev_dbg(gxp->dev, "%s supported only in direct mode.\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	if (!(vd->core_list & BIT(phys_core))) {
+		dev_dbg(gxp->dev, "No mapping for physical core %u\n",
+			phys_core);
+		return -EINVAL;
+	}
+	return hweight_long(vd->core_list & (BIT(phys_core) - 1));
 }
 
 int gxp_vd_mapping_store(struct gxp_virtual_device *vd, struct gxp_mapping *map)
@@ -1402,11 +1422,11 @@ void gxp_vd_put(struct gxp_virtual_device *vd)
 		kfree(vd);
 }
 
-void gxp_vd_invalidate(struct gxp_dev *gxp, int client_id)
+void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id,
+				      uint core_list)
 {
 	struct gxp_client *client = NULL, *c;
-	release_unconsumed_async_resps_t release_unconsumed_async_resps =
-		gxp->mailbox_mgr->release_unconsumed_async_resps;
+	uint core;
 
 	/*
 	 * Prevent @gxp->client_list is being changed while handling the crash.
@@ -1435,26 +1455,85 @@ void gxp_vd_invalidate(struct gxp_dev *gxp, int client_id)
 	if (!client) {
 		dev_err(gxp->dev, "Failed to find a VD, client_id=%d",
 			client_id);
+		/*
+		 * Invalidate all debug dump segments if debug dump
+		 * is enabled and core_list is not empty.
+		 */
+		if (!gxp_debug_dump_is_enabled() || !core_list)
+			return;
+		for (core = 0; core < GXP_NUM_CORES; core++) {
+			if (!(BIT(core) & core_list))
+				continue;
+			mutex_lock(&gxp->debug_dump_mgr->debug_dump_lock);
+			gxp_debug_dump_invalidate_segments(gxp, core);
+			mutex_unlock(&gxp->debug_dump_mgr->debug_dump_lock);
+		}
 		return;
 	}
 
-	dev_err(gxp->dev, "Invalidate a VD, VDID=%d, client_id=%d",
-		client->vd->vdid, client_id);
-
-	if (client->vd->state != GXP_VD_UNAVAILABLE) {
-		if (client->has_block_wakelock) {
-			if (release_unconsumed_async_resps)
-				release_unconsumed_async_resps(client->vd);
-			gxp_vd_block_unready(client->vd);
-		}
-
-		client->vd->state = GXP_VD_UNAVAILABLE;
-		if (client->vd_invalid_eventfd)
-			gxp_eventfd_signal(client->vd_invalid_eventfd);
-	} else {
-		dev_dbg(gxp->dev, "This VD is already invalidated");
-	}
+	gxp_vd_invalidate(gxp, client->vd);
+	gxp_vd_generate_debug_dump(gxp, client->vd, core_list);
 
 	up_write(&gxp->vd_semaphore);
 	up_write(&client->semaphore);
+}
+
+void gxp_vd_invalidate(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
+{
+	lockdep_assert_held_write(&gxp->vd_semaphore);
+
+	dev_err(gxp->dev, "Invalidate a VD, VDID=%d, client_id=%d", vd->vdid,
+		vd->client_id);
+
+	if (vd->state != GXP_VD_UNAVAILABLE) {
+		if (gxp->mailbox_mgr->release_unconsumed_async_resps)
+			gxp->mailbox_mgr->release_unconsumed_async_resps(vd);
+
+		vd->state = GXP_VD_UNAVAILABLE;
+
+		if (vd->invalidate_eventfd)
+			gxp_eventfd_signal(vd->invalidate_eventfd);
+	} else {
+		dev_dbg(gxp->dev, "This VD is already invalidated");
+	}
+}
+
+void gxp_vd_generate_debug_dump(struct gxp_dev *gxp,
+				struct gxp_virtual_device *vd, uint core_list)
+{
+	int ret;
+
+	if (!gxp_debug_dump_is_enabled() || !core_list)
+		return;
+
+	lockdep_assert_held_write(&gxp->vd_semaphore);
+
+	/*
+	 * We should increase the refcount of @vd because @gxp->vd_semaphore will be
+	 * released below and the client can release it asynchronously.
+	 */
+	vd = gxp_vd_get(vd);
+
+	/*
+	 * Release @gxp->vd_semaphore before generating a debug dump and hold it
+	 * again after completing debug dump to not block other virtual devices
+	 * proceeding their work.
+	 */
+	up_write(&gxp->vd_semaphore);
+	mutex_lock(&vd->debug_dump_lock);
+
+	/*
+	 * Process debug dump if its enabled and core_list is not empty.
+	 * Keep on hold the client lock while processing the dumps. vd
+	 * lock would be taken and released inside the debug dump
+	 * implementation logic ahead.
+	 */
+	ret = gxp_debug_dump_process_dump_mcu_mode(gxp, core_list, vd);
+	if (ret)
+		dev_err(gxp->dev, "debug dump processing failed (ret=%d).\n",
+			ret);
+
+	mutex_unlock(&vd->debug_dump_lock);
+	down_write(&gxp->vd_semaphore);
+	gxp_vd_put(vd);
 }

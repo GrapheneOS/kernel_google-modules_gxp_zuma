@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * GXP core telemetry support
  *
@@ -16,6 +16,8 @@
 #include "gxp-internal.h"
 #include "gxp.h"
 
+/* Core telemetry buffer header size */
+#define GXP_CORE_TELEMETRY_BUFFER_HEADER_SIZE SZ_64
 /* Default telemetry buffer size per core */
 #define CORE_TELEMETRY_DEFAULT_BUFFER_SIZE GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE
 /**
@@ -40,14 +42,14 @@ struct gxp_core_telemetry_manager {
 		u32 size;
 		refcount_t ref_count;
 		bool is_enabled;
-	} *logging_buff_data_legacy, *tracing_buff_data_legacy,
-	  *logging_buff_data, *tracing_buff_data;
+	} *logging_buff_data, *tracing_buff_data;
 	/* Protects logging_buff_data and tracing_buff_data */
 	struct mutex lock;
 	struct gxp_core_telemetry_work notification_works[GXP_NUM_CORES];
 	wait_queue_head_t waitq;
 	struct eventfd_ctx *logging_efd;
 	struct eventfd_ctx *tracing_efd;
+	phys_addr_t secure_buffer_carveout_addr;
 };
 
 /**
@@ -59,6 +61,18 @@ struct gxp_core_telemetry_manager {
  * * -ENOMEM - Insufficient memory is available to initialize support
  */
 int gxp_core_telemetry_init(struct gxp_dev *gxp);
+
+/**
+ * gxp_secure_core_telemetry_init() - Initialize telemetry support for
+ *                                    secure core workloads.
+ * @gxp: The GXP device to initialize secure core telemetry support for.
+ * @phys: Physical address of reserved carveout for secure telemetry.
+ *
+ * Return:
+ * * 0       - Success or provided physical address was zero.
+ * * -EINVAL - Memremap of provided physical address failed.
+ */
+int gxp_secure_core_telemetry_init(struct gxp_dev *gxp, phys_addr_t phys);
 
 /**
  * gxp_core_telemetry_mmap_buffers() - Maps the preallocated telemetry
@@ -77,47 +91,19 @@ int gxp_core_telemetry_mmap_buffers(struct gxp_dev *gxp, u8 type,
 				    struct vm_area_struct *vma);
 
 /**
- * gxp_core_telemetry_mmap_buffers_legacy() - Allocate a telemetry buffer for
- *                                            each core and map them to their
- *                                            core and the user-space vma
- * @gxp: The GXP device to create the buffers for
- * @type: EIther `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`
- * @vma: The vma from user-space which all cores' buffers will be mapped into
+ * gxp_secure_core_telemetry_mmap_buffers() - Maps the reserved secure
+ *                                            telemetry buffer carveout area.
+ * @gxp: The GXP device to create the buffers for.
+ * @vma: The vma from user-space which all cores' buffers will be mapped into.
  *
  * Return:
- * * 0       - Success
- * * -ENODEV - Core telemetry support has not been initialized. Must explicitly
- *             check this, since this function is called based on user-input.
- * * -EBUSY  - The requested core telemetry @type is already in use
- * * -EINVAL - Either the vma size is not aligned or @type is not valid
- * * -ENOMEM - Insufficient memory is available to allocate and map the buffers
+ * * 0       - Success.
+ * * -EINVAL - vma size is not equal to reserved carveout area size.
+ * * -ENODATA - No secure buffer details available.
+ * * otherwise - Error returned by `remap_pfn_range()`
  */
-int gxp_core_telemetry_mmap_buffers_legacy(struct gxp_dev *gxp, u8 type,
-                                           struct vm_area_struct *vma);
-
-/**
- * gxp_core_telemetry_enable() - Enable logging or tracing for all DSP cores
- * @gxp: The GXP device to enable either logging or tracing for
- * @type: Either `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`
- *
- * Return:
- * * 0       - Success
- * * -EINVAL - The @type provided is not valid
- * * -ENXIO  - Buffers for @type have not been created/mapped yet
- */
-int gxp_core_telemetry_enable(struct gxp_dev *gxp, u8 type);
-
-/**
- * gxp_core_telemetry_disable() - Disable logging or tracing for all DSP cores
- * @gxp: The GXP device to disable either logging or tracing for
- * @type: Either `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`
- *
- * Return:
- * * 0       - Success
- * * -EINVAL - The @type provided is not valid
- * * -ENXIO  - Buffers for @type have not been created/mapped yet
- */
-int gxp_core_telemetry_disable(struct gxp_dev *gxp, u8 type);
+int gxp_secure_core_telemetry_mmap_buffers(struct gxp_dev *gxp,
+					   struct vm_area_struct *vma);
 
 /**
  * gxp_core_telemetry_register_eventfd() - Register an eventfd to be signaled

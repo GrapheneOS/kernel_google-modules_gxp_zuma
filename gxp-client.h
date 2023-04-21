@@ -40,20 +40,11 @@ struct gxp_client {
 	struct gxp_tpu_mbx_desc mbx_desc;
 
 	struct gxp_eventfd *mb_eventfds[GXP_NUM_CORES];
-	struct gxp_eventfd *vd_invalid_eventfd;
 
 	/* client process thread group ID is really the main process ID. */
 	pid_t tgid;
 	/* client process ID is really the thread ID, may be transient. */
 	pid_t pid;
-
-	/*
-	 * Indicates whether the driver needs to disable core telemetry when
-	 * this client closes. For when the client fails to disable core
-	 * telemetry itself.
-	 */
-	bool enabled_core_telemetry_logging;
-	bool enabled_core_telemetry_tracing;
 };
 
 /*
