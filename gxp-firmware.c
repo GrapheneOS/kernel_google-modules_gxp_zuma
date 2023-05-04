@@ -577,7 +577,7 @@ static const struct attribute_group gxp_firmware_attr_group = {
 
 static int debugfs_firmware_run_set(void *data, u64 val)
 {
-	struct gxp_dev *gxp = (struct gxp_dev *)data;
+	struct gxp_dev *gxp = data;
 	struct gxp_client *client;
 	int ret = 0;
 	uint core;
@@ -591,65 +591,7 @@ static int debugfs_firmware_run_set(void *data, u64 val)
 
 	mutex_lock(&gxp->debugfs_client_lock);
 
-	if (val) {
-		if (gxp->debugfs_client) {
-			dev_err(gxp->dev, "Firmware is already running!\n");
-			ret = -EIO;
-			goto out;
-		}
-
-		/*
-		 * Since this debugfs node destroys, then creates new fw_data,
-		 * and runs firmware on every DSP core, it cannot be run if
-		 * any of the cores already has a VD running on it.
-		 */
-		down_write(&gxp->vd_semaphore);
-		for (core = 0; core < GXP_NUM_CORES; core++) {
-			if (gxp->core_to_vd[core]) {
-				dev_err(gxp->dev,
-					"Unable to run firmware with debugfs while other clients are running\n");
-				ret = -EBUSY;
-				up_write(&gxp->vd_semaphore);
-				goto out;
-			}
-		}
-		up_write(&gxp->vd_semaphore);
-
-		client = gxp_client_create(gxp);
-		if (IS_ERR(client)) {
-			dev_err(gxp->dev, "Failed to create client\n");
-			goto out;
-		}
-		gxp->debugfs_client = client;
-
-		mutex_lock(&gxp->client_list_lock);
-		list_add(&client->list_entry, &gxp->client_list);
-		mutex_unlock(&gxp->client_list_lock);
-
-		down_write(&client->semaphore);
-
-		ret = gxp_client_allocate_virtual_device(client, GXP_NUM_CORES,
-							 0);
-		if (ret) {
-			dev_err(gxp->dev, "Failed to allocate VD\n");
-			goto err_destroy_client;
-		}
-
-		ret = gxp_client_acquire_block_wakelock(
-			client, &acquired_block_wakelock);
-		if (ret) {
-			dev_err(gxp->dev, "Failed to acquire BLOCK wakelock\n");
-			goto err_destroy_client;
-		}
-
-		ret = gxp_client_acquire_vd_wakelock(client, uud_states);
-		if (ret) {
-			dev_err(gxp->dev, "Failed to acquire VD wakelock\n");
-			goto err_release_block_wakelock;
-		}
-
-		up_write(&client->semaphore);
-	} else {
+	if (!val) {
 		if (!gxp->debugfs_client) {
 			dev_err(gxp->dev, "Firmware is not running!\n");
 			ret = -EIO;
@@ -662,6 +604,60 @@ static int debugfs_firmware_run_set(void *data, u64 val)
 		 */
 		goto out_destroy_client;
 	}
+	if (gxp->debugfs_client) {
+		dev_err(gxp->dev, "Firmware is already running!\n");
+		ret = -EIO;
+		goto out;
+	}
+
+	/*
+	 * Since this debugfs node destroys, then creates new fw_data, and runs firmware on every
+	 * DSP core, it cannot be run if any of the cores already has a VD running on it.
+	 */
+	down_write(&gxp->vd_semaphore);
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		if (gxp->core_to_vd[core]) {
+			dev_err(gxp->dev,
+				"Unable to run firmware with debugfs while other clients are running\n");
+			ret = -EBUSY;
+			up_write(&gxp->vd_semaphore);
+			goto out;
+		}
+	}
+	up_write(&gxp->vd_semaphore);
+
+	client = gxp_client_create(gxp);
+	if (IS_ERR(client)) {
+		dev_err(gxp->dev, "Failed to create client\n");
+		goto out;
+	}
+	gxp->debugfs_client = client;
+
+	mutex_lock(&gxp->client_list_lock);
+	list_add(&client->list_entry, &gxp->client_list);
+	mutex_unlock(&gxp->client_list_lock);
+
+	down_write(&client->semaphore);
+
+	ret = gxp_client_allocate_virtual_device(client, GXP_NUM_CORES, 0);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to allocate VD\n");
+		goto err_destroy_client;
+	}
+
+	ret = gxp_client_acquire_block_wakelock(client, &acquired_block_wakelock);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to acquire BLOCK wakelock\n");
+		goto err_destroy_client;
+	}
+
+	ret = gxp_client_acquire_vd_wakelock(client, uud_states);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to acquire VD wakelock\n");
+		goto err_release_block_wakelock;
+	}
+
+	up_write(&client->semaphore);
 
 out:
 	mutex_unlock(&gxp->debugfs_client_lock);

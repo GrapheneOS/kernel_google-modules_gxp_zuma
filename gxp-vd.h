@@ -413,9 +413,10 @@ void gxp_vd_put(struct gxp_virtual_device *vd);
  * @gxp: The GXP device to obtain the handler for
  * @client_id: client_id of the crashed vd.
  * @core_list: A bitfield enumerating the physical cores on which crash is reported from firmware.
+ * @release_vmbox: Releases the vmbox of the vd after invalidating it.
  */
-void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id,
-				      uint core_list);
+void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, uint core_list,
+				      bool release_vmbox);
 
 /*
  * Changes the status of the @vd to GXP_VD_UNAVAILABLE.

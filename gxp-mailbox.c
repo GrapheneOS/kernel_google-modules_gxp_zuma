@@ -328,10 +328,7 @@ static int enable_mailbox(struct gxp_mailbox *mailbox)
 	int ret;
 
 	gxp_mailbox_write_descriptor(mailbox, mailbox->descriptor_buf.dsp_addr);
-	gxp_mailbox_write_cmd_queue_head(mailbox, 0);
-	gxp_mailbox_write_cmd_queue_tail(mailbox, 0);
-	gxp_mailbox_write_resp_queue_head(mailbox, 0);
-	gxp_mailbox_write_resp_queue_tail(mailbox, 0);
+	gxp_mailbox_reset(mailbox);
 
 	ret = init_mailbox_impl(mailbox);
 	if (ret)
@@ -446,7 +443,12 @@ void gxp_mailbox_release(struct gxp_mailbox_manager *mgr,
 
 void gxp_mailbox_reset(struct gxp_mailbox *mailbox)
 {
-	dev_notice(mailbox->gxp->dev, "%s not yet implemented\n", __func__);
+	gxp_mailbox_write_cmd_queue_head(mailbox, 0);
+	gxp_mailbox_write_cmd_queue_tail(mailbox, 0);
+	gxp_mailbox_write_resp_queue_head(mailbox, 0);
+	gxp_mailbox_write_resp_queue_tail(mailbox, 0);
+	mailbox->cmd_queue_tail = 0;
+	mailbox->resp_queue_head = 0;
 }
 
 int gxp_mailbox_register_interrupt_handler(struct gxp_mailbox *mailbox,

@@ -8,7 +8,10 @@
 #include <linux/acpm_dvfs.h>
 #include <linux/bits.h>
 #include <linux/io.h>
+#include <linux/moduleparam.h>
+#include <linux/mutex.h>
 #include <linux/pm_runtime.h>
+#include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
 #include <soc/google/exynos_pm_qos.h>
@@ -20,15 +23,23 @@
 #include "gxp-config.h"
 #include "gxp-dma.h"
 #include "gxp-doorbell.h"
+#include "gxp-firmware.h"
 #include "gxp-internal.h"
 #include "gxp-lpm.h"
 #include "gxp-pm.h"
+
+/* Don't attempt to touch the device when @busy_count equals this value. */
+#define BUSY_COUNT_OFF (~0ull)
 
 #define DEBUGFS_BLK_POWERSTATE "blk_powerstate"
 #define DEBUGFS_WAKELOCK "wakelock"
 
 #define SHUTDOWN_DELAY_US_MIN 200
 #define SHUTDOWN_DELAY_US_MAX 400
+
+/* TODO(b/279201155): set default to true once confirmed it works as expected */
+static bool gxp_slow_clk_on_idle;
+module_param_named(slow_clk, gxp_slow_clk_on_idle, bool, 0660);
 
 /*
  * The order of this array decides the voting priority, should be increasing in
@@ -155,6 +166,24 @@ static void reset_cmu_mux_state(struct gxp_dev *gxp)
 	set_cmu_noc_user_mux_state(gxp, AUR_CMU_MUX_NORMAL);
 }
 
+static void gxp_pm_can_busy(struct gxp_power_manager *mgr)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&mgr->busy_lock, flags);
+	mgr->busy_count = 0;
+	spin_unlock_irqrestore(&mgr->busy_lock, flags);
+}
+
+static void gxp_pm_no_busy(struct gxp_power_manager *mgr)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&mgr->busy_lock, flags);
+	mgr->busy_count = BUSY_COUNT_OFF;
+	spin_unlock_irqrestore(&mgr->busy_lock, flags);
+}
+
 void gxp_pm_force_clkmux_normal(struct gxp_dev *gxp)
 {
 	mutex_lock(&gxp->power_mgr->pm_lock);
@@ -241,6 +270,7 @@ int gxp_pm_blk_on(struct gxp_dev *gxp)
 	/* Startup TOP's PSM */
 	gxp_lpm_init(gxp);
 	gxp->power_mgr->blk_switch_count++;
+	gxp_pm_can_busy(gxp->power_mgr);
 out:
 	mutex_unlock(&gxp->power_mgr->pm_lock);
 
@@ -261,6 +291,7 @@ int gxp_pm_blk_off(struct gxp_dev *gxp)
 		mutex_unlock(&gxp->power_mgr->pm_lock);
 		return ret;
 	}
+	gxp_pm_no_busy(gxp->power_mgr);
 	/* Above has checked device is powered, it's safe to access the CMU regs. */
 	reset_cmu_mux_state(gxp);
 
@@ -849,6 +880,19 @@ DEFINE_DEBUGFS_ATTRIBUTE(debugfs_blk_powerstate_fops,
 			 debugfs_blk_powerstate_get, debugfs_blk_powerstate_set,
 			 "%llx\n");
 
+static void gxp_pm_on_busy(struct gxp_dev *gxp)
+{
+	set_cmu_pll_aur_mux_state(gxp, AUR_CMU_MUX_NORMAL);
+	/* TODO(b/279201155): set noc if the bug can be resolved */
+}
+
+static void gxp_pm_on_idle(struct gxp_dev *gxp)
+{
+	if (gxp_slow_clk_on_idle)
+		set_cmu_pll_aur_mux_state(gxp, AUR_CMU_MUX_LOW);
+	/* TODO(b/279201155): set noc if the bug can be resolved */
+}
+
 int gxp_pm_init(struct gxp_dev *gxp)
 {
 	struct gxp_power_manager *mgr;
@@ -897,6 +941,8 @@ int gxp_pm_init(struct gxp_dev *gxp)
 		create_singlethread_workqueue("gxp_power_work_queue");
 	gxp->power_mgr->force_mux_normal_count = 0;
 	gxp->power_mgr->blk_switch_count = 0l;
+	spin_lock_init(&gxp->power_mgr->busy_lock);
+	gxp->power_mgr->busy_count = BUSY_COUNT_OFF;
 
 	r = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 					 "pmu_aur_status");
@@ -975,4 +1021,35 @@ void gxp_pm_set_thermal_limit(struct gxp_dev *gxp, unsigned long thermal_limit)
 	gxp->power_mgr->thermal_limit = thermal_limit;
 
 	mutex_unlock(&gxp->power_mgr->pm_lock);
+}
+
+void gxp_pm_busy(struct gxp_dev *gxp)
+{
+	unsigned long flags;
+	struct gxp_power_manager *mgr = gxp->power_mgr;
+
+	spin_lock_irqsave(&mgr->busy_lock, flags);
+	/*
+	 * We don't need to check BUSY_COUNT_OFF here, caller ensures the block is powered before
+	 * calling this function.
+	 */
+	++mgr->busy_count;
+	if (mgr->busy_count == 1)
+		gxp_pm_on_busy(gxp);
+	spin_unlock_irqrestore(&mgr->busy_lock, flags);
+}
+
+void gxp_pm_idle(struct gxp_dev *gxp)
+{
+	unsigned long flags;
+	struct gxp_power_manager *mgr = gxp->power_mgr;
+
+	spin_lock_irqsave(&mgr->busy_lock, flags);
+	if (mgr->busy_count == BUSY_COUNT_OFF)
+		goto out;
+	--mgr->busy_count;
+	if (mgr->busy_count == 0)
+		gxp_pm_on_idle(gxp);
+out:
+	spin_unlock_irqrestore(&mgr->busy_lock, flags);
 }

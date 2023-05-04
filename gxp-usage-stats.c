@@ -5,85 +5,130 @@
  * Copyright (C) 2022 Google LLC
  */
 
+#include <linux/device.h>
+
+#include <gcip/gcip-usage-stats.h>
+
+#include "gxp-config.h"
+#include "gxp-mcu-platform.h"
+#include "gxp-mcu.h"
+#include "gxp-pm.h"
 #include "gxp-usage-stats.h"
+
+/* Core usage. */
+static GCIP_USAGE_STATS_ATTR_RW(GCIP_USAGE_STATS_METRIC_TYPE_CORE_USAGE, 0, 0, dsp_usage_0, NULL,
+				NULL);
+
+static GCIP_USAGE_STATS_ATTR_RW(GCIP_USAGE_STATS_METRIC_TYPE_CORE_USAGE, 0, 1, dsp_usage_1, NULL,
+				NULL);
+
+static GCIP_USAGE_STATS_ATTR_RW(GCIP_USAGE_STATS_METRIC_TYPE_CORE_USAGE, 0, 2, dsp_usage_2, NULL,
+				NULL);
+
+/* Counter. */
+static GCIP_USAGE_STATS_ATTR_RW(GCIP_USAGE_STATS_METRIC_TYPE_COUNTER,
+				GCIP_USAGE_STATS_COUNTER_WORKLOAD,
+				GCIP_USAGE_STATS_ATTR_ALL_SUBCOMPONENTS, dsp_workload_count, NULL,
+				NULL);
+
+static GCIP_USAGE_STATS_ATTR_RW(GCIP_USAGE_STATS_METRIC_TYPE_COUNTER,
+				GCIP_USAGE_STATS_COUNTER_CONTEXT_SWITCHES,
+				GCIP_USAGE_STATS_ATTR_ALL_SUBCOMPONENTS, context_switch_count, NULL,
+				NULL);
+
+static GCIP_USAGE_STATS_ATTR_RW(GCIP_USAGE_STATS_METRIC_TYPE_COUNTER,
+				GCIP_USAGE_STATS_COUNTER_CONTEXT_PREEMPTIONS,
+				GCIP_USAGE_STATS_ATTR_ALL_SUBCOMPONENTS, preempt_count, NULL, NULL);
+
+/* Thread statistics. */
+static GCIP_USAGE_STATS_ATTR_RW(GCIP_USAGE_STATS_METRIC_TYPE_THREAD_STATS, 0, 0, fw_thread_stats,
+				NULL, NULL);
+
+/* DVFS frequency info. */
+static GCIP_USAGE_STATS_ATTR_RO(GCIP_USAGE_STATS_METRIC_TYPE_DVFS_FREQUENCY_INFO, 0, 0,
+				scaling_available_frequencies, NULL);
+
+static struct gcip_usage_stats_attr *attrs[] = {
+	&gcip_usage_stats_attr_dsp_usage_0,
+	&gcip_usage_stats_attr_dsp_usage_1,
+	&gcip_usage_stats_attr_dsp_usage_2,
+	&gcip_usage_stats_attr_dsp_workload_count,
+	&gcip_usage_stats_attr_context_switch_count,
+	&gcip_usage_stats_attr_preempt_count,
+	&gcip_usage_stats_attr_fw_thread_stats,
+	&gcip_usage_stats_attr_scaling_available_frequencies,
+};
+
+static int update_usage_kci(void *data)
+{
+	struct gxp_usage_stats *ustats = data;
+	struct gxp_dev *gxp = ustats->gxp;
+	struct gxp_mcu *mcu = &to_mcu_dev(gxp)->mcu;
+
+	return gxp_kci_update_usage(&mcu->kci);
+}
+
+static int get_default_dvfs_freqs_num(void *data)
+{
+	return AUR_NUM_POWER_STATE;
+}
+
+static int get_default_dvfs_freq(int idx, void *data)
+{
+	if (idx >= AUR_NUM_POWER_STATE)
+		return 0;
+	return aur_power_state2rate[idx];
+}
+
+static const struct gcip_usage_stats_ops stats_ops = {
+	.update_usage_kci = update_usage_kci,
+	.get_default_dvfs_freqs_num = get_default_dvfs_freqs_num,
+	.get_default_dvfs_freq = get_default_dvfs_freq,
+};
 
 void gxp_usage_stats_process_buffer(struct gxp_dev *gxp, void *buf)
 {
-	struct gxp_usage_header *header = buf;
-	struct gxp_usage_metric *metric =
-		(struct gxp_usage_metric *)(header + 1);
-	int i;
-
-	dev_dbg(gxp->dev, "%s: n=%u sz=%u", __func__, header->num_metrics,
-		header->metric_size);
-	if (header->metric_size != sizeof(struct gxp_usage_metric)) {
-		dev_dbg(gxp->dev, "%s: expected sz=%zu, discard", __func__,
-			sizeof(struct gxp_usage_metric));
+	if (!gxp->usage_stats)
 		return;
-	}
-
-	for (i = 0; i < header->num_metrics; i++) {
-		switch (metric->type) {
-		/* TODO(b/237967242): Handle metrics according to their types. */
-		default:
-			dev_dbg(gxp->dev, "%s: %d: skip unknown type=%u",
-				__func__, i, metric->type);
-			break;
-		}
-		metric++;
-	}
+	gcip_usage_stats_process_buffer(&gxp->usage_stats->ustats, buf);
 }
-
-/*
- * TODO(b/237967242): Implement device attributes and add them to the `usage_stats_dev_attrs`
- * below.
- */
-
-static struct attribute *usage_stats_dev_attrs[] = {
-	NULL,
-};
-
-static const struct attribute_group usage_stats_attr_group = {
-	.attrs = usage_stats_dev_attrs,
-};
 
 void gxp_usage_stats_init(struct gxp_dev *gxp)
 {
 	struct gxp_usage_stats *ustats;
+	struct gcip_usage_stats_args args;
 	int ret;
 
 	ustats = devm_kzalloc(gxp->dev, sizeof(*gxp->usage_stats), GFP_KERNEL);
 	if (!ustats) {
-		dev_warn(gxp->dev,
-			 "failed to allocate memory for usage stats\n");
+		dev_warn(gxp->dev, "failed to allocate memory for usage stats\n");
 		return;
 	}
 
-	/*
-	 * TODO(b/237967242): Add initialization codes of member variables of `ustats` if needed
-	 * after the metrics are decided and implemented.
-	 */
-	mutex_init(&ustats->usage_stats_lock);
-	gxp->usage_stats = ustats;
+	args.version = GXP_USAGE_METRIC_VERSION;
+	args.dev = gxp->dev;
+	args.ops = &stats_ops;
+	args.attrs = attrs;
+	args.num_attrs = ARRAY_SIZE(attrs);
+	args.subcomponents = GXP_NUM_CORES;
+	args.data = ustats;
+	ustats->gxp = gxp;
 
-	ret = device_add_group(gxp->dev, &usage_stats_attr_group);
-	if (ret)
+	ret = gcip_usage_stats_init(&ustats->ustats, &args);
+	if (ret) {
 		dev_warn(gxp->dev, "failed to create the usage_stats attrs\n");
+		devm_kfree(gxp->dev, ustats);
+		return;
+	}
 
-	dev_dbg(gxp->dev, "%s init\n", __func__);
+	gxp->usage_stats = ustats;
 }
 
 void gxp_usage_stats_exit(struct gxp_dev *gxp)
 {
-	struct gxp_usage_stats *ustats = gxp->usage_stats;
-
-	if (ustats) {
-		/*
-		 * TODO(b/237967242): Add releasing codes of member variables of `ustats` if needed
-		 * after the metrics are decided and implemented.
-		 */
-		device_remove_group(gxp->dev, &usage_stats_attr_group);
+	if (gxp->usage_stats) {
+		gcip_usage_stats_exit(&gxp->usage_stats->ustats);
+		devm_kfree(gxp->dev, gxp->usage_stats);
 	}
-
-	dev_dbg(gxp->dev, "%s exit\n", __func__);
+	gxp->usage_stats = NULL;
 }

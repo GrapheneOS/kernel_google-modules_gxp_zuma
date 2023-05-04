@@ -32,9 +32,7 @@ static int debugfs_mailbox_execute_cmd(void *data, u64 val)
 	mutex_lock(&gxp->debugfs_client_lock);
 	client = gxp->debugfs_client;
 
-#if GXP_HAS_MCU
 	if (gxp_is_direct_mode(gxp)) {
-#endif
 		core = val / 1000;
 		if (core >= GXP_NUM_CORES) {
 			dev_notice(gxp->dev,
@@ -58,8 +56,8 @@ static int debugfs_mailbox_execute_cmd(void *data, u64 val)
 			client = gxp_client_create(gxp);
 		mbx = gxp->mailbox_mgr->mailboxes[core];
 		cmd_code = GXP_MBOX_CODE_DISPATCH;
-#if GXP_HAS_MCU
 	} else {
+#if GXP_HAS_MCU
 		if (!client) {
 			dev_err(gxp->dev,
 				"You should load firmwares via gxp/firmware_run first\n");
@@ -84,8 +82,8 @@ static int debugfs_mailbox_execute_cmd(void *data, u64 val)
 		}
 
 		cmd_code = CORE_COMMAND;
+#endif /* GXP_HAS_MCU */
 	}
-#endif
 
 	retval = gxp->mailbox_mgr->execute_cmd(client, mbx, core, cmd_code, 0,
 					       0, 0, 0, 1, power_states, NULL,

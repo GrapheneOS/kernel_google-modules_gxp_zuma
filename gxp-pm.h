@@ -7,6 +7,10 @@
 #ifndef __GXP_PM_H__
 #define __GXP_PM_H__
 
+#include <linux/mutex.h>
+#include <linux/spinlock.h>
+#include <linux/types.h>
+#include <linux/workqueue.h>
 #include <soc/google/bcl.h>
 #include <soc/google/exynos_pm_qos.h>
 
@@ -155,6 +159,10 @@ struct gxp_power_manager {
 	u64 blk_switch_count;
 	/* PMU AUR_STATUS base address for block status, maybe NULL */
 	void __iomem *aur_status;
+	/* Protects @busy_count. */
+	spinlock_t busy_lock;
+	/* The number of ongoing requests to the firmware. */
+	u64 busy_count;
 };
 
 /**
@@ -339,6 +347,20 @@ void gxp_pm_resume_clkmux(struct gxp_dev *gxp);
  * The power management code will only use this information for logging.
  */
 void gxp_pm_set_thermal_limit(struct gxp_dev *gxp, unsigned long thermal_limit);
+
+/**
+ * gxp_pm_busy() - Claim there is a request to the firmware.
+ * @gxp: The GXP device
+ *
+ * This function is used in pair with gxp_pm_idle().
+ * When there is no ongoing requests, we can put the device in a lower frequency to save power.
+ */
+void gxp_pm_busy(struct gxp_dev *gxp);
+/**
+ * gxp_pm_idle() - Reverts gxp_pm_busy().
+ * @gxp: The GXP device
+ */
+void gxp_pm_idle(struct gxp_dev *gxp);
 
 /**
  * gxp_pm_chip_set_ops() - Set the operations to the power manager, i.e.

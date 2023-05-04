@@ -150,10 +150,13 @@ static int gxp_mcu_pm_after_blk_on(struct gxp_dev *gxp)
 
 static void gxp_mcu_pm_before_blk_off(struct gxp_dev *gxp)
 {
+	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
 	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
 
 	if (gxp_is_direct_mode(gxp))
 		return;
+	if (mcu_fw->status == GCIP_FW_VALID)
+		gxp_kci_update_usage_locked(kci);
 	gxp_mcu_firmware_stop(mcu_fw);
 }
 

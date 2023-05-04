@@ -13,7 +13,7 @@
 
 /* Interface Version */
 #define GXP_INTERFACE_VERSION_MAJOR 1
-#define GXP_INTERFACE_VERSION_MINOR 14
+#define GXP_INTERFACE_VERSION_MINOR 15
 #define GXP_INTERFACE_VERSION_BUILD 0
 
 /*
@@ -918,10 +918,7 @@ struct gxp_mailbox_uci_response_ioctl {
 	__u64 sequence_number;
 	/*
 	 * Output:
-	 * Driver error code.
-	 * Indicates if the response was obtained successfully,
-	 * `GXP_RESPONSE_ERROR_NONE`, or what error prevented the command
-	 * from completing successfully.
+	 * Error code propagated from the MCU firmware side.
 	 */
 	__u16 error_code;
 	/* reserved fields */
@@ -929,7 +926,7 @@ struct gxp_mailbox_uci_response_ioctl {
 	/*
 	 * Output:
 	 * Is copied from the UCI response without modification.
-	 * Only valid if `error_code` == GXP_RESPONSE_ERROR_NONE
+	 * Only valid if this IOCTL returns 0.
 	 */
 	__u8 opaque[16];
 };
@@ -939,6 +936,12 @@ struct gxp_mailbox_uci_response_ioctl {
  * is available.
  *
  * The client must hold a BLOCK wakelock.
+ *
+ * Returns:
+ *  0          - A response arrived from the MCU firmware. Note that this doesn't guarantee the
+ *               success of the UCI command. The runtime must refer to @error_code field to check
+ *               whether there was an error from the MCU side while processing the request.
+ *  -ETIMEDOUT - MCU firmware is not responding.
  */
 #define GXP_MAILBOX_UCI_RESPONSE                                               \
 	_IOR(GXP_IOCTL_BASE, 31, struct gxp_mailbox_uci_response_ioctl)

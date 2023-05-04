@@ -11,6 +11,7 @@
 #include <linux/types.h>
 
 #include <gcip/gcip-telemetry.h>
+#include <gcip/gcip-usage-stats.h>
 
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
@@ -150,7 +151,7 @@ static void gxp_kci_handle_rkci(struct gxp_kci *gkci,
 		 * of the logic against possible concurrent scenarios.
 		 */
 		gxp_kci_resp_rkci_ack(gkci, resp);
-		gxp_vd_invalidate_with_client_id(gxp, client_id, core_list);
+		gxp_vd_invalidate_with_client_id(gxp, client_id, core_list, true);
 
 		break;
 	}
@@ -316,7 +317,13 @@ static struct gxp_mailbox_ops mbx_ops = {
 static inline int gxp_kci_send_cmd(struct gxp_mailbox *mailbox,
 				   struct gcip_kci_command_element *cmd)
 {
-	return gxp_mailbox_send_cmd(mailbox, cmd, NULL);
+	int ret;
+
+	gxp_pm_busy(mailbox->gxp);
+	ret = gxp_mailbox_send_cmd(mailbox, cmd, NULL);
+	gxp_pm_idle(mailbox->gxp);
+
+	return ret;
 }
 
 int gxp_kci_init(struct gxp_mcu *mcu)
@@ -342,13 +349,14 @@ int gxp_kci_init(struct gxp_mcu *mcu)
 
 int gxp_kci_reinit(struct gxp_kci *gkci)
 {
-	dev_notice(gkci->gxp->dev, "%s not yet implemented\n", __func__);
+	gxp_mailbox_reset(gkci->mbx);
 	return 0;
 }
 
 void gxp_kci_cancel_work_queues(struct gxp_kci *gkci)
 {
-	gcip_kci_cancel_work_queues(gkci->mbx->mbx_impl.gcip_kci);
+	if (gkci->mbx)
+		gcip_kci_cancel_work_queues(gkci->mbx->mbx_impl.gcip_kci);
 }
 
 void gxp_kci_exit(struct gxp_kci *gkci)
@@ -466,10 +474,11 @@ int gxp_kci_update_usage_locked(struct gxp_kci *gkci)
 {
 	struct gxp_dev *gxp = gkci->gxp;
 	struct gcip_kci_command_element cmd = {
-		.code = GCIP_KCI_CODE_GET_USAGE,
+		.code = GCIP_KCI_CODE_GET_USAGE_V2,
 		.dma = {
 			.address = 0,
 			.size = 0,
+			.flags = GCIP_USAGE_STATS_V2,
 		},
 	};
 	struct gxp_mapped_resource buf;
@@ -478,26 +487,32 @@ int gxp_kci_update_usage_locked(struct gxp_kci *gkci)
 	if (!gkci || !gkci->mbx)
 		return -ENODEV;
 
-	ret = gxp_mcu_mem_alloc_data(gkci->mcu, &buf,
-				     GXP_MCU_USAGE_BUFFER_SIZE);
+	ret = gxp_mcu_mem_alloc_data(gkci->mcu, &buf, GXP_MCU_USAGE_BUFFER_SIZE);
 	if (ret) {
-		dev_warn_once(gxp->dev, "%s: failed to allocate usage buffer",
-			      __func__);
+		dev_warn_once(gxp->dev, "Failed to allocate usage buffer");
 		return -ENOMEM;
 	}
 
+retry_v1:
+	if (gxp->usage_stats && gxp->usage_stats->ustats.version == GCIP_USAGE_STATS_V1)
+		cmd.code = GCIP_KCI_CODE_GET_USAGE_V1;
+
 	cmd.dma.address = buf.daddr;
 	cmd.dma.size = GXP_MCU_USAGE_BUFFER_SIZE;
-	memset(buf.vaddr, 0, sizeof(struct gxp_usage_header));
+	memset(buf.vaddr, 0, sizeof(struct gcip_usage_stats_header));
 	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
 
-	if (ret == GCIP_KCI_ERROR_UNIMPLEMENTED ||
-	    ret == GCIP_KCI_ERROR_UNAVAILABLE)
-		dev_dbg(gxp->dev, "firmware does not report usage\n");
-	else if (ret == GCIP_KCI_ERROR_OK)
+	if (ret == GCIP_KCI_ERROR_UNIMPLEMENTED || ret == GCIP_KCI_ERROR_UNAVAILABLE) {
+		if (gxp->usage_stats && gxp->usage_stats->ustats.version != GCIP_USAGE_STATS_V1) {
+			gxp->usage_stats->ustats.version = GCIP_USAGE_STATS_V1;
+			goto retry_v1;
+		}
+		dev_dbg(gxp->dev, "Firmware does not report usage");
+	} else if (ret == GCIP_KCI_ERROR_OK) {
 		gxp_usage_stats_process_buffer(gxp, buf.vaddr);
-	else if (ret != -ETIMEDOUT)
-		dev_warn_once(gxp->dev, "%s: error %d", __func__, ret);
+	} else if (ret != -ETIMEDOUT) {
+		dev_warn_once(gxp->dev, "Failed to send GET_USAGE KCI, ret=%d", ret);
+	}
 
 	gxp_mcu_mem_free_data(gkci->mcu, &buf);
 

@@ -8,44 +8,16 @@
 #ifndef __GXP_USAGE_STATS_H__
 #define __GXP_USAGE_STATS_H__
 
-#include <linux/types.h>
+#include <gcip/gcip-usage-stats.h>
 
 #include "gxp-internal.h"
 
-/* Header struct in the metric buffer. */
-/* Must be kept in sync with firmware struct UsageTrackerHeader */
-struct gxp_usage_header {
-	uint32_t num_metrics; /* Number of metrics being reported */
-	uint32_t metric_size; /* Size of each metric struct */
-};
+#define GXP_USAGE_METRIC_VERSION GCIP_USAGE_STATS_V2
 
-/* TODO(b/237967242): Add data structures after the interfaces of each metrics are decided. */
-
-/*
- * Must be kept in sync with firmware enum class UsageTrackerMetric::Type
- * TODO(b/237967242): Add metric types after they are decided.
- */
-enum gxp_usage_metric_type {
-	GXP_METRIC_TYPE_RESERVED = 0,
-};
-
-/*
- * Encapsulates a single metric reported to the kernel.
- * Must be kept in sync with firmware struct UsageTrackerMetric.
- */
-struct gxp_usage_metric {
-	uint32_t type;
-	uint8_t reserved[4];
-	union {
-	};
-};
-
-/*
- * Stores the usage of DSP which is collected from the get_usage KCI metrics.
- * TODO(b/237967242): Add variables storing the usage if needed after the metrics are decided.
- */
+/* Stores the usage of DSP which is collected from the GET_USAGE KCI metrics. */
 struct gxp_usage_stats {
-	struct mutex usage_stats_lock;
+	struct gxp_dev *gxp;
+	struct gcip_usage_stats ustats;
 };
 
 /* Parses the buffer from the get_usage KCI and updates the usage_stats of @gxp. */

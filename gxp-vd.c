@@ -812,6 +812,12 @@ int gxp_vd_block_ready(struct gxp_virtual_device *vd)
 		}
 	}
 
+	/*
+	 * We don't know when would the secure world issue requests. Using high frequency as long
+	 * as a block wakelock is held by a secure VD.
+	 */
+	if (vd->is_secure)
+		gxp_pm_busy(gxp);
 	trace_gxp_vd_block_ready_end(vd->vdid);
 
 	return 0;
@@ -831,6 +837,8 @@ void gxp_vd_block_unready(struct gxp_virtual_device *vd)
 		vd->state = GXP_VD_OFF;
 	gxp_dma_domain_detach_device(gxp, vd->domain);
 
+	if (vd->is_secure)
+		gxp_pm_idle(gxp);
 	trace_gxp_vd_block_unready_end(vd->vdid);
 }
 
@@ -1407,10 +1415,12 @@ bool gxp_vd_has_and_use_credit(struct gxp_virtual_device *vd)
 	unsigned long flags;
 
 	spin_lock_irqsave(&vd->credit_lock, flags);
-	if (vd->credit == 0)
+	if (vd->credit == 0) {
 		ret = false;
-	else
+	} else {
 		vd->credit--;
+		gxp_pm_busy(vd->gxp);
+	}
 	spin_unlock_irqrestore(&vd->credit_lock, flags);
 
 	return ret;
@@ -1421,10 +1431,12 @@ void gxp_vd_release_credit(struct gxp_virtual_device *vd)
 	unsigned long flags;
 
 	spin_lock_irqsave(&vd->credit_lock, flags);
-	if (unlikely(vd->credit >= GXP_COMMAND_CREDIT_PER_VD))
+	if (unlikely(vd->credit >= GXP_COMMAND_CREDIT_PER_VD)) {
 		dev_err(vd->gxp->dev, "unbalanced VD credit");
-	else
+	} else {
+		gxp_pm_idle(vd->gxp);
 		vd->credit++;
+	}
 	spin_unlock_irqrestore(&vd->credit_lock, flags);
 }
 
@@ -1436,8 +1448,8 @@ void gxp_vd_put(struct gxp_virtual_device *vd)
 		kfree(vd);
 }
 
-void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id,
-				      uint core_list)
+void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, uint core_list,
+				      bool release_vmbox)
 {
 	struct gxp_client *client = NULL, *c;
 	uint core;
@@ -1486,14 +1498,17 @@ void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id,
 	}
 
 	gxp_vd_invalidate(gxp, client->vd);
+
 	/*
-	 * Release @client->semaphore first because the `gxp_vd_generate_debug_dump` function only
-	 * requires holding @gxp->vd_semaphore and holding @client->semaphore will block the client
-	 * calling ioctls for a while as generating debug dump taking long time.
+	 * Release @client->semaphore first because we need this lock to block ioctls while
+	 * changing the state of @client->vd to UNAVAILABLE which is already done above.
 	 */
 	up_write(&client->semaphore);
 
+	if (release_vmbox)
+		gxp_vd_release_vmbox(gxp, client->vd);
 	gxp_vd_generate_debug_dump(gxp, client->vd, core_list);
+
 	up_write(&gxp->vd_semaphore);
 }
 

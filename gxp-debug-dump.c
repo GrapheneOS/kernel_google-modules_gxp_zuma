@@ -661,7 +661,7 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp,
 			goto out;
 		}
 	} else {
-		virt_core = core_id;
+		virt_core = core_header->core_id;
 	}
 
 	/* fw ro section */

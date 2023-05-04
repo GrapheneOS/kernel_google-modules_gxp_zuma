@@ -211,22 +211,6 @@ static void gxp_uci_set_resp_elem_seq(struct gcip_mailbox *mailbox, void *resp,
 	elem->seq = seq;
 }
 
-static u16 gxp_uci_get_resp_elem_status(struct gcip_mailbox *mailbox,
-					void *resp)
-{
-	struct gxp_uci_response *elem = resp;
-
-	return elem->code;
-}
-
-static void gxp_uci_set_resp_elem_status(struct gcip_mailbox *mailbox,
-					 void *resp, u16 status)
-{
-	struct gxp_uci_response *elem = resp;
-
-	elem->code = status;
-}
-
 static int
 gxp_uci_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 				 struct gcip_mailbox_resp_awaiter *awaiter)
@@ -267,6 +251,7 @@ gxp_uci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
 	if (!async_resp->wait_queue)
 		goto out;
 
+	async_resp->status = GXP_RESP_OK;
 	async_resp->wait_queue = NULL;
 	list_del(&async_resp->wait_list_entry);
 
@@ -308,11 +293,11 @@ gxp_uci_handle_awaiter_timedout(struct gcip_mailbox *mailbox,
 		return;
 	}
 
+	async_resp->status = GXP_RESP_CANCELLED;
 	async_resp->wait_queue = NULL;
 	list_del(&async_resp->wait_list_entry);
 
 	if (async_resp->dest_queue) {
-		async_resp->resp.code = GXP_RESP_CANCELLED;
 		list_add_tail(&async_resp->dest_list_entry,
 			      async_resp->dest_queue);
 		spin_unlock_irqrestore(async_resp->queue_lock, flags);
@@ -332,9 +317,15 @@ static void gxp_uci_release_awaiter_data(void *data)
 {
 	struct gxp_uci_async_response *async_resp = data;
 
-	gxp_vd_release_credit(async_resp->vd);
+	/*
+	 * This function might be called when the VD is already released, don't do VD operations in
+	 * this case.
+	 */
+	if (async_resp->vd->state != GXP_VD_RELEASED)
+		gxp_vd_release_credit(async_resp->vd);
 	if (async_resp->eventfd)
 		gxp_eventfd_put(async_resp->eventfd);
+	gxp_vd_put(async_resp->vd);
 	kfree(async_resp);
 }
 
@@ -355,8 +346,6 @@ static const struct gcip_mailbox_ops gxp_uci_gcip_mbx_ops = {
 	.release_resp_queue_lock = gxp_mailbox_gcip_ops_release_resp_queue_lock,
 	.get_resp_elem_seq = gxp_uci_get_resp_elem_seq,
 	.set_resp_elem_seq = gxp_uci_set_resp_elem_seq,
-	.get_resp_elem_status = gxp_uci_get_resp_elem_status,
-	.set_resp_elem_status = gxp_uci_set_resp_elem_status,
 	.acquire_wait_list_lock = gxp_mailbox_gcip_ops_acquire_wait_list_lock,
 	.release_wait_list_lock = gxp_mailbox_gcip_ops_release_wait_list_lock,
 	.wait_for_cmd_queue_not_full =
@@ -494,7 +483,7 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 	}
 
 	async_resp->uci = uci;
-	async_resp->vd = vd;
+	async_resp->vd = gxp_vd_get(vd);
 	async_resp->wait_queue = wait_queue;
 	/*
 	 * If the command is a wakelock command, keep dest_queue as a null
@@ -537,6 +526,7 @@ int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
 {
 	long timeout;
 	struct gxp_uci_async_response *async_resp;
+	int ret = 0;
 
 	spin_lock_irq(&uci_resp_queue->lock);
 
@@ -564,22 +554,18 @@ int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
 	spin_unlock_irq(&uci_resp_queue->lock);
 
 	*resp_seq = async_resp->resp.seq;
-	switch (async_resp->resp.code) {
+	switch (async_resp->status) {
 	case GXP_RESP_OK:
-		*error_code = GXP_RESPONSE_ERROR_NONE;
+		*error_code = async_resp->resp.code;
 		if (opaque)
-			memcpy(opaque, async_resp->resp.opaque,
-			       sizeof(async_resp->resp.opaque));
-		break;
-	case GXP_RESP_CANCELLED:
-		*error_code = GXP_RESPONSE_ERROR_TIMEOUT;
+			memcpy(opaque, async_resp->resp.opaque, sizeof(async_resp->resp.opaque));
+		if (*error_code)
+			dev_err(async_resp->uci->gxp->dev,
+				"Completed response with an error from the firmware side %hu\n",
+				*error_code);
 		break;
 	default:
-		/* No other code values are valid at this point */
-		dev_err(async_resp->uci->gxp->dev,
-			"Completed response had invalid code %hu\n",
-			async_resp->resp.code);
-		*error_code = GXP_RESPONSE_ERROR_INTERNAL;
+		ret = -ETIMEDOUT;
 		break;
 	}
 
@@ -600,5 +586,5 @@ int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
 	gcip_mailbox_cancel_awaiter_timeout(async_resp->awaiter);
 	gcip_mailbox_release_awaiter(async_resp->awaiter);
 
-	return 0;
+	return ret;
 }

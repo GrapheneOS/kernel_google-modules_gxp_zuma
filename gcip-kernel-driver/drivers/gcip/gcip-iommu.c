@@ -21,14 +21,6 @@
 #include <gcip/gcip-iommu.h>
 #include <gcip/gcip-mem-pool.h>
 
-/*
- * TODO(b/277649169) Best fit IOVA allocator was removed in 6.1 GKI
- * The API needs to either be upstreamed, integrated into this driver, or disabled for 6.1
- * compatibility. For now, disable best-fit on all non-Android kernels and any GKI > 5.15.
- */
-#define HAS_IOVAD_BEST_FIT_ALGO (LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0) && \
-				 (IS_ENABLED(CONFIG_GCIP_TEST) || IS_ENABLED(CONFIG_ANDROID)))
-
 #if HAS_IOVAD_BEST_FIT_ALGO
 #include <linux/dma-iommu.h>
 #endif
