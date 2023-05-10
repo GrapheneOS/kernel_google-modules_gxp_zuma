@@ -14,6 +14,7 @@
 #include <linux/resource.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/workqueue.h>
 
 #include <gcip/gcip-common-image-header.h>
 #include <gcip/gcip-image-config.h>
@@ -34,6 +35,17 @@
 #include "gxp-mcu-platform.h"
 #include "gxp-mcu.h"
 #include "gxp-pm.h"
+
+#if IS_GXP_TEST
+#define TEST_FLUSH_KCI_WORKERS(kci)                                   \
+	do {                                                          \
+		kthread_flush_worker(&(kci).mbx->response_worker);    \
+		flush_work(&(kci).mbx->mbx_impl.gcip_kci->work);      \
+		flush_work(&(kci).mbx->mbx_impl.gcip_kci->rkci.work); \
+	} while (0)
+#else
+#define TEST_FLUSH_KCI_WORKERS(...)
+#endif
 
 /* Value of Magic field in the common header "DSPF' as a 32-bit LE int */
 #define GXP_FW_MAGIC 0x46505344
@@ -270,6 +282,9 @@ static void gxp_mcu_firmware_stop_locked(struct gxp_mcu_firmware *mcu_fw)
 	if (ret)
 		dev_err(gxp->dev, "Failed to transit MCU to PG state after KCI shutdown: %d", ret);
 
+	/* To test the case of the MCU FW sending FW_CRASH RKCI in the middle. */
+	TEST_FLUSH_KCI_WORKERS(mcu->kci);
+
 	gxp_kci_cancel_work_queues(&mcu->kci);
 	/*
 	 * Clears up all remaining KCI commands. Otherwise, MCU may drain them improperly after it
@@ -486,6 +501,14 @@ static void image_config_unmap(void *data, dma_addr_t daddr, size_t size,
 	gxp_iommu_unmap(gxp, gxp_iommu_get_domain_for_dev(gxp), daddr, size);
 }
 
+static void gxp_mcu_firmware_crash_handler_work(struct work_struct *work)
+{
+	struct gxp_mcu_firmware *mcu_fw =
+		container_of(work, struct gxp_mcu_firmware, fw_crash_handler_work);
+
+	gxp_mcu_firmware_crash_handler(mcu_fw->gxp, GCIP_FW_CRASH_UNRECOVERABLE_FAULT);
+}
+
 int gxp_mcu_firmware_init(struct gxp_dev *gxp, struct gxp_mcu_firmware *mcu_fw)
 {
 	static const struct gcip_image_config_ops image_config_parser_ops = {
@@ -509,6 +532,8 @@ int gxp_mcu_firmware_init(struct gxp_dev *gxp, struct gxp_mcu_firmware *mcu_fw)
 	mcu_fw->gxp = gxp;
 	mcu_fw->status = GCIP_FW_INVALID;
 	mutex_init(&mcu_fw->lock);
+	INIT_WORK(&mcu_fw->fw_crash_handler_work, gxp_mcu_firmware_crash_handler_work);
+
 	ret = device_add_group(gxp->dev, &firmware_attr_group);
 	if (ret)
 		dev_err(gxp->dev, "failed to create firmware device group");
@@ -519,6 +544,7 @@ void gxp_mcu_firmware_exit(struct gxp_mcu_firmware *mcu_fw)
 {
 	if (IS_GXP_TEST && (!mcu_fw || !mcu_fw->gxp))
 		return;
+	cancel_work_sync(&mcu_fw->fw_crash_handler_work);
 	device_remove_group(mcu_fw->gxp->dev, &firmware_attr_group);
 }
 
@@ -570,34 +596,17 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 	dev_err(gxp->dev, "Unrecoverable MCU firmware fault, handle it");
 
 	/*
-	 * Prevent @gxp->client_list is being changed while handling the crash.
-	 * The user cannot open or close a fd until this function releases the lock.
-	 */
-	mutex_lock(&gxp->client_list_lock);
-
-	/*
-	 * Hold @client->semaphore first to prevent deadlock.
-	 * By holding this lock, clients cannot proceed most IOCTLs.
-	 */
-	list_for_each_entry (client, &gxp->client_list, list_entry) {
-		down_write(&client->semaphore);
-	}
-
-	/*
-	 * Holding @client->semaphore will block the most client actions, but let's make sure
-	 * it by holding the locks directly related to the actions we want to block accordingly.
-	 * For example, in the case of the block wakelock, the debug dump can try to acquire it
-	 * which cannot be blocked by holding @client->semaphore.
-	 */
-
-	/*
-	 * We have to block allocating a new vd by the runtime. Otherwise, if it is holding the
-	 * block wakelock, it will try to send a `allocate_vmbox` KCI to the crashed MCU firmware.
+	 * In the case of stopping MCU FW while it is handling `CLIENT_FATAL_ERROR` RKCI, it will
+	 * acquire locks in this order:
+	 *   gcip_pm_put -> holds @pm->lock -> gxp_mcu_firmware_stop -> holds @mcu_fw->lock
+	 *   -> waits for the completion of RKCI handler -> gxp_vd_invalidate_with_client_id
+	 *   -> holds @gxp->client_list_lock -> hold @client->semaphore -> holds @gxp->vd_semaphore
 	 *
-	 * The runtime cannot allocate a new virtual device or closing its client until this
-	 * function releases the lock.
+	 * Also, in the case of starting MCU FW, the locking order will be:
+	 *   gcip_pm_get -> holds @pm->lock -> gxp_mcu_firmware_start -> holds @mcu_fw->lock
+	 *
+	 * To prevent a deadlock issue, we have to follow the same locking order from here.
 	 */
-	down_write(&gxp->vd_semaphore);
 
 	/*
 	 * Holding the PM lock due to the reasons listed below.
@@ -619,6 +628,34 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 		goto out_unlock_pm;
 	}
 
+	/* Hold @mcu_fw->lock because manipulating the MCU FW state must be a critical section. */
+	mutex_lock(&mcu_fw->lock);
+
+	/*
+	 * Prevent @gxp->client_list is being changed while handling the crash.
+	 * The user cannot open or close a fd until this function releases the lock.
+	 */
+	mutex_lock(&gxp->client_list_lock);
+
+	/*
+	 * Hold @client->semaphore first to prevent deadlock.
+	 * By holding this lock, clients cannot proceed most IOCTLs.
+	 */
+	list_for_each_entry (client, &gxp->client_list, list_entry) {
+		down_write(&client->semaphore);
+	}
+
+	/*
+	 * Holding @client->semaphore will block the most client actions, but let's make sure
+	 * it by holding the locks directly related to the actions we want to block accordingly.
+	 * For example, in the case of the block wakelock, the debug dump can try to acquire it
+	 * which cannot be blocked by holding @client->semaphore.
+	 *
+	 * However, we don't lock @gxp->vd_semaphore for not increasing lock dependency since
+	 * holding @gxp->client_list_lock and @client->semaphore is enough to ensure no new VD
+	 * being allocated.
+	 */
+
 	/*
 	 * Discard all pending/unconsumed UCI responses and change the state of all virtual devices
 	 * to GXP_VD_UNAVAILABLE. From now on, all clients cannot request new UCI commands.
@@ -631,8 +668,6 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 	}
 
 	/* Turn off and on the MCU PSM and restart the MCU firmware. */
-	mutex_lock(&mcu_fw->lock);
-
 	ret = wait_for_pg_state_locked(gxp, crash_type == GCIP_FW_CRASH_HW_WDG_TIMEOUT);
 	if (ret) {
 		dev_err(gxp->dev, "Failed to transit MCU LPM state to PG (ret=%d)", ret);
@@ -644,12 +679,11 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 		dev_err(gxp->dev, "Failed to run MCU firmware (ret=%d)", ret);
 
 out:
-	mutex_unlock(&mcu_fw->lock);
-out_unlock_pm:
-	gcip_pm_unlock(pm);
-	up_write(&gxp->vd_semaphore);
 	list_for_each_entry (client, &gxp->client_list, list_entry) {
 		up_write(&client->semaphore);
 	}
 	mutex_unlock(&gxp->client_list_lock);
+	mutex_unlock(&mcu_fw->lock);
+out_unlock_pm:
+	gcip_pm_unlock(pm);
 }

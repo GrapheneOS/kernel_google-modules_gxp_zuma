@@ -137,8 +137,6 @@ struct gxp_virtual_device {
 	/* A constant ID assigned after VD is allocated. For debug only. */
 	int vdid;
 	struct gcip_image_config_parser cfg_parser;
-	/* The config version specified in firmware's image config. */
-	u32 config_version;
 	/* Protects @dma_fence_list. */
 	struct mutex fence_list_lock;
 	/* List of GXP DMA fences owned by this VD. */

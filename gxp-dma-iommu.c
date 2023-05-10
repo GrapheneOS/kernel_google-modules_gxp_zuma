@@ -273,7 +273,6 @@ void gxp_dma_init_default_resources(struct gxp_dev *gxp)
 		gxp->mbx[i].daddr = GXP_IOVA_MAILBOX(i);
 	for (core = 0; core < GXP_NUM_CORES; core++)
 		gxp->fwbufs[core].daddr = GXP_IOVA_FIRMWARE(core);
-	gxp->fwdatabuf.daddr = GXP_IOVA_FW_DATA;
 }
 
 int gxp_dma_domain_attach_device(struct gxp_dev *gxp,
@@ -321,13 +320,6 @@ int gxp_dma_map_core_resources(struct gxp_dev *gxp,
 		if (ret)
 			goto err;
 	}
-	/* TODO(b/265748027): directly remove this map */
-	if (gxp->fwdatabuf.daddr)
-		ret = iommu_map(domain, gxp->fwdatabuf.daddr,
-				gxp->fwdatabuf.paddr, gxp->fwdatabuf.size,
-				IOMMU_READ | IOMMU_WRITE);
-	if (ret)
-		goto err;
 	/* Only map the TPU mailboxes if they were found on probe */
 	if (gxp->tpu_dev.mbx_paddr) {
 		for (i = 0; i < GXP_NUM_CORES; i++) {
@@ -374,8 +366,6 @@ void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
 				    EXT_TPU_MBX_SIZE);
 		}
 	}
-	if (gxp->fwdatabuf.daddr)
-		iommu_unmap(domain, gxp->fwdatabuf.daddr, gxp->fwdatabuf.size);
 	for (i = 0; i < GXP_NUM_CORES; i++) {
 		if (!(BIT(i) & core_list))
 			continue;

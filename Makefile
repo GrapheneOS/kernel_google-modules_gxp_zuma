@@ -34,7 +34,6 @@ gxp-objs += \
 		gxp-trace.o \
 		gxp-vd.o
 
-
 ifeq ($(GXP_CHIP),CALLISTO)
 
 gxp-objs += \
@@ -53,7 +52,6 @@ gxp-objs += \
 
 GMODULE_PATH := $(OUT_DIR)/../private/google-modules
 EDGETPU_CHIP := rio
-
 
 endif
 

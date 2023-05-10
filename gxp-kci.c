@@ -9,6 +9,7 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/types.h>
+#include <linux/workqueue.h>
 
 #include <gcip/gcip-telemetry.h>
 #include <gcip/gcip-usage-stats.h>
@@ -169,6 +170,7 @@ gxp_reverse_kci_handle_response(struct gcip_kci *kci,
 	struct gxp_mailbox *mbx = gcip_kci_get_data(kci);
 	struct gxp_dev *gxp = mbx->gxp;
 	struct gxp_kci *gxp_kci = mbx->data;
+	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
 
 	if (resp->code <= GCIP_RKCI_CHIP_CODE_LAST) {
 		gxp_kci_handle_rkci(gxp_kci, resp);
@@ -177,10 +179,12 @@ gxp_reverse_kci_handle_response(struct gcip_kci *kci,
 
 	switch (resp->code) {
 	case GCIP_RKCI_FIRMWARE_CRASH:
-		gxp_mcu_firmware_crash_handler(gxp, resp->retval);
+		if (resp->retval == GCIP_FW_CRASH_UNRECOVERABLE_FAULT)
+			schedule_work(&mcu_fw->fw_crash_handler_work);
+		else
+			dev_warn(gxp->dev, "MCU non-fatal crash: %u", resp->retval);
 		break;
 	case GCIP_RKCI_JOB_LOCKUP:
-		/* TODO(b/239638427): Handle job lookup */
 		dev_dbg(gxp->dev, "Job lookup received from MCU firmware");
 		break;
 	default:

@@ -636,12 +636,6 @@ gxp_etm_trace_start_command(struct gxp_client *client,
 		goto out;
 	}
 
-	/*
-	 * TODO (b/185260919): Pass the etm trace configuration to system FW
-	 * once communication channel between kernel and system FW is ready
-	 * (b/185819530).
-	 */
-
 out:
 	up_read(&gxp->vd_semaphore);
 out_unlock_client_semaphore:
@@ -679,13 +673,6 @@ static int gxp_etm_trace_sw_stop_command(struct gxp_client *client,
 		ret = -EINVAL;
 		goto out;
 	}
-
-	/*
-	 * TODO (b/185260919): Pass the etm stop signal to system FW once
-	 * communication channel between kernel and system FW is ready
-	 * (b/185819530).
-	 */
-
 out:
 	up_read(&gxp->vd_semaphore);
 out_unlock_client_semaphore:
@@ -723,13 +710,6 @@ static int gxp_etm_trace_cleanup_command(struct gxp_client *client,
 		ret = -EINVAL;
 		goto out;
 	}
-
-	/*
-	 * TODO (b/185260919): Pass the etm clean up signal to system FW once
-	 * communication channel between kernel and system FW is ready
-	 * (b/185819530).
-	 */
-
 out:
 	up_read(&gxp->vd_semaphore);
 out_unlock_client_semaphore:
@@ -785,12 +765,6 @@ gxp_etm_get_trace_info_command(struct gxp_client *client,
 		ret = -ENOMEM;
 		goto out_free_header;
 	}
-
-	/*
-	 * TODO (b/185260919): Get trace information from system FW once
-	 * communication channel between kernel and system FW is ready
-	 * (b/185819530).
-	 */
 
 	if (copy_to_user((void __user *)ibuf.trace_header_addr, trace_header,
 			 GXP_TRACE_HEADER_SIZE)) {
@@ -1150,6 +1124,27 @@ static int gxp_acquire_wake_lock(struct gxp_client *client,
 	    !validate_wake_lock_power(gxp, &ibuf))
 		return -EINVAL;
 
+	/*
+	 * We intentionally don't call `gcip_pm_*` functions while holding @client->semaphore.
+	 *
+	 * As the `gcip_pm_put` function cancels KCI works synchronously and the KCI works may hold
+	 * @client->semaphore in some logics such as MCU FW crash handler, it can cause deadlock
+	 * issues potentially if we call `gcip_pm_put` after holding @client->semaphore.
+	 *
+	 * Therefore, we decided to decouple calling the `gcip_pm_put` function from holding
+	 * @client->semaphore and applied the same thing to the `gcip_pm_get` function to keep them
+	 * symmetric.
+	 */
+	if (ibuf.components_to_wake & WAKELOCK_BLOCK) {
+		ret = gcip_pm_get(gxp->power_mgr->pm);
+		if (ret) {
+			dev_err(gxp->dev,
+				"Failed to increase the PM count or power up the block (ret=%d)\n",
+				ret);
+			return ret;
+		}
+	}
+
 	down_write(&client->semaphore);
 	if ((ibuf.components_to_wake & WAKELOCK_VIRTUAL_DEVICE) &&
 	    (!client->vd)) {
@@ -1187,10 +1182,7 @@ static int gxp_acquire_wake_lock(struct gxp_client *client,
 		}
 	}
 
-out:
-	up_write(&client->semaphore);
-
-	return ret;
+	goto out;
 
 err_acquiring_vd_wl:
 	/*
@@ -1199,17 +1191,25 @@ err_acquiring_vd_wl:
 	 * VIRTUAL_DEVICE wakelock after successfully acquiring the BLOCK
 	 * wakelock, then release it before returning the error code.
 	 */
-	if (acquired_block_wakelock)
+	if (acquired_block_wakelock) {
 		gxp_client_release_block_wakelock(client);
+		acquired_block_wakelock = false;
+	}
 
+out:
 	up_write(&client->semaphore);
+
+	if ((ibuf.components_to_wake & WAKELOCK_BLOCK) && !acquired_block_wakelock)
+		gcip_pm_put(gxp->power_mgr->pm);
 
 	return ret;
 }
 
 static int gxp_release_wake_lock(struct gxp_client *client, __u32 __user *argp)
 {
+	struct gxp_dev *gxp = client->gxp;
 	u32 wakelock_components;
+	bool released_block_wakelock = false;
 	int ret = 0;
 
 	if (copy_from_user(&wakelock_components, argp,
@@ -1222,9 +1222,12 @@ static int gxp_release_wake_lock(struct gxp_client *client, __u32 __user *argp)
 		gxp_client_release_vd_wakelock(client);
 
 	if (wakelock_components & WAKELOCK_BLOCK)
-		gxp_client_release_block_wakelock(client);
+		released_block_wakelock = gxp_client_release_block_wakelock(client);
 
 	up_write(&client->semaphore);
+
+	if (released_block_wakelock)
+		gcip_pm_put(gxp->power_mgr->pm);
 
 	return ret;
 }

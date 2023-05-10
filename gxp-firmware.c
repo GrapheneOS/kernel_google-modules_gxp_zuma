@@ -19,6 +19,7 @@
 #include <gcip/gcip-alloc-helper.h>
 #include <gcip/gcip-common-image-header.h>
 #include <gcip/gcip-image-config.h>
+#include <gcip/gcip-pm.h>
 
 #include "gxp-bpm.h"
 #include "gxp-client.h"
@@ -90,6 +91,28 @@ err:
 	}
 	kfree(name_buf);
 	return ret;
+}
+
+static bool check_firmware_config_version(struct gxp_dev *gxp,
+					  const struct firmware *core_firmware[GXP_NUM_CORES])
+{
+	struct gcip_common_image_header *hdr =
+		(struct gcip_common_image_header *)core_firmware[0]->data;
+	struct gcip_image_config *cfg;
+
+	if (unlikely(core_firmware[0]->size < GCIP_FW_HEADER_SIZE))
+		return false;
+	cfg = get_image_config_from_hdr(hdr);
+	if (!cfg) {
+		dev_err(gxp->dev, "Core firmware doesn't have a valid image config");
+		return false;
+	}
+	if (cfg->config_version < FW_DATA_PROTOCOL_PER_VD_CONFIG) {
+		dev_err(gxp->dev, "Unsupported firmware image config version %d",
+			cfg->config_version);
+		return false;
+	}
+	return true;
 }
 
 static int elf_load_segments(struct gxp_dev *gxp, const u8 *elf_data,
@@ -295,11 +318,7 @@ static void gxp_program_reset_vector(struct gxp_dev *gxp, uint core,
 static void *get_scratchpad_base(struct gxp_dev *gxp,
 				 struct gxp_virtual_device *vd, uint core)
 {
-	if (vd && gxp_fw_data_use_per_vd_config(vd))
-		return vd->core_cfg.vaddr +
-		       (vd->core_cfg.size / GXP_NUM_CORES) * core;
-
-	return gxp->fwbufs[core].vaddr + AURORA_SCRATCHPAD_OFF;
+	return vd->core_cfg.vaddr + (vd->core_cfg.size / GXP_NUM_CORES) * core;
 }
 
 static void reset_core_config_region(struct gxp_dev *gxp,
@@ -308,17 +327,10 @@ static void reset_core_config_region(struct gxp_dev *gxp,
 	struct gxp_host_control_region *core_cfg;
 
 	core_cfg = get_scratchpad_base(gxp, vd, core);
-	if (gxp_fw_data_use_per_vd_config(vd)) {
-		core_cfg->core_alive_magic = 0;
-		core_cfg->top_access_ok = 0;
-		core_cfg->boot_status = GXP_BOOT_STATUS_NONE;
-		gxp_firmware_set_boot_mode(gxp, vd, core,
-					   GXP_BOOT_MODE_COLD_BOOT);
-	} else {
-		memset(core_cfg, 0, AURORA_SCRATCHPAD_LEN);
-		gxp_firmware_set_boot_mode(gxp, vd, core,
-					   GXP_BOOT_MODE_REQUEST_COLD_BOOT);
-	}
+	core_cfg->core_alive_magic = 0;
+	core_cfg->top_access_ok = 0;
+	core_cfg->boot_status = GXP_BOOT_STATUS_NONE;
+	gxp_firmware_set_boot_mode(gxp, vd, core, GXP_BOOT_MODE_COLD_BOOT);
 }
 
 static int gxp_firmware_handshake(struct gxp_dev *gxp,
@@ -518,23 +530,23 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 	int ret;
 
 	/*
-	 * Lock the VD semaphore to ensure no core is executing the firmware
-	 * while requesting new firmware.
+	 * TODO(b/281047946): Ensure no firmware is executing while requesting
+	 * core firmware, which includes MCU firmware in MCU mode.
+	 *
+	 * Here we don't lock @gxp->vd_semaphore since it'll introduce wrong lock
+	 * dependency, and this interface is only for developer debugging. We
+	 * don't insist on preventing race condition here.
 	 */
-	down_read(&gxp->vd_semaphore);
-
 	if (mgr->firmware_running) {
 		dev_warn(dev, "Cannot update firmware when any core is running\n");
-		ret = -EBUSY;
-		goto err_out;
+		return -EBUSY;
 	}
 
 	name_buf = fw_name_from_attr_buf(buf);
 	if (IS_ERR(name_buf)) {
 		dev_err(gxp->dev, "Invalid firmware prefix requested: %s\n",
 			buf);
-		ret = PTR_ERR(name_buf);
-		goto err_out;
+		return PTR_ERR(name_buf);
 	}
 
 	dev_notice(gxp->dev, "Requesting firmware be reloaded: %s\n", name_buf);
@@ -554,13 +566,10 @@ static ssize_t load_dsp_firmware_store(struct device *dev,
 	}
 
 	kfree(name_buf);
-	up_read(&gxp->vd_semaphore);
 	return count;
 
 err_firmware_load:
 	kfree(name_buf);
-err_out:
-	up_read(&gxp->vd_semaphore);
 	return ret;
 }
 
@@ -637,18 +646,25 @@ static int debugfs_firmware_run_set(void *data, u64 val)
 	list_add(&client->list_entry, &gxp->client_list);
 	mutex_unlock(&gxp->client_list_lock);
 
+	ret = gcip_pm_get(gxp->power_mgr->pm);
+	if (ret) {
+		dev_err(gxp->dev,
+			"Failed to increase the PM count or power up the block (ret=%d)\n", ret);
+		goto out_destroy_client;
+	}
+
 	down_write(&client->semaphore);
 
 	ret = gxp_client_allocate_virtual_device(client, GXP_NUM_CORES, 0);
 	if (ret) {
 		dev_err(gxp->dev, "Failed to allocate VD\n");
-		goto err_destroy_client;
+		goto err_pm_put;
 	}
 
 	ret = gxp_client_acquire_block_wakelock(client, &acquired_block_wakelock);
 	if (ret) {
 		dev_err(gxp->dev, "Failed to acquire BLOCK wakelock\n");
-		goto err_destroy_client;
+		goto err_pm_put;
 	}
 
 	ret = gxp_client_acquire_vd_wakelock(client, uud_states);
@@ -666,8 +682,9 @@ out:
 
 err_release_block_wakelock:
 	gxp_client_release_block_wakelock(client);
-err_destroy_client:
+err_pm_put:
 	up_write(&client->semaphore);
+	gcip_pm_put(gxp->power_mgr->pm);
 out_destroy_client:
 	mutex_lock(&gxp->client_list_lock);
 	list_del(&gxp->debugfs_client->list_entry);
@@ -829,6 +846,10 @@ int gxp_firmware_load_core_firmware(
 	ret = request_dsp_firmware(gxp, name_prefix, core_firmware);
 	if (ret)
 		return ret;
+	if (!check_firmware_config_version(gxp, core_firmware)) {
+		ret = -EOPNOTSUPP;
+		goto error;
+	}
 	ret = gxp_firmware_load_into_memories(gxp, core_firmware);
 	if (ret)
 		goto error;
@@ -866,7 +887,7 @@ void gxp_firmware_disable_ext_interrupts(struct gxp_dev *gxp, uint core)
 static inline uint select_core(struct gxp_virtual_device *vd, uint virt_core,
 			       uint phys_core)
 {
-	return gxp_fw_data_use_per_vd_config(vd) ? virt_core : phys_core;
+	return virt_core;
 }
 
 static int gxp_firmware_setup(struct gxp_dev *gxp,
@@ -1129,25 +1150,8 @@ void gxp_firmware_set_boot_mode(struct gxp_dev *gxp,
 {
 	struct gxp_host_control_region *core_cfg;
 
-	/* Callers shouldn't call the function under this condition. */
-	if (!gxp->fwbufs[core].vaddr)
-		return;
-
 	core_cfg = get_scratchpad_base(gxp, vd, core);
 	core_cfg->boot_mode = mode;
-}
-
-u32 gxp_firmware_get_boot_mode(struct gxp_dev *gxp,
-			       struct gxp_virtual_device *vd, uint core)
-{
-	struct gxp_host_control_region *core_cfg;
-
-	/* Callers shouldn't call the function under this condition. */
-	if (!gxp->fwbufs[core].vaddr)
-		return 0;
-
-	core_cfg = get_scratchpad_base(gxp, vd, core);
-	return core_cfg->boot_mode;
 }
 
 void gxp_firmware_set_boot_status(struct gxp_dev *gxp,

@@ -100,10 +100,8 @@ void gxp_usage_stats_init(struct gxp_dev *gxp)
 	int ret;
 
 	ustats = devm_kzalloc(gxp->dev, sizeof(*gxp->usage_stats), GFP_KERNEL);
-	if (!ustats) {
-		dev_warn(gxp->dev, "failed to allocate memory for usage stats\n");
+	if (!ustats)
 		return;
-	}
 
 	args.version = GXP_USAGE_METRIC_VERSION;
 	args.dev = gxp->dev;

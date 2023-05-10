@@ -505,12 +505,6 @@ static int gxp_map_fw_rw_section(struct gxp_dev *gxp,
 	dma_addr_t fw_rw_section_daddr = CORE_FIRMWARE_RW_ADDR(virt_core_id);
 	const size_t n_reg = ARRAY_SIZE(vd->ns_regions);
 
-	if (!gxp_fw_data_use_per_vd_config(vd)) {
-		dev_err(gxp->dev, "Unsupported Image config version = %d.",
-			gxp->fw_loader_mgr->core_img_cfg.config_version);
-		return -EOPNOTSUPP;
-	}
-
 	for (idx = 0; idx < n_reg; idx++) {
 		sgt = vd->ns_regions[idx].sgt;
 		if (!sgt)

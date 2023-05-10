@@ -8,8 +8,6 @@
 #ifndef __CALLISTO_CSRS_H__
 #define __CALLISTO_CSRS_H__
 
-/* TODO(b/232083805): Update values in this file. Also remove unused fields. */
-
 #define GXP_REG_DOORBELLS_SET_WRITEMASK 0x1
 #define GXP_REG_DOORBELLS_CLEAR_WRITEMASK 0x1
 

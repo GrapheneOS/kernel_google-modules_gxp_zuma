@@ -180,9 +180,6 @@ int gxp_client_acquire_block_wakelock(struct gxp_client *client,
 
 	lockdep_assert_held(&client->semaphore);
 	if (!client->has_block_wakelock) {
-		ret = gcip_pm_get(gxp->power_mgr->pm);
-		if (ret)
-			return ret;
 		*acquired_wakelock = true;
 		if (client->vd) {
 			down_write(&gxp->vd_semaphore);
@@ -206,20 +203,17 @@ int gxp_client_acquire_block_wakelock(struct gxp_client *client,
 	return 0;
 
 err_wakelock_release:
-	if (*acquired_wakelock) {
-		gcip_pm_put(gxp->power_mgr->pm);
-		*acquired_wakelock = false;
-	}
+	*acquired_wakelock = false;
 	return ret;
 }
 
-void gxp_client_release_block_wakelock(struct gxp_client *client)
+bool gxp_client_release_block_wakelock(struct gxp_client *client)
 {
 	struct gxp_dev *gxp = client->gxp;
 
 	lockdep_assert_held(&client->semaphore);
 	if (!client->has_block_wakelock)
-		return;
+		return false;
 
 	gxp_client_release_vd_wakelock(client);
 
@@ -229,8 +223,9 @@ void gxp_client_release_block_wakelock(struct gxp_client *client)
 		up_write(&gxp->vd_semaphore);
 	}
 
-	gcip_pm_put(gxp->power_mgr->pm);
 	client->has_block_wakelock = false;
+
+	return true;
 }
 
 int gxp_client_acquire_vd_wakelock(struct gxp_client *client,

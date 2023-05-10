@@ -37,8 +37,7 @@
 #define SHUTDOWN_DELAY_US_MIN 200
 #define SHUTDOWN_DELAY_US_MAX 400
 
-/* TODO(b/279201155): set default to true once confirmed it works as expected */
-static bool gxp_slow_clk_on_idle;
+static bool gxp_slow_clk_on_idle = true;
 module_param_named(slow_clk, gxp_slow_clk_on_idle, bool, 0660);
 
 /*

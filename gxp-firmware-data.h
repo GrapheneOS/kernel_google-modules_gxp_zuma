@@ -90,11 +90,6 @@ int gxp_fw_data_set_core_telemetry_descriptors(struct gxp_dev *gxp, u8 type,
 u32 gxp_fw_data_get_core_telemetry_device_status(struct gxp_dev *gxp, uint core,
 						 u8 type);
 
-static inline bool gxp_fw_data_use_per_vd_config(struct gxp_virtual_device *vd)
-{
-	return vd->config_version >= FW_DATA_PROTOCOL_PER_VD_CONFIG;
-}
-
 /**
  * gxp_fw_data_resource() - Returns the resource of data region for host<->core
  *		            communication.

@@ -548,8 +548,6 @@ static void vd_save_doorbells(struct gxp_virtual_device *vd)
 	uint base_doorbell;
 	uint i;
 
-	if (!gxp_fw_data_use_per_vd_config(vd))
-		return;
 	base_doorbell = GXP_DOORBELLS_START +
 			gxp_vd_hw_slot_id(vd) * GXP_NUM_DOORBELLS_PER_VD;
 	for (i = 0; i < ARRAY_SIZE(vd->doorbells_state); i++) {
@@ -566,8 +564,6 @@ static void vd_restore_doorbells(struct gxp_virtual_device *vd)
 	uint base_doorbell;
 	uint i;
 
-	if (!gxp_fw_data_use_per_vd_config(vd))
-		return;
 	base_doorbell = GXP_DOORBELLS_START +
 			gxp_vd_hw_slot_id(vd) * GXP_NUM_DOORBELLS_PER_VD;
 	for (i = 0; i < ARRAY_SIZE(vd->doorbells_state); i++)
@@ -575,20 +571,6 @@ static void vd_restore_doorbells(struct gxp_virtual_device *vd)
 			gxp_doorbell_set(gxp, base_doorbell + i);
 		else
 			gxp_doorbell_clear(gxp, base_doorbell + i);
-}
-
-static void set_config_version(struct gxp_dev *gxp,
-			       struct gxp_virtual_device *vd)
-{
-	vd->config_version = gxp->fw_loader_mgr->core_img_cfg.config_version;
-	/*
-	 * Let gxp_dma_map_core_resources() map this region only when using the
-	 * legacy protocol.
-	 *
-	 * TODO(b/265748027): remove this
-	 */
-	if (gxp_fw_data_use_per_vd_config(vd))
-		gxp->fwdatabuf.daddr = 0;
 }
 
 static void debug_dump_lock(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
@@ -684,7 +666,6 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	if (err)
 		goto error_unassign_cores;
 
-	set_config_version(gxp, vd);
 	/* After map_fw_image_config because it needs vd->vd/core_cfg. */
 	gxp_fw_data_populate_vd_cfg(gxp, vd);
 	err = gxp_dma_map_core_resources(gxp, vd->domain, vd->core_list,
@@ -962,33 +943,23 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 static inline uint select_core(struct gxp_virtual_device *vd, uint virt_core,
 			       uint phys_core)
 {
-	return gxp_fw_data_use_per_vd_config(vd) ? virt_core : phys_core;
+	return virt_core;
 }
 
 static bool boot_state_is_suspend(struct gxp_dev *gxp,
 				  struct gxp_virtual_device *vd, uint core,
 				  u32 *boot_state)
 {
-	if (gxp_fw_data_use_per_vd_config(vd)) {
-		*boot_state = gxp_firmware_get_boot_status(gxp, vd, core);
-		return *boot_state == GXP_BOOT_STATUS_SUSPENDED;
-	}
-
-	*boot_state = gxp_firmware_get_boot_mode(gxp, vd, core);
-	return *boot_state == GXP_BOOT_MODE_STATUS_SUSPEND_COMPLETED;
+	*boot_state = gxp_firmware_get_boot_status(gxp, vd, core);
+	return *boot_state == GXP_BOOT_STATUS_SUSPENDED;
 }
 
 static bool boot_state_is_active(struct gxp_dev *gxp,
 				 struct gxp_virtual_device *vd, uint core,
 				 u32 *boot_state)
 {
-	if (gxp_fw_data_use_per_vd_config(vd)) {
-		*boot_state = gxp_firmware_get_boot_status(gxp, vd, core);
-		return *boot_state == GXP_BOOT_STATUS_ACTIVE;
-	}
-
-	*boot_state = gxp_firmware_get_boot_mode(gxp, vd, core);
-	return *boot_state == GXP_BOOT_MODE_STATUS_RESUME_COMPLETED;
+	*boot_state = gxp_firmware_get_boot_status(gxp, vd, core);
+	return *boot_state == GXP_BOOT_STATUS_ACTIVE;
 }
 
 /*
@@ -1044,15 +1015,8 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 			continue;
 		}
 		/* Mark the boot mode as a suspend event */
-		if (gxp_fw_data_use_per_vd_config(vd)) {
-			gxp_firmware_set_boot_status(gxp, vd, core,
-						     GXP_BOOT_STATUS_NONE);
-			gxp_firmware_set_boot_mode(gxp, vd, core,
-						   GXP_BOOT_MODE_SUSPEND);
-		} else {
-			gxp_firmware_set_boot_mode(
-				gxp, vd, core, GXP_BOOT_MODE_REQUEST_SUSPEND);
-		}
+		gxp_firmware_set_boot_status(gxp, vd, core, GXP_BOOT_STATUS_NONE);
+		gxp_firmware_set_boot_mode(gxp, vd, core, GXP_BOOT_MODE_SUSPEND);
 		/*
 		 * Request a suspend event by sending a mailbox
 		 * notification.
@@ -1169,15 +1133,8 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 			}
 		}
 		/* Mark this as a resume power-up event. */
-		if (gxp_fw_data_use_per_vd_config(vd)) {
-			gxp_firmware_set_boot_status(gxp, vd, core,
-						     GXP_BOOT_STATUS_NONE);
-			gxp_firmware_set_boot_mode(gxp, vd, core,
-						   GXP_BOOT_MODE_RESUME);
-		} else {
-			gxp_firmware_set_boot_mode(
-				gxp, vd, core, GXP_BOOT_MODE_REQUEST_RESUME);
-		}
+		gxp_firmware_set_boot_status(gxp, vd, core, GXP_BOOT_STATUS_NONE);
+		gxp_firmware_set_boot_mode(gxp, vd, core, GXP_BOOT_MODE_RESUME);
 		/*
 		 * Power on the core by explicitly switching its PSM to
 		 * PS0 (LPM_ACTIVE_STATE).
@@ -1448,6 +1405,22 @@ void gxp_vd_put(struct gxp_virtual_device *vd)
 		kfree(vd);
 }
 
+static void gxp_vd_invalidate_locked(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
+{
+	lockdep_assert_held_write(&gxp->vd_semaphore);
+
+	dev_err(gxp->dev, "Invalidate a VD, VDID=%d, client_id=%d", vd->vdid,
+		vd->client_id);
+
+	if (vd->state != GXP_VD_UNAVAILABLE) {
+		vd->state = GXP_VD_UNAVAILABLE;
+		if (vd->invalidate_eventfd)
+			gxp_eventfd_signal(vd->invalidate_eventfd);
+	} else {
+		dev_dbg(gxp->dev, "This VD is already invalidated");
+	}
+}
+
 void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, uint core_list,
 				      bool release_vmbox)
 {
@@ -1497,7 +1470,7 @@ void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, uint c
 		return;
 	}
 
-	gxp_vd_invalidate(gxp, client->vd);
+	gxp_vd_invalidate_locked(gxp, client->vd);
 
 	/*
 	 * Release @client->semaphore first because we need this lock to block ioctls while
@@ -1514,18 +1487,9 @@ void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, uint c
 
 void gxp_vd_invalidate(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
-	lockdep_assert_held_write(&gxp->vd_semaphore);
-
-	dev_err(gxp->dev, "Invalidate a VD, VDID=%d, client_id=%d", vd->vdid,
-		vd->client_id);
-
-	if (vd->state != GXP_VD_UNAVAILABLE) {
-		vd->state = GXP_VD_UNAVAILABLE;
-		if (vd->invalidate_eventfd)
-			gxp_eventfd_signal(vd->invalidate_eventfd);
-	} else {
-		dev_dbg(gxp->dev, "This VD is already invalidated");
-	}
+	down_write(&gxp->vd_semaphore);
+	gxp_vd_invalidate_locked(gxp, vd);
+	up_write(&gxp->vd_semaphore);
 }
 
 void gxp_vd_generate_debug_dump(struct gxp_dev *gxp,
@@ -1590,7 +1554,7 @@ void gxp_vd_release_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 		dev_err(gxp->dev,
 			"Firmware failed to gracefully release a VMBox for client %d, core_list=%d",
 			vd->client_id, core_list);
-		gxp_vd_invalidate(gxp, vd);
+		gxp_vd_invalidate_locked(gxp, vd);
 		gxp_vd_generate_debug_dump(gxp, vd, core_list);
 	} else {
 		dev_err(gxp->dev, "Failed to request releasing VMBox for client %d: %d",
