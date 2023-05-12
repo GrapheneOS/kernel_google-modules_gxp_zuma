@@ -134,7 +134,8 @@ int gxp_mapping_sync(struct gxp_mapping *mapping, u32 offset, u32 size,
 
 /**
  * gxp_mapping_vmap() - Map a mapping's buffer into kernel address space
- * @mapping: Tha mapping to map into kernel space
+ * @mapping: The mapping to map into kernel space
+ * @is_dmabuf: Whether or not the mapping is for a dmabuf
  *
  * If the buffer is already mapped, increments a reference count and returns
  * the existing virtual address instead.
@@ -144,8 +145,9 @@ int gxp_mapping_sync(struct gxp_mapping *mapping, u32 offset, u32 size,
  * Return: A pointer to the mapped buffer if successful; otherwise an ERR_PTR:
  * * -ENODEV: A reference to the mapping could not be obtained
  * * -ENOMEM: Insufficient memory to map the buffer
+ * * -EINVAL: No valid sgt found.
  */
-void *gxp_mapping_vmap(struct gxp_mapping *mapping);
+void *gxp_mapping_vmap(struct gxp_mapping *mapping, bool is_dmabuf);
 
 /**
  * gxp_mapping_vunmap() - Unmap a mapping from kernel address space
