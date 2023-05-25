@@ -24,11 +24,13 @@
 
 #define GXP_NUM_COMMON_SEGMENTS 2
 #define GXP_NUM_CORE_SEGMENTS 8
+/* 1 segment for RO and 1 for RW */
+#define GXP_NUM_CORE_DATA_SEGMENTS 2
 #define GXP_NUM_BUFFER_MAPPINGS 32
 #define GXP_SEG_HEADER_NAME_LENGTH 32
-#define GXP_NUM_SEGMENTS_PER_CORE                                              \
-	(GXP_NUM_COMMON_SEGMENTS + GXP_NUM_CORE_SEGMENTS +                     \
-	 GXP_NUM_BUFFER_MAPPINGS + 1)
+#define GXP_NUM_SEGMENTS_PER_CORE                                                       \
+	(GXP_NUM_COMMON_SEGMENTS + GXP_NUM_CORE_SEGMENTS + GXP_NUM_CORE_DATA_SEGMENTS + \
+	 GXP_NUM_BUFFER_MAPPINGS)
 
 #define GXP_Q7_ICACHE_SIZE 131072 /* I-cache size in bytes */
 #define GXP_Q7_ICACHE_LINESIZE 64 /* I-cache line size in bytes */

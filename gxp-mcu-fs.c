@@ -89,7 +89,9 @@ gxp_ioctl_uci_response(struct gxp_client *client,
 
 	down_read(&client->semaphore);
 
-	if (!gxp_client_has_available_vd(client, "GXP_MAILBOX_UCI_RESPONSE")) {
+	if (!client->vd) {
+		dev_err(client->gxp->dev,
+			"GXP_MAILBOX_UCI_RESPONSE requires the client allocate a VIRTUAL_DEVICE\n");
 		ret = -ENODEV;
 		goto out;
 	}

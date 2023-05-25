@@ -27,7 +27,7 @@
  * Offset from the host mailbox interface to the device interface that needs to
  * be mapped.
  */
-#if defined(CONFIG_GXP_IP_ZEBU) || defined(CONFIG_GXP_GEM5)
+#if defined(CONFIG_GXP_IP_ZEBU)
 #define MAILBOX_DEVICE_INTERFACE_OFFSET 0x180000
 #else
 #define MAILBOX_DEVICE_INTERFACE_OFFSET 0x10000

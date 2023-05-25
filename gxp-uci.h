@@ -119,6 +119,8 @@ struct gxp_uci_async_response {
 	struct gxp_virtual_device *vd;
 	/* Handles arrival, timeout of async response. */
 	struct gcip_mailbox_resp_awaiter *awaiter;
+	/* Status of the response. */
+	enum gxp_response_status status;
 };
 
 struct gxp_uci_wait_list {

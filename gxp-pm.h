@@ -7,6 +7,11 @@
 #ifndef __GXP_PM_H__
 #define __GXP_PM_H__
 
+#include <linux/mutex.h>
+#include <linux/spinlock.h>
+#include <linux/types.h>
+#include <linux/workqueue.h>
+#include <soc/google/bcl.h>
 #include <soc/google/exynos_pm_qos.h>
 
 #include <gcip/gcip-pm.h>
@@ -69,11 +74,20 @@ enum aur_power_cmu_mux_state {
 
 #define AUR_NUM_POWER_STATE_WORKER 4
 
-struct gxp_pm_device_ops {
-	int (*pre_blk_powerup)(struct gxp_dev *gxp);
-	int (*post_blk_powerup)(struct gxp_dev *gxp);
-	int (*pre_blk_poweroff)(struct gxp_dev *gxp);
-	int (*post_blk_poweroff)(struct gxp_dev *gxp);
+struct gxp_pm_ops {
+	/*
+	 * This callback is called after pm_runtime_get*().
+	 * A non-zero return value could fail the block power up process.
+	 *
+	 * This callback is optional.
+	 */
+	int (*after_blk_power_up)(struct gxp_dev *gxp);
+	/*
+	 * This callback is called before pm_runtime_put*().
+	 *
+	 * This callback is optional.
+	 */
+	void (*before_blk_power_down)(struct gxp_dev *gxp);
 };
 
 struct gxp_set_acpm_state_work {
@@ -123,7 +137,7 @@ struct gxp_power_manager {
 	bool last_scheduled_low_clkmux;
 	int curr_state;
 	int curr_memory_state; /* Note: this state will not be maintained in the MCU mode. */
-	struct gxp_pm_device_ops *ops;
+	const struct gxp_pm_ops *ops;
 	struct gxp_set_acpm_state_work
 		set_acpm_state_work[AUR_NUM_POWER_STATE_WORKER];
 	/* Serializes searching for an open worker in set_acpm_state_work[] */
@@ -137,12 +151,18 @@ struct gxp_power_manager {
 	/* INT/MIF requests for memory bandwidth */
 	struct exynos_pm_qos_request int_min;
 	struct exynos_pm_qos_request mif_min;
+	/* BCL device handler. */
+	struct bcl_device *bcl_dev;
 	int force_mux_normal_count;
 	/* Max frequency that the thermal driver/ACPM will allow in Hz */
 	unsigned long thermal_limit;
 	u64 blk_switch_count;
 	/* PMU AUR_STATUS base address for block status, maybe NULL */
 	void __iomem *aur_status;
+	/* Protects @busy_count. */
+	spinlock_t busy_lock;
+	/* The number of ongoing requests to the firmware. */
+	u64 busy_count;
 };
 
 /**
@@ -327,5 +347,39 @@ void gxp_pm_resume_clkmux(struct gxp_dev *gxp);
  * The power management code will only use this information for logging.
  */
 void gxp_pm_set_thermal_limit(struct gxp_dev *gxp, unsigned long thermal_limit);
+
+/**
+ * gxp_pm_busy() - Claim there is a request to the firmware.
+ * @gxp: The GXP device
+ *
+ * This function is used in pair with gxp_pm_idle().
+ * When there is no ongoing requests, we can put the device in a lower frequency to save power.
+ */
+void gxp_pm_busy(struct gxp_dev *gxp);
+/**
+ * gxp_pm_idle() - Reverts gxp_pm_busy().
+ * @gxp: The GXP device
+ */
+void gxp_pm_idle(struct gxp_dev *gxp);
+
+/**
+ * gxp_pm_chip_set_ops() - Set the operations to the power manager, i.e.
+ * @mgr->ops.
+ * @mgr: The power manager to be set operations to
+ *
+ * This function is expected to be implemented by chip-dependent power
+ * management files but not by gxp-pm.c.
+ */
+void gxp_pm_chip_set_ops(struct gxp_power_manager *mgr);
+
+/**
+ * gxp_pm_chip_init() - Do chip-dependent power management initialization.
+ * @gxp: The GXP device
+ *
+ * This function is called as the last step of gxp_pm_init().
+ * This function is expected to be implemented by chip-dependent power
+ * management files but not by gxp-pm.c.
+ */
+void gxp_pm_chip_init(struct gxp_dev *gxp);
 
 #endif /* __GXP_PM_H__ */

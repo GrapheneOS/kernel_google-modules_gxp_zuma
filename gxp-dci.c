@@ -244,22 +244,6 @@ static void gxp_dci_set_resp_elem_seq(struct gcip_mailbox *mailbox, void *resp,
 	elem->seq = seq;
 }
 
-static u16 gxp_dci_get_resp_elem_status(struct gcip_mailbox *mailbox,
-					void *resp)
-{
-	struct gxp_dci_response *elem = resp;
-
-	return elem->status;
-}
-
-static void gxp_dci_set_resp_elem_status(struct gcip_mailbox *mailbox,
-					 void *resp, u16 status)
-{
-	struct gxp_dci_response *elem = resp;
-
-	elem->status = status;
-}
-
 static void
 gxp_dci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
 			       struct gcip_mailbox_resp_awaiter *awaiter)
@@ -273,6 +257,7 @@ gxp_dci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
 
 	spin_lock_irqsave(async_resp->dest_queue_lock, flags);
 
+	async_resp->resp.status = GXP_DCI_RESP_OK;
 	list_add_tail(&async_resp->list_entry, async_resp->dest_queue);
 	/*
 	 * Marking the dest_queue as NULL indicates the
@@ -364,8 +349,6 @@ static const struct gcip_mailbox_ops gxp_dci_gcip_mbx_ops = {
 	.release_resp_queue_lock = gxp_mailbox_gcip_ops_release_resp_queue_lock,
 	.get_resp_elem_seq = gxp_dci_get_resp_elem_seq,
 	.set_resp_elem_seq = gxp_dci_set_resp_elem_seq,
-	.get_resp_elem_status = gxp_dci_get_resp_elem_status,
-	.set_resp_elem_status = gxp_dci_set_resp_elem_status,
 	.acquire_wait_list_lock = gxp_mailbox_gcip_ops_acquire_wait_list_lock,
 	.release_wait_list_lock = gxp_mailbox_gcip_ops_release_wait_list_lock,
 	.wait_for_cmd_queue_not_full =

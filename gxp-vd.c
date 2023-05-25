@@ -34,7 +34,21 @@
 #include "gxp-pm.h"
 #include "gxp-vd.h"
 
+#if GXP_HAS_MCU
+#include <gcip/gcip-kci.h>
+
+#include "gxp-kci.h"
+#include "gxp-mcu.h"
+#endif
+
 #include <trace/events/gxp.h>
+
+#define KCI_RETURN_CORE_LIST_MASK 0xFF00
+#define KCI_RETURN_CORE_LIST_SHIFT 8
+#define KCI_RETURN_ERROR_CODE_MASK (BIT(KCI_RETURN_CORE_LIST_SHIFT) - 1u)
+#define KCI_RETURN_GET_CORE_LIST(ret)                                          \
+	((KCI_RETURN_CORE_LIST_MASK & (ret)) >> KCI_RETURN_CORE_LIST_SHIFT)
+#define KCI_RETURN_GET_ERROR_CODE(ret) (KCI_RETURN_ERROR_CODE_MASK & (ret))
 
 static inline void hold_core_in_reset(struct gxp_dev *gxp, uint core)
 {
@@ -534,8 +548,6 @@ static void vd_save_doorbells(struct gxp_virtual_device *vd)
 	uint base_doorbell;
 	uint i;
 
-	if (!gxp_fw_data_use_per_vd_config(vd))
-		return;
 	base_doorbell = GXP_DOORBELLS_START +
 			gxp_vd_hw_slot_id(vd) * GXP_NUM_DOORBELLS_PER_VD;
 	for (i = 0; i < ARRAY_SIZE(vd->doorbells_state); i++) {
@@ -552,8 +564,6 @@ static void vd_restore_doorbells(struct gxp_virtual_device *vd)
 	uint base_doorbell;
 	uint i;
 
-	if (!gxp_fw_data_use_per_vd_config(vd))
-		return;
 	base_doorbell = GXP_DOORBELLS_START +
 			gxp_vd_hw_slot_id(vd) * GXP_NUM_DOORBELLS_PER_VD;
 	for (i = 0; i < ARRAY_SIZE(vd->doorbells_state); i++)
@@ -561,20 +571,6 @@ static void vd_restore_doorbells(struct gxp_virtual_device *vd)
 			gxp_doorbell_set(gxp, base_doorbell + i);
 		else
 			gxp_doorbell_clear(gxp, base_doorbell + i);
-}
-
-static void set_config_version(struct gxp_dev *gxp,
-			       struct gxp_virtual_device *vd)
-{
-	vd->config_version = gxp->fw_loader_mgr->core_img_cfg.config_version;
-	/*
-	 * Let gxp_dma_map_core_resources() map this region only when using the
-	 * legacy protocol.
-	 *
-	 * TODO(b/265748027): remove this
-	 */
-	if (gxp_fw_data_use_per_vd_config(vd))
-		gxp->fwdatabuf.daddr = 0;
 }
 
 static void debug_dump_lock(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
@@ -670,7 +666,6 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	if (err)
 		goto error_unassign_cores;
 
-	set_config_version(gxp, vd);
 	/* After map_fw_image_config because it needs vd->vd/core_cfg. */
 	gxp_fw_data_populate_vd_cfg(gxp, vd);
 	err = gxp_dma_map_core_resources(gxp, vd->domain, vd->core_list,
@@ -798,6 +793,12 @@ int gxp_vd_block_ready(struct gxp_virtual_device *vd)
 		}
 	}
 
+	/*
+	 * We don't know when would the secure world issue requests. Using high frequency as long
+	 * as a block wakelock is held by a secure VD.
+	 */
+	if (vd->is_secure)
+		gxp_pm_busy(gxp);
 	trace_gxp_vd_block_ready_end(vd->vdid);
 
 	return 0;
@@ -817,6 +818,8 @@ void gxp_vd_block_unready(struct gxp_virtual_device *vd)
 		vd->state = GXP_VD_OFF;
 	gxp_dma_domain_detach_device(gxp, vd->domain);
 
+	if (vd->is_secure)
+		gxp_pm_idle(gxp);
 	trace_gxp_vd_block_unready_end(vd->vdid);
 }
 
@@ -940,33 +943,23 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 static inline uint select_core(struct gxp_virtual_device *vd, uint virt_core,
 			       uint phys_core)
 {
-	return gxp_fw_data_use_per_vd_config(vd) ? virt_core : phys_core;
+	return virt_core;
 }
 
 static bool boot_state_is_suspend(struct gxp_dev *gxp,
 				  struct gxp_virtual_device *vd, uint core,
 				  u32 *boot_state)
 {
-	if (gxp_fw_data_use_per_vd_config(vd)) {
-		*boot_state = gxp_firmware_get_boot_status(gxp, vd, core);
-		return *boot_state == GXP_BOOT_STATUS_SUSPENDED;
-	}
-
-	*boot_state = gxp_firmware_get_boot_mode(gxp, vd, core);
-	return *boot_state == GXP_BOOT_MODE_STATUS_SUSPEND_COMPLETED;
+	*boot_state = gxp_firmware_get_boot_status(gxp, vd, core);
+	return *boot_state == GXP_BOOT_STATUS_SUSPENDED;
 }
 
 static bool boot_state_is_active(struct gxp_dev *gxp,
 				 struct gxp_virtual_device *vd, uint core,
 				 u32 *boot_state)
 {
-	if (gxp_fw_data_use_per_vd_config(vd)) {
-		*boot_state = gxp_firmware_get_boot_status(gxp, vd, core);
-		return *boot_state == GXP_BOOT_STATUS_ACTIVE;
-	}
-
-	*boot_state = gxp_firmware_get_boot_mode(gxp, vd, core);
-	return *boot_state == GXP_BOOT_MODE_STATUS_RESUME_COMPLETED;
+	*boot_state = gxp_firmware_get_boot_status(gxp, vd, core);
+	return *boot_state == GXP_BOOT_STATUS_ACTIVE;
 }
 
 /*
@@ -1022,15 +1015,8 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 			continue;
 		}
 		/* Mark the boot mode as a suspend event */
-		if (gxp_fw_data_use_per_vd_config(vd)) {
-			gxp_firmware_set_boot_status(gxp, vd, core,
-						     GXP_BOOT_STATUS_NONE);
-			gxp_firmware_set_boot_mode(gxp, vd, core,
-						   GXP_BOOT_MODE_SUSPEND);
-		} else {
-			gxp_firmware_set_boot_mode(
-				gxp, vd, core, GXP_BOOT_MODE_REQUEST_SUSPEND);
-		}
+		gxp_firmware_set_boot_status(gxp, vd, core, GXP_BOOT_STATUS_NONE);
+		gxp_firmware_set_boot_mode(gxp, vd, core, GXP_BOOT_MODE_SUSPEND);
 		/*
 		 * Request a suspend event by sending a mailbox
 		 * notification.
@@ -1147,15 +1133,8 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 			}
 		}
 		/* Mark this as a resume power-up event. */
-		if (gxp_fw_data_use_per_vd_config(vd)) {
-			gxp_firmware_set_boot_status(gxp, vd, core,
-						     GXP_BOOT_STATUS_NONE);
-			gxp_firmware_set_boot_mode(gxp, vd, core,
-						   GXP_BOOT_MODE_RESUME);
-		} else {
-			gxp_firmware_set_boot_mode(
-				gxp, vd, core, GXP_BOOT_MODE_REQUEST_RESUME);
-		}
+		gxp_firmware_set_boot_status(gxp, vd, core, GXP_BOOT_STATUS_NONE);
+		gxp_firmware_set_boot_mode(gxp, vd, core, GXP_BOOT_MODE_RESUME);
 		/*
 		 * Power on the core by explicitly switching its PSM to
 		 * PS0 (LPM_ACTIVE_STATE).
@@ -1393,10 +1372,12 @@ bool gxp_vd_has_and_use_credit(struct gxp_virtual_device *vd)
 	unsigned long flags;
 
 	spin_lock_irqsave(&vd->credit_lock, flags);
-	if (vd->credit == 0)
+	if (vd->credit == 0) {
 		ret = false;
-	else
+	} else {
 		vd->credit--;
+		gxp_pm_busy(vd->gxp);
+	}
 	spin_unlock_irqrestore(&vd->credit_lock, flags);
 
 	return ret;
@@ -1407,10 +1388,12 @@ void gxp_vd_release_credit(struct gxp_virtual_device *vd)
 	unsigned long flags;
 
 	spin_lock_irqsave(&vd->credit_lock, flags);
-	if (unlikely(vd->credit >= GXP_COMMAND_CREDIT_PER_VD))
+	if (unlikely(vd->credit >= GXP_COMMAND_CREDIT_PER_VD)) {
 		dev_err(vd->gxp->dev, "unbalanced VD credit");
-	else
+	} else {
+		gxp_pm_idle(vd->gxp);
 		vd->credit++;
+	}
 	spin_unlock_irqrestore(&vd->credit_lock, flags);
 }
 
@@ -1422,8 +1405,24 @@ void gxp_vd_put(struct gxp_virtual_device *vd)
 		kfree(vd);
 }
 
-void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id,
-				      uint core_list)
+static void gxp_vd_invalidate_locked(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
+{
+	lockdep_assert_held_write(&gxp->vd_semaphore);
+
+	dev_err(gxp->dev, "Invalidate a VD, VDID=%d, client_id=%d", vd->vdid,
+		vd->client_id);
+
+	if (vd->state != GXP_VD_UNAVAILABLE) {
+		vd->state = GXP_VD_UNAVAILABLE;
+		if (vd->invalidate_eventfd)
+			gxp_eventfd_signal(vd->invalidate_eventfd);
+	} else {
+		dev_dbg(gxp->dev, "This VD is already invalidated");
+	}
+}
+
+void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, uint core_list,
+				      bool release_vmbox)
 {
 	struct gxp_client *client = NULL, *c;
 	uint core;
@@ -1471,31 +1470,26 @@ void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id,
 		return;
 	}
 
-	gxp_vd_invalidate(gxp, client->vd);
+	gxp_vd_invalidate_locked(gxp, client->vd);
+
+	/*
+	 * Release @client->semaphore first because we need this lock to block ioctls while
+	 * changing the state of @client->vd to UNAVAILABLE which is already done above.
+	 */
+	up_write(&client->semaphore);
+
+	if (release_vmbox)
+		gxp_vd_release_vmbox(gxp, client->vd);
 	gxp_vd_generate_debug_dump(gxp, client->vd, core_list);
 
 	up_write(&gxp->vd_semaphore);
-	up_write(&client->semaphore);
 }
 
 void gxp_vd_invalidate(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
-	lockdep_assert_held_write(&gxp->vd_semaphore);
-
-	dev_err(gxp->dev, "Invalidate a VD, VDID=%d, client_id=%d", vd->vdid,
-		vd->client_id);
-
-	if (vd->state != GXP_VD_UNAVAILABLE) {
-		if (gxp->mailbox_mgr->release_unconsumed_async_resps)
-			gxp->mailbox_mgr->release_unconsumed_async_resps(vd);
-
-		vd->state = GXP_VD_UNAVAILABLE;
-
-		if (vd->invalidate_eventfd)
-			gxp_eventfd_signal(vd->invalidate_eventfd);
-	} else {
-		dev_dbg(gxp->dev, "This VD is already invalidated");
-	}
+	down_write(&gxp->vd_semaphore);
+	gxp_vd_invalidate_locked(gxp, vd);
+	up_write(&gxp->vd_semaphore);
 }
 
 void gxp_vd_generate_debug_dump(struct gxp_dev *gxp,
@@ -1537,3 +1531,55 @@ void gxp_vd_generate_debug_dump(struct gxp_dev *gxp,
 	down_write(&gxp->vd_semaphore);
 	gxp_vd_put(vd);
 }
+
+#if GXP_HAS_MCU
+void gxp_vd_release_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
+{
+	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
+	uint core_list;
+	int ret;
+
+	if (vd->client_id < 0 || vd->mcu_crashed)
+		goto out;
+
+	if (vd->tpu_client_id >= 0)
+		gxp_vd_unlink_offload_vmbox(gxp, vd, vd->tpu_client_id,
+					    GCIP_KCI_OFFLOAD_CHIP_TYPE_TPU);
+
+	ret = gxp_kci_release_vmbox(kci, vd->client_id);
+	if (!ret)
+		goto out;
+	if (ret > 0 && KCI_RETURN_GET_ERROR_CODE(ret) == GCIP_KCI_ERROR_ABORTED) {
+		core_list = KCI_RETURN_GET_CORE_LIST(ret);
+		dev_err(gxp->dev,
+			"Firmware failed to gracefully release a VMBox for client %d, core_list=%d",
+			vd->client_id, core_list);
+		gxp_vd_invalidate_locked(gxp, vd);
+		gxp_vd_generate_debug_dump(gxp, vd, core_list);
+	} else {
+		dev_err(gxp->dev, "Failed to request releasing VMBox for client %d: %d",
+			vd->client_id, ret);
+	}
+out:
+	vd->client_id = -1;
+}
+
+void gxp_vd_unlink_offload_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
+				 u32 offload_client_id, u8 offload_chip_type)
+{
+	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
+	int ret;
+
+	if (vd->client_id < 0 || vd->tpu_client_id < 0 || vd->mcu_crashed)
+		goto out;
+
+	ret = gxp_kci_link_unlink_offload_vmbox(kci, vd->client_id, offload_client_id,
+						offload_chip_type, false);
+	if (ret)
+		dev_err(gxp->dev,
+			"Failed to unlink offload VMBox for client %d, offload client %u, offload chip type %d: %d",
+			vd->client_id, offload_client_id, offload_chip_type, ret);
+out:
+	vd->tpu_client_id = -1;
+}
+#endif /* GXP_HAS_MCU */

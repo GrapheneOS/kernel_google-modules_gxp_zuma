@@ -82,6 +82,8 @@ int gxp_client_allocate_virtual_device(struct gxp_client *client,
  *
  * The caller must have locked client->semaphore.
  *
+ * Note that this function won't increase the PM count. (i.e., won't call gcip_pm_get)
+ *
  * Return:
  * * 0          - Success
  * * Otherwise  - Errno returned by block wakelock acquisition
@@ -93,8 +95,12 @@ int gxp_client_acquire_block_wakelock(struct gxp_client *client,
  * revokes the power votes.
  *
  * The caller must have locked client->semaphore.
+ *
+ * Note that this function won't decrease the PM count. (i.e., won't call gcip_pm_put)
+ *
+ * Return: false only when @client hasn't held the block wakelock.
  */
-void gxp_client_release_block_wakelock(struct gxp_client *client);
+bool gxp_client_release_block_wakelock(struct gxp_client *client);
 /**
  * gxp_client_acquire_vd_wakelock() - Acquires a VD wakelock for the current
  * virtual device to start the virtual device or resume it if it's suspended.

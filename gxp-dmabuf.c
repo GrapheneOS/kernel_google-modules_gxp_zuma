@@ -78,7 +78,7 @@ struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp,
 		goto err_attach;
 	}
 
-	sgt = gxp_dma_map_dmabuf_attachment(gxp, domain, attachment, dir);
+	sgt = gxp_dma_map_dmabuf_attachment(gxp, domain, attachment, flags, dir);
 	if (IS_ERR(sgt)) {
 		dev_err(gxp->dev,
 			"Failed to map dma-buf attachment (ret=%ld)\n",
