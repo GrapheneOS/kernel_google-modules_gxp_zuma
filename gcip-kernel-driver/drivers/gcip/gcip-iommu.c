@@ -85,7 +85,11 @@ static int iovad_initialize_domain(struct gcip_iommu_domain *domain)
 	init_iova_domain(&domain->iova_space.iovad, dpool->granule,
 			 max_t(unsigned long, 1, dpool->base_daddr >> ilog2(dpool->granule)));
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
+	return iova_domain_init_rcaches(&domain->iova_space.iovad);
+#else
 	return 0;
+#endif
 }
 
 static void iovad_finalize_domain(struct gcip_iommu_domain *domain)
