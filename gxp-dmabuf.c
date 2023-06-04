@@ -117,6 +117,18 @@ err_attach:
 	return ERR_PTR(ret);
 }
 
+struct sg_table *gxp_dmabuf_get_sgt(struct gxp_mapping *mapping)
+{
+	struct gxp_dmabuf_mapping *dmabuf_mapping;
+
+	if (mapping->host_address)
+		/* Not a dmabuf */
+		return NULL;
+
+	dmabuf_mapping = container_of(mapping, struct gxp_dmabuf_mapping, mapping);
+	return dmabuf_mapping->sgt;
+}
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
 MODULE_IMPORT_NS(DMA_BUF);
 #endif

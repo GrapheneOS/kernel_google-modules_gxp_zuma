@@ -29,5 +29,12 @@
 struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp,
 				   struct gcip_iommu_domain *domain, int fd,
 				   u32 flags, enum dma_data_direction dir);
+/**
+ * gxp_dmabuf_get_sgt(): Retrieve the sg table for dmabuf
+ * @mapping: The mapping corresponding to dmabuf
+ *
+ * Return: sg table on success or NULL.
+ */
+struct sg_table *gxp_dmabuf_get_sgt(struct gxp_mapping *mapping);
 
 #endif /* __GXP_DMABUF_H__ */

@@ -421,6 +421,7 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 	dma_addr_t daddr;
 	struct gxp_mapping *mapping;
 	void *vaddr;
+	bool is_dmabuf;
 
 	if (!vd || vd->state == GXP_VD_RELEASED) {
 		dev_err(gxp->dev, "Virtual device is not available for vmap\n");
@@ -442,8 +443,9 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 			continue;
 		}
 
+		is_dmabuf = !mapping->host_address;
 		/* Map the mapping into kernel space */
-		vaddr = gxp_mapping_vmap(mapping);
+		vaddr = gxp_mapping_vmap(mapping, is_dmabuf);
 
 		/*
 		 * Release the reference from searching for the mapping.
