@@ -16,6 +16,7 @@
 #include "gxp-client.h"
 #include "gxp-debug-dump.h"
 #include "gxp-dma.h"
+#include "gxp-dmabuf.h"
 #include "gxp-internal.h"
 #include "gxp-mapping.h"
 
@@ -343,7 +344,7 @@ out:
 	return ret;
 }
 
-void *gxp_mapping_vmap(struct gxp_mapping *mapping)
+void *gxp_mapping_vmap(struct gxp_mapping *mapping, bool is_dmabuf)
 {
 	struct sg_table *sgt;
 	struct sg_page_iter sg_iter;
@@ -364,7 +365,16 @@ void *gxp_mapping_vmap(struct gxp_mapping *mapping)
 		goto out;
 	}
 
-	sgt = &mapping->sgt;
+	if (is_dmabuf)
+		sgt = gxp_dmabuf_get_sgt(mapping);
+	else
+		sgt = &mapping->sgt;
+
+	if (!sgt) {
+		vaddr = ERR_PTR(-EINVAL);
+		goto out;
+	}
+
 	for_each_sg_page(sgt->sgl, &sg_iter, sgt->orig_nents, 0)
 		page_count++;
 

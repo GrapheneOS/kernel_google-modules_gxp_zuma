@@ -46,8 +46,9 @@ typedef void (*reset_mailbox_t)(struct gxp_mailbox *mailbox);
 
 /*
  * Called when requests synchronous commands. This callback will be called from the
- * `gxp_debugfs_mailbox` function. The response will be returned to the @resp_seq, @resp_status
- * and `retval` of `struct gxp_response` will be returned as the return value of this function.
+ * `debugfs_mailbox_execute_cmd` function. The response will be returned to the @resp_seq,
+ * @resp_status and `retval` of `struct gxp_response` will be returned as the return value of this
+ * function.
  * You can pass NULL to @resp_seq and @resp_status if you don't need the result. See the
  * `struct gxp_response` for the details.
  *
@@ -133,5 +134,9 @@ struct gxp_mailbox_manager {
  */
 struct gxp_mailbox_manager *gxp_mailbox_create_manager(struct gxp_dev *gxp,
 						       uint num_cores);
+
+/* Destroy and free the mailbox manager. */
+void gxp_mailbox_destroy_manager(struct gxp_dev *gxp,
+				 struct gxp_mailbox_manager *mgr);
 
 #endif /* __GXP_MAILBOX_MANAGER_H__ */

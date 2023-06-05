@@ -104,50 +104,6 @@
 /* There was an attempt to use the buffers but their content was invalid. */
 #define GXP_CORE_TELEMETRY_DEVICE_STATUS_SANITY_CHECK_FAILED (1 << 1)
 
-/* Definitions for host->device boot mode requests */
-/*
- * Request that the core performs a normal cold boot on the next power-on event.
- * This does not actually wake the core up, but's required before powering the
- * core up if cold boot is desired.
- * Core power-on could be performed using any wake-up source like the doorbells.
- */
-#define GXP_BOOT_MODE_REQUEST_COLD_BOOT                 0
-
-/*
- * Request that the core suspends on the next suspend signal arrival. This does
- * not trigger a suspend operation. A subsequent mailbox command or notification
- * is needed to trigger the actual transition.
- */
-#define GXP_BOOT_MODE_REQUEST_SUSPEND                   1
-
-/*
- * Request the core resumes on the next power on-event. This does not trigger a
- * resume operation, but's required before powering the core up if warm
- * boot/resume is desired.
- * Core power-on could be performed using any wake-up source like direct LPM
- * transition into PS0.
- */
-#define GXP_BOOT_MODE_REQUEST_RESUME                    2
-
-/* Cold boot status definitions */
-#define GXP_BOOT_MODE_STATUS_COLD_BOOT_PENDING          0
-#define GXP_BOOT_MODE_STATUS_COLD_BOOT_COMPLETED        3
-
-/* Core suspend status definitions */
-#define GXP_BOOT_MODE_STATUS_SUSPEND_PENDING            1
-#define GXP_BOOT_MODE_STATUS_SUSPEND_STARTED            4
-#define GXP_BOOT_MODE_STATUS_SUSPEND_COMPLETED          5
-#define GXP_BOOT_MODE_STATUS_SUSPEND_ABORTED            6
-
-/* Core resume/warm boot status definitions */
-#define GXP_BOOT_MODE_STATUS_RESUME_PENDING             2
-#define GXP_BOOT_MODE_STATUS_RESUME_STARTED             7
-#define GXP_BOOT_MODE_STATUS_RESUME_COMPLETED           8
-#define GXP_BOOT_MODE_STATUS_RESUME_FAILED              9
-
-/* Invalid boot mode request code */
-#define GXP_BOOT_MODE_STATUS_INVALID_MODE               10
-
 /*
  * A structure describing the core telemetry (logging and tracing) parameters
  * and buffers.

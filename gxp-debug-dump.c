@@ -28,6 +28,7 @@
 #include "gxp-internal.h"
 #include "gxp-lpm.h"
 #include "gxp-mapping.h"
+#include "gxp-notification.h"
 #include "gxp-pm.h"
 #include "gxp-vd.h"
 
@@ -49,6 +50,8 @@
 #define CORE_FIRMWARE_RW_STRIDE 0x200000 /* 2 MB */
 #define CORE_FIRMWARE_RW_ADDR(x) (0xFA400000 + CORE_FIRMWARE_RW_STRIDE * x)
 
+#define DEBUGFS_COREDUMP "coredump"
+
 /* Enum indicating the debug dump request reason. */
 enum gxp_debug_dump_init_type { DEBUG_DUMP_FW_INIT, DEBUG_DUMP_KERNEL_INIT };
 
@@ -61,7 +64,15 @@ enum gxp_common_segments_idx {
 #if IS_ENABLED(CONFIG_GXP_TEST)
 static int gxp_debug_dump_enable = 1;
 #else
+#if IS_ENABLED(CONFIG_CALLISTO)
+/*
+ * TODO(b/277094681): Revert setting gxp_debug_dump_enable to 1
+ * around device beta milestone.
+ */
+static int gxp_debug_dump_enable = 1;
+#else
 static int gxp_debug_dump_enable;
+#endif
 #endif
 module_param_named(debug_dump_enable, gxp_debug_dump_enable, int, 0660);
 
@@ -410,6 +421,7 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 	dma_addr_t daddr;
 	struct gxp_mapping *mapping;
 	void *vaddr;
+	bool is_dmabuf;
 
 	if (!vd || vd->state == GXP_VD_RELEASED) {
 		dev_err(gxp->dev, "Virtual device is not available for vmap\n");
@@ -431,8 +443,9 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 			continue;
 		}
 
+		is_dmabuf = !mapping->host_address;
 		/* Map the mapping into kernel space */
-		vaddr = gxp_mapping_vmap(mapping);
+		vaddr = gxp_mapping_vmap(mapping, is_dmabuf);
 
 		/*
 		 * Release the reference from searching for the mapping.
@@ -493,12 +506,6 @@ static int gxp_map_fw_rw_section(struct gxp_dev *gxp,
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
 	dma_addr_t fw_rw_section_daddr = CORE_FIRMWARE_RW_ADDR(virt_core_id);
 	const size_t n_reg = ARRAY_SIZE(vd->ns_regions);
-
-	if (!gxp_fw_data_use_per_vd_config(vd)) {
-		dev_err(gxp->dev, "Unsupported Image config version = %d.",
-			gxp->fw_loader_mgr->core_img_cfg.config_version);
-		return -EOPNOTSUPP;
-	}
 
 	for (idx = 0; idx < n_reg; idx++) {
 		sgt = vd->ns_regions[idx].sgt;
@@ -571,9 +578,9 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp,
 	struct gxp_core_dump_header *core_dump_header =
 		&core_dump->core_dump_header[core_id];
 	struct gxp_core_header *core_header = &core_dump_header->core_header;
-	int virt_core;
 	int ret = 0;
 #if HAS_COREDUMP
+	int virt_core;
 	struct gxp_common_dump *common_dump = mgr->common_dump;
 	int i;
 	int seg_idx = 0;
@@ -650,7 +657,7 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp,
 			goto out;
 		}
 	} else {
-		virt_core = core_id;
+		virt_core = core_header->core_id;
 	}
 
 	/* fw ro section */
@@ -683,7 +690,7 @@ out_efault:
 	} else {
 		dev_dbg(gxp->dev, "Passing dump data to SSCD daemon\n");
 		snprintf(sscd_msg, SSCD_MSG_LENGTH - 1,
-			 "gxp debug dump (core %0x)", core_id);
+			 "gxp debug dump (vdid %d)(core %0x)", vd->vdid, core_id);
 		gxp_send_to_sscd(gxp, mgr->segs[core_id],
 				 seg_idx + user_buf_cnt, sscd_msg);
 
@@ -847,6 +854,32 @@ struct work_struct *gxp_debug_dump_get_notification_handler(struct gxp_dev *gxp,
 	return &mgr->debug_dump_works[core].work;
 }
 
+static int debugfs_coredump(void *data, u64 val)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
+	int core;
+
+	if (!gxp_debug_dump_is_enabled()) {
+		dev_err(gxp->dev, "Debug dump functionality is disabled\n");
+		return -EINVAL;
+	}
+
+	down_read(&gxp->vd_semaphore);
+
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		if (gxp_is_fw_running(gxp, core))
+			gxp_notification_send(gxp, core,
+					      CORE_NOTIF_GENERATE_DEBUG_DUMP);
+	}
+
+	up_read(&gxp->vd_semaphore);
+
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(debugfs_coredump_fops, NULL, debugfs_coredump,
+			 "%llu\n");
+
 int gxp_debug_dump_init(struct gxp_dev *gxp, void *sscd_dev, void *sscd_pdata)
 {
 	struct gxp_debug_dump_manager *mgr;
@@ -888,6 +921,9 @@ int gxp_debug_dump_init(struct gxp_dev *gxp, void *sscd_dev, void *sscd_pdata)
 	mgr->sscd_pdata = sscd_pdata;
 	mutex_init(&mgr->debug_dump_lock);
 
+	debugfs_create_file(DEBUGFS_COREDUMP, 0200, gxp->d_entry, gxp,
+			    &debugfs_coredump_fops);
+
 	return 0;
 }
 
@@ -899,6 +935,8 @@ void gxp_debug_dump_exit(struct gxp_dev *gxp)
 		dev_dbg(gxp->dev, "Debug dump manager was not allocated\n");
 		return;
 	}
+
+	debugfs_remove(debugfs_lookup(DEBUGFS_COREDUMP, gxp->d_entry));
 
 	kfree(gxp->debug_dump_mgr->common_dump);
 	gxp_dma_free_coherent_buf(gxp, NULL, &mgr->buf);

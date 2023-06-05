@@ -18,6 +18,9 @@
 #include "gxp-notification.h"
 #include "gxp-vd.h"
 
+#define DEBUGFS_LOG_BUFF "log"
+#define DEBUGFS_LOG_EVENTFD "log_eventfd"
+
 static uint gxp_core_telemetry_buffer_size = CORE_TELEMETRY_DEFAULT_BUFFER_SIZE;
 module_param_named(core_telemetry_buffer_size, gxp_core_telemetry_buffer_size, uint, 0660);
 
@@ -130,6 +133,67 @@ int gxp_secure_core_telemetry_init(struct gxp_dev *gxp, phys_addr_t phys)
 	return 0;
 }
 
+static int debugfs_log_buff_set(void *data, u64 val)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
+	int i;
+	struct gxp_coherent_buf *buffers;
+	u64 *ptr;
+
+	mutex_lock(&gxp->core_telemetry_mgr->lock);
+
+	buffers = gxp->core_telemetry_mgr->logging_buff_data->buffers;
+	for (i = 0; i < GXP_NUM_CORES; i++) {
+		ptr = buffers[i].vaddr;
+		*ptr = val;
+	}
+
+	mutex_unlock(&gxp->core_telemetry_mgr->lock);
+
+	return 0;
+}
+
+static int debugfs_log_buff_get(void *data, u64 *val)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
+	struct gxp_coherent_buf *buffers;
+
+	mutex_lock(&gxp->core_telemetry_mgr->lock);
+
+	buffers = gxp->core_telemetry_mgr->logging_buff_data->buffers;
+	*val = *(u64 *)(buffers[0].vaddr);
+
+	mutex_unlock(&gxp->core_telemetry_mgr->lock);
+
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(debugfs_log_buff_fops, debugfs_log_buff_get,
+			 debugfs_log_buff_set, "%llu\n");
+
+static int debugfs_log_eventfd_signal_set(void *data, u64 val)
+{
+	struct gxp_dev *gxp = (struct gxp_dev *)data;
+	int ret = 0;
+
+	mutex_lock(&gxp->core_telemetry_mgr->lock);
+
+	if (!gxp->core_telemetry_mgr->logging_efd) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	ret = eventfd_signal(gxp->core_telemetry_mgr->logging_efd, 1);
+
+out:
+	mutex_unlock(&gxp->core_telemetry_mgr->lock);
+
+	return ret;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(debugfs_log_eventfd_signal_fops, NULL,
+			 debugfs_log_eventfd_signal_set, "%llu\n");
+
 int gxp_core_telemetry_init(struct gxp_dev *gxp)
 {
 	struct gxp_core_telemetry_manager *mgr;
@@ -197,6 +261,12 @@ int gxp_core_telemetry_init(struct gxp_dev *gxp)
 
 	gxp->core_telemetry_mgr->logging_buff_data = log_buff_data;
 	gxp->core_telemetry_mgr->tracing_buff_data = trace_buff_data;
+
+	debugfs_create_file(DEBUGFS_LOG_BUFF, 0600, gxp->d_entry, gxp,
+			    &debugfs_log_buff_fops);
+	debugfs_create_file(DEBUGFS_LOG_EVENTFD, 0200, gxp->d_entry, gxp,
+			    &debugfs_log_eventfd_signal_fops);
+
 	return 0;
 
 err_free:
@@ -514,6 +584,9 @@ void gxp_core_telemetry_exit(struct gxp_dev *gxp)
 		dev_warn(gxp->dev, "Core telemetry manager was not allocated\n");
 		return;
 	}
+
+	debugfs_remove(debugfs_lookup(DEBUGFS_LOG_BUFF, gxp->d_entry));
+	debugfs_remove(debugfs_lookup(DEBUGFS_LOG_EVENTFD, gxp->d_entry));
 
 	log_buff_data = mgr->logging_buff_data;
 	trace_buff_data = mgr->tracing_buff_data;

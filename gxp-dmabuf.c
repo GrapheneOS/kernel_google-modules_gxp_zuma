@@ -78,7 +78,7 @@ struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp,
 		goto err_attach;
 	}
 
-	sgt = gxp_dma_map_dmabuf_attachment(gxp, domain, attachment, dir);
+	sgt = gxp_dma_map_dmabuf_attachment(gxp, domain, attachment, flags, dir);
 	if (IS_ERR(sgt)) {
 		dev_err(gxp->dev,
 			"Failed to map dma-buf attachment (ret=%ld)\n",
@@ -115,6 +115,18 @@ err_map_attachment:
 err_attach:
 	dma_buf_put(dmabuf);
 	return ERR_PTR(ret);
+}
+
+struct sg_table *gxp_dmabuf_get_sgt(struct gxp_mapping *mapping)
+{
+	struct gxp_dmabuf_mapping *dmabuf_mapping;
+
+	if (mapping->host_address)
+		/* Not a dmabuf */
+		return NULL;
+
+	dmabuf_mapping = container_of(mapping, struct gxp_dmabuf_mapping, mapping);
+	return dmabuf_mapping->sgt;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)

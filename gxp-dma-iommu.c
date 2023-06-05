@@ -24,7 +24,6 @@
 #include "gxp-ssmt.h"
 #include "gxp.h"
 
-#define CREATE_TRACE_POINTS
 #include <trace/events/gxp.h>
 
 struct gxp_dma_iommu_manager {
@@ -274,7 +273,6 @@ void gxp_dma_init_default_resources(struct gxp_dev *gxp)
 		gxp->mbx[i].daddr = GXP_IOVA_MAILBOX(i);
 	for (core = 0; core < GXP_NUM_CORES; core++)
 		gxp->fwbufs[core].daddr = GXP_IOVA_FIRMWARE(core);
-	gxp->fwdatabuf.daddr = GXP_IOVA_FW_DATA;
 }
 
 int gxp_dma_domain_attach_device(struct gxp_dev *gxp,
@@ -322,13 +320,6 @@ int gxp_dma_map_core_resources(struct gxp_dev *gxp,
 		if (ret)
 			goto err;
 	}
-	/* TODO(b/265748027): directly remove this map */
-	if (gxp->fwdatabuf.daddr)
-		ret = iommu_map(domain, gxp->fwdatabuf.daddr,
-				gxp->fwdatabuf.paddr, gxp->fwdatabuf.size,
-				IOMMU_READ | IOMMU_WRITE);
-	if (ret)
-		goto err;
 	/* Only map the TPU mailboxes if they were found on probe */
 	if (gxp->tpu_dev.mbx_paddr) {
 		for (i = 0; i < GXP_NUM_CORES; i++) {
@@ -375,8 +366,6 @@ void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
 				    EXT_TPU_MBX_SIZE);
 		}
 	}
-	if (gxp->fwdatabuf.daddr)
-		iommu_unmap(domain, gxp->fwdatabuf.daddr, gxp->fwdatabuf.size);
 	for (i = 0; i < GXP_NUM_CORES; i++) {
 		if (!(BIT(i) & core_list))
 			continue;
@@ -727,11 +716,12 @@ void gxp_dma_sync_sg_for_device(struct gxp_dev *gxp, struct scatterlist *sg,
 struct sg_table *
 gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
 			      struct gcip_iommu_domain *gdomain,
-			      struct dma_buf_attachment *attachment,
+			      struct dma_buf_attachment *attachment, u32 flags,
 			      enum dma_data_direction direction)
 {
 	struct sg_table *sgt;
-	int prot = dma_info_to_prot(direction, /*coherent=*/0, /*attrs=*/0);
+	bool coherent = flags & GXP_MAP_COHERENT ? true : false;
+	int prot = dma_info_to_prot(direction, coherent, /*attrs=*/0);
 	ssize_t size_mapped;
 	int ret;
 

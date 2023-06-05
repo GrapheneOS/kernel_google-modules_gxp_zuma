@@ -15,33 +15,7 @@
 #include "gxp-config.h"
 #include "gxp-internal.h"
 
-#if !IS_ENABLED(CONFIG_GXP_TEST)
-
-#ifdef CHIP_AURORA_SCRATCHPAD_OFF
-
-#define AURORA_SCRATCHPAD_OFF CHIP_AURORA_SCRATCHPAD_OFF
-#define AURORA_SCRATCHPAD_LEN CHIP_AURORA_SCRATCHPAD_LEN
-
-#else /* CHIP_AURORA_SCRATCHPAD_OFF */
-
-#define AURORA_SCRATCHPAD_OFF 0x000FF000 /* Last 4KB of ELF load region */
-#define AURORA_SCRATCHPAD_LEN 0x00001000 /* 4KB */
-
-#endif /* CHIP_AURORA_SCRATCHPAD_OFF */
-
-#else /* CONFIG_GXP_TEST */
-/* Firmware memory is shrunk in unit tests. */
-#define AURORA_SCRATCHPAD_OFF 0x000F0000
-#define AURORA_SCRATCHPAD_LEN 0x00010000
-
-#endif /* CONFIG_GXP_TEST */
-
 #define Q7_ALIVE_MAGIC	0x55555555
-
-#define SCRATCHPAD_MSG_OFFSET(_msg_) (_msg_  <<  2)
-
-#define PRIVATE_FW_DATA_SIZE SZ_2M
-#define SHARED_FW_DATA_SIZE SZ_1M
 
 /* Indexes same as image_config.IommuMappingIdx in the firmware side. */
 enum gxp_imgcfg_idx {
@@ -129,13 +103,6 @@ void gxp_firmware_stop(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 void gxp_firmware_set_boot_mode(struct gxp_dev *gxp,
 				struct gxp_virtual_device *vd, uint core,
 				u32 mode);
-
-/*
- * Returns the specified core's boot mode or boot status.
- * This function should be called only after the firmware has been run.
- */
-u32 gxp_firmware_get_boot_mode(struct gxp_dev *gxp,
-			       struct gxp_virtual_device *vd, uint core);
 
 /*
  * Sets the specified core's boot status or suspend request value.

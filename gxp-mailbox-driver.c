@@ -392,7 +392,7 @@ void gxp_mailbox_gcip_ops_inc_cmd_queue_tail(struct gcip_mailbox *mailbox,
 }
 
 int gxp_mailbox_gcip_ops_acquire_cmd_queue_lock(struct gcip_mailbox *mailbox,
-						bool try)
+						bool try, bool *atomic)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
@@ -439,7 +439,7 @@ void gxp_mailbox_gcip_ops_inc_resp_queue_head(struct gcip_mailbox *mailbox,
 }
 
 int gxp_mailbox_gcip_ops_acquire_resp_queue_lock(struct gcip_mailbox *mailbox,
-						 bool try)
+						 bool try, bool *atomic)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 

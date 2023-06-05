@@ -182,8 +182,7 @@ void gxp_fw_data_destroy(struct gxp_dev *gxp)
 
 void gxp_fw_data_populate_vd_cfg(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
-	if (gxp_fw_data_use_per_vd_config(vd))
-		_gxp_fw_data_populate_vd_cfg(gxp, vd);
+	_gxp_fw_data_populate_vd_cfg(gxp, vd);
 }
 
 int gxp_fw_data_set_core_telemetry_descriptors(struct gxp_dev *gxp, u8 type,
