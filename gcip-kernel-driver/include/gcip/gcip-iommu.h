@@ -104,6 +104,7 @@ struct gcip_iommu_domain {
 	struct gcip_iommu_domain_pool *domain_pool;
 	struct iommu_domain *domain;
 	bool legacy_mode;
+	bool default_domain;
 	union {
 		struct iova_domain iovad;
 		struct gcip_mem_pool mem_pool;
@@ -238,13 +239,13 @@ static inline bool gcip_iommu_domain_is_legacy_mode(struct gcip_iommu_domain *do
  *               00 = DMA_BIDIRECTIONAL (host/device can write buffer)
  *               01 = DMA_TO_DEVICE     (host can write buffer)
  *               10 = DMA_FROM_DEVICE   (device can write buffer)
- *               (See https://docs.kernel.org/core-api/dma-api-howto.html#dma-direction)
+ *               (See [REDACTED]
  *   [2:2]   - Coherent Mapping:
  *               0 = Create non-coherent mappings of the buffer.
  *               1 = Create coherent mappings of the buffer.
  *   [12:3]  - DMA_ATTR:
  *               Not used in the non-legacy mode.
- *               (See https://www.kernel.org/doc/Documentation/core-api/dma-attributes.rst)
+ *               (See [REDACTED]
  *   [63:13] - RESERVED
  *               Set RESERVED bits to 0 to ensure backwards compatibility.
  *

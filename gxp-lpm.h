@@ -28,6 +28,10 @@ enum psm_reg_offset {
 	PSM_REG_START_OFFSET,
 	PSM_REG_STATUS_OFFSET,
 	PSM_REG_CFG_OFFSET,
+	PSM_REG_DEBUG_CFG_OFFSET,
+	PSM_REG_GPIN_LO_RD_OFFSET,
+	PSM_REG_GPOUT_LO_WRT_OFFSET,
+	PSM_REG_GPOUT_LO_RD_OFFSET,
 };
 
 #define LPM_INSTRUCTION_OFFSET 0x00000944
@@ -134,6 +138,14 @@ static u32 get_reg_offset(struct gxp_dev *gxp, enum psm_reg_offset reg_offset, e
 		return gxp_lpm_psm_get_status_offset(psm);
 	case PSM_REG_CFG_OFFSET:
 		return gxp_lpm_psm_get_cfg_offset(psm);
+	case PSM_REG_DEBUG_CFG_OFFSET:
+		return gxp_lpm_psm_get_debug_cfg_offset(psm);
+	case PSM_REG_GPIN_LO_RD_OFFSET:
+		return gxp_lpm_psm_get_gpin_lo_rd_offset(psm);
+	case PSM_REG_GPOUT_LO_WRT_OFFSET:
+		return gxp_lpm_psm_get_gpout_lo_wrt_offset(psm);
+	case PSM_REG_GPOUT_LO_RD_OFFSET:
+		return gxp_lpm_psm_get_gpout_lo_rd_offset(psm);
 	}
 
 	return 0;
