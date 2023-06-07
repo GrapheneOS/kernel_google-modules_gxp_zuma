@@ -86,6 +86,7 @@ enum lpm_psm_base {
 #define PSM_BREAK_ADDR_OFFSET 0x694
 #define PSM_GPIN_LO_RD_OFFSET 0x6A0
 #define PSM_GPIN_HI_RD_OFFSET 0x6A4
+#define PSM_GPOUT_LO_WRT_OFFSET 0x6A8
 #define PSM_GPOUT_LO_RD_OFFSET 0x6B0
 #define PSM_GPOUT_HI_RD_OFFSET 0x6B4
 #define PSM_DEBUG_STATUS_OFFSET 0x6B8
@@ -94,8 +95,7 @@ static inline u32 gxp_lpm_psm_get_status_offset(enum gxp_lpm_psm psm)
 {
 	if (psm >= LPM_NUM_PSMS)
 		return 0;
-	return GXP_LPM_PSM_0_BASE + (GXP_LPM_PSM_SIZE * psm) +
-	       PSM_STATUS_OFFSET;
+	return GXP_LPM_PSM_0_BASE + (GXP_LPM_PSM_SIZE * psm) + PSM_STATUS_OFFSET;
 }
 
 static inline u32 gxp_lpm_psm_get_start_offset(enum gxp_lpm_psm psm)
@@ -117,8 +117,36 @@ static inline u32 gxp_lpm_psm_get_state_offset(enum gxp_lpm_psm psm, uint state)
 	if (psm >= LPM_NUM_PSMS || state > 3)
 		return 0;
 
-	return GXP_LPM_PSM_0_BASE + (GXP_LPM_PSM_SIZE * psm) +
-	       LPM_REG_ENABLE_STATE_0 + (PSM_STATE_TABLE_SZ * state);
+	return GXP_LPM_PSM_0_BASE + (GXP_LPM_PSM_SIZE * psm) + LPM_REG_ENABLE_STATE_0 +
+	       (PSM_STATE_TABLE_SZ * state);
+}
+
+static inline u32 gxp_lpm_psm_get_debug_cfg_offset(enum gxp_lpm_psm psm)
+{
+	if (psm >= LPM_NUM_PSMS)
+		return 0;
+	return GXP_LPM_PSM_0_BASE + (GXP_LPM_PSM_SIZE * psm) + PSM_DEBUG_CFG_OFFSET;
+}
+
+static inline u32 gxp_lpm_psm_get_gpin_lo_rd_offset(enum gxp_lpm_psm psm)
+{
+	if (psm >= LPM_NUM_PSMS)
+		return 0;
+	return GXP_LPM_PSM_0_BASE + (GXP_LPM_PSM_SIZE * psm) + PSM_GPIN_LO_RD_OFFSET;
+}
+
+static inline u32 gxp_lpm_psm_get_gpout_lo_wrt_offset(enum gxp_lpm_psm psm)
+{
+	if (psm >= LPM_NUM_PSMS)
+		return 0;
+	return GXP_LPM_PSM_0_BASE + (GXP_LPM_PSM_SIZE * psm) + PSM_GPOUT_LO_WRT_OFFSET;
+}
+
+static inline u32 gxp_lpm_psm_get_gpout_lo_rd_offset(enum gxp_lpm_psm psm)
+{
+	if (psm >= LPM_NUM_PSMS)
+		return 0;
+	return GXP_LPM_PSM_0_BASE + (GXP_LPM_PSM_SIZE * psm) + PSM_GPOUT_LO_RD_OFFSET;
 }
 
 #endif /* __CALLISTO_LPM_H__ */
