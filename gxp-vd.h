@@ -116,6 +116,8 @@ struct gxp_virtual_device {
 	 * This ID will be fetched from the TPU kernel driver.
 	 */
 	int tpu_client_id;
+	/* Whether DSP KD sent `link_offload_vmbox` KCI successfully to MCU FW or not. */
+	bool tpu_linked;
 	/*
 	 * Protects credit. Use a spin lock because the critical section of
 	 * using @credit is pretty small.

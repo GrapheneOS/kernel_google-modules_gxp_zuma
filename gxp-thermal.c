@@ -33,6 +33,7 @@ static int gxp_thermal_set_rate(void *data, unsigned long rate)
 	struct gxp_dev *gxp = data;
 	int ret = 0;
 
+	dev_warn(gxp->dev, "Received thermal throttling requests %lu", rate);
 	if (!gxp_is_direct_mode(gxp)) {
 #if GXP_HAS_MCU
 		struct gxp_mcu *mcu = gxp_mcu_of(gxp);
