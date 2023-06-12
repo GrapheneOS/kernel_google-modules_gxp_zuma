@@ -17,20 +17,23 @@
 #include "gxp-internal.h"
 #include "gxp-lpm.h"
 
-#define gxp_lpm_wait_until(lpm_state, condition)                               \
-	do {                                                                   \
-		int i = 100000;                                                \
-		while (i) {                                                    \
-			lpm_state =                                            \
-				lpm_read_32_psm(gxp, psm, PSM_REG_STATUS_OFFSET) & \
-				PSM_CURR_STATE_MASK;                           \
-			if (condition)                                         \
-				break;                                         \
-			udelay(2 * GXP_TIME_DELAY_FACTOR);                     \
-			i--;                                                   \
-		}                                                              \
-		return i != 0;                                                 \
+#if IS_GXP_TEST
+#define gxp_lpm_wait_until(ret, ...) ((ret) = true)
+#else
+#define gxp_lpm_wait_until(ret, lpm_state, condition)                                  \
+	do {                                                                           \
+		int i = 100000;                                                        \
+		while (i) {                                                            \
+			lpm_state = lpm_read_32_psm(gxp, psm, PSM_REG_STATUS_OFFSET) & \
+				    PSM_CURR_STATE_MASK;                               \
+			if (condition)                                                 \
+				break;                                                 \
+			udelay(2 * GXP_TIME_DELAY_FACTOR);                             \
+			i--;                                                           \
+		}                                                                      \
+		ret = (i != 0);                                                        \
 	} while (0)
+#endif
 
 void gxp_lpm_enable_state(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state)
 {
@@ -241,14 +244,20 @@ void gxp_lpm_down(struct gxp_dev *gxp, uint core)
 
 bool gxp_lpm_wait_state_ne(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state)
 {
-	uint lpm_state;
+	__maybe_unused uint lpm_state;
+	bool ret;
 
-	gxp_lpm_wait_until(lpm_state, lpm_state != state);
+	gxp_lpm_wait_until(ret, lpm_state, lpm_state != state);
+
+	return ret;
 }
 
 bool gxp_lpm_wait_state_eq(struct gxp_dev *gxp, enum gxp_lpm_psm psm, uint state)
 {
-	uint lpm_state;
+	__maybe_unused uint lpm_state;
+	bool ret;
 
-	gxp_lpm_wait_until(lpm_state, lpm_state == state);
+	gxp_lpm_wait_until(ret, lpm_state, lpm_state == state);
+
+	return ret;
 }

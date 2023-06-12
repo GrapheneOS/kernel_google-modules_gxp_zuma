@@ -294,11 +294,17 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 		&common_dump->common_dump_data;
 	int ret;
 
-	/* Power on BLK_AUR to read the common registers */
-	ret = gcip_pm_get(gxp->power_mgr->pm);
+	/*
+	 * Keep BLK_AUR on to read the common registers. If BLK_AUR is off or
+	 * another thread is doing power operations, i.e. holding the pm lock,
+	 * give up to read registers. The reason of the former one is we already
+	 * lost the register values if BLK_AUR is off, and the reason of the
+	 * latter one is to prevent any possible deadlock.
+	 */
+	ret = gcip_pm_get_if_powered(gxp->power_mgr->pm, /*blocking=*/false);
 	if (ret) {
-		dev_err(gxp->dev,
-			"Failed to acquire wakelock for getting common dump\n");
+		dev_err(gxp->dev, "Failed to acquire wakelock for getting common dump, ret:%d\n",
+			ret);
 		return ret;
 	}
 	gxp_pm_update_requested_power_states(gxp, off_states, uud_states);
@@ -309,7 +315,13 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 	gxp_get_lpm_registers(gxp, &common_seg_header[GXP_LPM_REGISTERS_IDX],
 			      &common_dump_data->lpm_regs);
 
-	gcip_pm_put(gxp->power_mgr->pm);
+	/*
+	 * Calling gcip_pm_put() here might power MCU down and handle RKCI to form
+	 * a lock dependency cycle.
+	 * To avoid this, call it asynchronously.
+	 */
+	gcip_pm_put_async(gxp->power_mgr->pm);
+
 	gxp_pm_update_requested_power_states(gxp, uud_states, off_states);
 
 	dev_dbg(gxp->dev, "Segment Header for Common Segment\n");
@@ -326,6 +338,7 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 static void gxp_send_to_sscd(struct gxp_dev *gxp, void *segs, int seg_cnt,
 			     const char *info)
 {
+	int ret;
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
 	struct sscd_platform_data *pdata =
 		(struct sscd_platform_data *)mgr->sscd_pdata;
@@ -335,9 +348,10 @@ static void gxp_send_to_sscd(struct gxp_dev *gxp, void *segs, int seg_cnt,
 		return;
 	}
 
-	if (pdata->sscd_report(gxp->debug_dump_mgr->sscd_dev, segs, seg_cnt,
-			       SSCD_FLAGS_ELFARM64HDR, info)) {
-		dev_err(gxp->dev, "Unable to send the report to SSCD daemon\n");
+	ret = pdata->sscd_report(gxp->debug_dump_mgr->sscd_dev, segs, seg_cnt,
+				 SSCD_FLAGS_ELFARM64HDR, info);
+	if (ret) {
+		dev_err(gxp->dev, "Unable to send the report to SSCD daemon (ret=%d)\n", ret);
 		return;
 	}
 }
@@ -819,7 +833,7 @@ int gxp_debug_dump_process_dump_mcu_mode(struct gxp_dev *gxp, uint core_list,
 	lockdep_assert_held(&crashed_vd->debug_dump_lock);
 
 	if (crashed_vd->state != GXP_VD_UNAVAILABLE) {
-		dev_dbg(gxp->dev, "Invalid vd state=%u for processing dumps.\n",
+		dev_err(gxp->dev, "Invalid vd state=%u for processing dumps.\n",
 			crashed_vd->state);
 		return -EINVAL;
 	}
