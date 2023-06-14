@@ -39,6 +39,15 @@ int gxp_mcu_init(struct gxp_dev *gxp, struct gxp_mcu *mcu);
 /* cleans up resources in @mcu */
 void gxp_mcu_exit(struct gxp_mcu *mcu);
 /*
+ * Forcefully resets MCU without LPM transition.
+ * @gxp: The GXP device to reset MCU.
+ * @release_reset: If true, it will release reset bits and let MCU transit to RUN state. Set it as
+ *                 false only when the block power cycle is needed without running MCU.
+ *
+ * Returns 0 on success, a negative errno on failure.
+ */
+int gxp_mcu_reset(struct gxp_dev *gxp, bool release_reset);
+/*
  * A wrapper function to allocate memory from @mcu->remap_data_pool.
  *
  * Returns 0 on success, a negative errno otherwise.

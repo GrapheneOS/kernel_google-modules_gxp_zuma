@@ -311,7 +311,10 @@ static int gxp_unmap_buffer(struct gxp_client *client,
 		goto out_put;
 	}
 
-	WARN_ON(map->host_address != ibuf.host_address);
+	if (map->host_address != ibuf.host_address)
+		dev_warn(
+			gxp->dev,
+			"The host address of the unmap request is different from the original one\n");
 
 	gxp_vd_mapping_remove(client->vd, map);
 	gxp_mapping_iova_log(client, map,
@@ -2281,6 +2284,11 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 {
 	struct gxp_dev *gxp = platform_get_drvdata(pdev);
 
+	/*
+	 * This may power off the BLK, so should do it first before releasing
+	 * any resource.
+	 */
+	gcip_pm_flush_put_work(gxp->power_mgr->pm);
 	gxp_device_remove(gxp);
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);

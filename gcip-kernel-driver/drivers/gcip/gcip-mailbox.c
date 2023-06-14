@@ -48,6 +48,8 @@
 #define RELEASE_WAIT_LIST_LOCK(irqrestore, flags)                                                  \
 	mailbox->ops->release_wait_list_lock(mailbox, irqrestore, flags)
 
+#define IS_BLOCK_OFF() (mailbox->ops->is_block_off ? mailbox->ops->is_block_off(mailbox) : false)
+
 struct gcip_mailbox_wait_list_elem {
 	struct list_head list;
 	struct gcip_mailbox_async_resp *async_resp;
@@ -331,8 +333,8 @@ static void *gcip_mailbox_fetch_responses(struct gcip_mailbox *mailbox, u32 *tot
 	void *prev_ptr = NULL; /* Temporary pointer to realloc ret. */
 	bool atomic = false;
 
-	/* Someone is working on consuming - we can leave early. */
-	if (!ACQUIRE_RESP_QUEUE_LOCK(true, &atomic))
+	/* The block is off or someone is working on consuming - we can leave early. */
+	if (IS_BLOCK_OFF() || !ACQUIRE_RESP_QUEUE_LOCK(true, &atomic))
 		goto out;
 
 	head = GET_RESP_QUEUE_HEAD();
@@ -396,7 +398,7 @@ static int gcip_mailbox_fetch_one_response(struct gcip_mailbox *mailbox, void *r
 	u32 tail;
 	bool atomic;
 
-	if (!ACQUIRE_RESP_QUEUE_LOCK(true, &atomic))
+	if (IS_BLOCK_OFF() || !ACQUIRE_RESP_QUEUE_LOCK(true, &atomic))
 		return 0;
 
 	head = GET_RESP_QUEUE_HEAD();
