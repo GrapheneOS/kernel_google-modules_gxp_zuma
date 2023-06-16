@@ -208,12 +208,14 @@ static ssize_t dma_iommu_map_sg(struct gcip_iommu_domain *domain, struct scatter
 	if (!nents_mapped)
 		return 0;
 
-	iova = sg_dma_address(sgl);
+	if (!domain->default_domain) {
+		iova = sg_dma_address(sgl);
 
-	ret = (ssize_t)iommu_map_sg(domain->domain, iova, sgl, nents, prot);
-	if (ret <= 0) {
-		dma_unmap_sg_attrs(domain->dev, sgl, nents, dir, attrs);
-		return 0;
+		ret = (ssize_t)iommu_map_sg(domain->domain, iova, sgl, nents, prot);
+		if (ret <= 0) {
+			dma_unmap_sg_attrs(domain->dev, sgl, nents, dir, attrs);
+			return 0;
+		}
 	}
 
 	return nents_mapped;
@@ -226,11 +228,13 @@ static void dma_iommu_unmap_sg(struct gcip_iommu_domain *domain, struct scatterl
 	size_t size = 0;
 	int i;
 
-	for_each_sg (sgl, sg, nents, i)
-		size += sg_dma_len(sg);
+	if (!domain->default_domain) {
+		for_each_sg (sgl, sg, nents, i)
+			size += sg_dma_len(sg);
 
-	if (!iommu_unmap(domain->domain, sg_dma_address(sgl), size))
-		dev_warn(domain->dev, "Failed to unmap sg");
+		if (!iommu_unmap(domain->domain, sg_dma_address(sgl), size))
+			dev_warn(domain->dev, "Failed to unmap sg");
+	}
 	dma_unmap_sg_attrs(domain->dev, sgl, nents, dir, attrs);
 }
 
@@ -447,6 +451,7 @@ struct gcip_iommu_domain *gcip_iommu_get_domain_for_dev(struct device *dev)
 
 	gdomain->dev = dev;
 	gdomain->legacy_mode = true;
+	gdomain->default_domain = true;
 
 	return gdomain;
 }

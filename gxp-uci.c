@@ -515,6 +515,7 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 err_free_resp:
 	if (async_resp->eventfd)
 		gxp_eventfd_put(async_resp->eventfd);
+	gxp_vd_put(vd);
 	kfree(async_resp);
 err_release_credit:
 	gxp_vd_release_credit(vd);
