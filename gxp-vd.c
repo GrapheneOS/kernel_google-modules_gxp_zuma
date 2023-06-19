@@ -1542,9 +1542,7 @@ void gxp_vd_release_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 	if (vd->client_id < 0 || vd->mcu_crashed)
 		goto out;
 
-	if (vd->tpu_client_id >= 0)
-		gxp_vd_unlink_offload_vmbox(gxp, vd, vd->tpu_client_id,
-					    GCIP_KCI_OFFLOAD_CHIP_TYPE_TPU);
+	gxp_vd_unlink_offload_vmbox(gxp, vd, vd->tpu_client_id, GCIP_KCI_OFFLOAD_CHIP_TYPE_TPU);
 
 	ret = gxp_kci_release_vmbox(kci, vd->client_id);
 	if (!ret)
@@ -1570,8 +1568,8 @@ void gxp_vd_unlink_offload_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device 
 	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
 	int ret;
 
-	if (vd->client_id < 0 || vd->tpu_client_id < 0 || vd->mcu_crashed)
-		goto out;
+	if (vd->client_id < 0 || vd->tpu_client_id < 0 || !vd->tpu_linked || vd->mcu_crashed)
+		return;
 
 	ret = gxp_kci_link_unlink_offload_vmbox(kci, vd->client_id, offload_client_id,
 						offload_chip_type, false);
@@ -1579,7 +1577,7 @@ void gxp_vd_unlink_offload_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device 
 		dev_err(gxp->dev,
 			"Failed to unlink offload VMBox for client %d, offload client %u, offload chip type %d: %d",
 			vd->client_id, offload_client_id, offload_chip_type, ret);
-out:
-	vd->tpu_client_id = -1;
+
+	vd->tpu_linked = false;
 }
 #endif /* GXP_HAS_MCU */

@@ -67,6 +67,11 @@ static int allocate_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 	else
 		client_id = gxp_iommu_aux_get_pasid(gxp, vd->domain);
 
+	if (client_id < 0) {
+		dev_err(gxp->dev, "Virtual device is not attached (%d)", client_id);
+		return client_id;
+	}
+
 	ret = gxp_kci_allocate_vmbox(kci, client_id, vd->num_cores,
 				     vd->slice_index, vd->first_open);
 	if (ret) {
@@ -92,12 +97,16 @@ static int gxp_mcu_link_offload_vmbox(struct gxp_dev *gxp,
 
 	ret = gxp_kci_link_unlink_offload_vmbox(
 		kci, vd->client_id, offload_client_id, offload_chip_type, true);
-	if (ret)
+	if (ret) {
 		dev_err(gxp->dev,
 			"Failed to link offload VMBox for client %d, offload client %u, offload chip type %d: %d",
 			vd->client_id, offload_client_id, offload_chip_type,
 			ret);
+		goto out;
+	}
 
+	vd->tpu_linked = true;
+out:
 	return ret;
 }
 
@@ -212,6 +221,7 @@ static void gxp_mcu_before_unmap_tpu_mbx_queue(struct gxp_dev *gxp, struct gxp_c
 	struct gxp_virtual_device *vd = client->vd;
 
 	gxp_vd_unlink_offload_vmbox(gxp, vd, vd->tpu_client_id, GCIP_KCI_OFFLOAD_CHIP_TYPE_TPU);
+	vd->tpu_client_id = -1;
 }
 
 #endif /* HAS_TPU_EXT */

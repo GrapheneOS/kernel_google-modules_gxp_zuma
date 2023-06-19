@@ -6,8 +6,8 @@
  */
 
 #include <linux/bits.h>
-#include <linux/dma-iommu.h>
 #include <linux/dma-mapping.h>
+#include <linux/idr.h>
 #include <linux/iommu.h>
 #include <linux/platform_device.h>
 #include <linux/scatterlist.h>
@@ -30,6 +30,8 @@ struct gxp_dma_iommu_manager {
 	struct gxp_dma_manager dma_mgr;
 	struct gcip_iommu_domain *default_domain;
 	struct gxp_ssmt ssmt;
+	struct ida pasid_pool;
+	struct gcip_iommu_domain *attached_domains[GXP_MAX_PASID];
 };
 
 /**
@@ -68,8 +70,8 @@ static int dma_info_to_prot(enum dma_data_direction dir, bool coherent,
 	}
 }
 
-static int gxp_dma_ssmt_program(struct gxp_dev *gxp,
-				struct iommu_domain *domain, uint core_list)
+static int gxp_dma_ssmt_program(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
+				uint core_list)
 {
 	struct gxp_dma_iommu_manager *mgr = container_of(
 		gxp->dma_mgr, struct gxp_dma_iommu_manager, dma_mgr);
@@ -78,7 +80,10 @@ static int gxp_dma_ssmt_program(struct gxp_dev *gxp,
 
 	/* Program VID only when cores are managed by us. */
 	if (gxp_is_direct_mode(gxp) || gxp_core_boot(gxp)) {
-		pasid = iommu_aux_get_pasid(domain, gxp->dev);
+		pasid = gxp_iommu_aux_get_pasid(gxp, gdomain);
+		if (pasid < 0)
+			return pasid;
+
 		for (core = 0; core < GXP_NUM_CORES; core++)
 			if (BIT(core) & core_list) {
 				dev_dbg(gxp->dev, "Assign core%u to PASID %d\n",
@@ -171,10 +176,20 @@ static void gxp_unmap_csrs(struct gxp_dev *gxp, struct iommu_domain *domain,
 
 /* gxp-dma.h Interface */
 
-uint gxp_iommu_aux_get_pasid(struct gxp_dev *gxp,
-			     struct gcip_iommu_domain *gdomain)
+int gxp_iommu_aux_get_pasid(struct gxp_dev *gxp,
+                            struct gcip_iommu_domain *gdomain)
 {
-	return iommu_aux_get_pasid(gdomain->domain, gxp->dev);
+	struct gxp_dma_iommu_manager *mgr =
+		container_of(gxp->dma_mgr, struct gxp_dma_iommu_manager, dma_mgr);
+	int i;
+
+	for (i = 0; i < GXP_MAX_PASID; i++) {
+		if (mgr->attached_domains[i] == gdomain)
+			return i;
+	}
+
+	dev_err(gxp->dev, "Request for PASID of unattached domain\n");
+	return -EINVAL;
 }
 
 struct gcip_iommu_domain *gxp_iommu_get_domain_for_dev(struct gxp_dev *gxp)
@@ -237,17 +252,12 @@ int gxp_dma_init(struct gxp_dev *gxp)
 		return -EIO;
 	}
 
-	iommu_dev_enable_feature(gxp->dev, IOMMU_DEV_FEAT_AUX);
-	if (!iommu_dev_feature_enabled(gxp->dev, IOMMU_DEV_FEAT_AUX)) {
-		dev_err(gxp->dev, "Failed to enable aux support in SysMMU\n");
-		goto err_unreg_fault_handler;
-	}
+	ida_init(&mgr->pasid_pool);
 
 	gxp->dma_mgr = &(mgr->dma_mgr);
 
 	return 0;
 
-err_unreg_fault_handler:
 	if (iommu_unregister_device_fault_handler(gxp->dev))
 		dev_err(gxp->dev,
 			"Failed to unregister SysMMU fault handler\n");
@@ -257,9 +267,13 @@ err_unreg_fault_handler:
 
 void gxp_dma_exit(struct gxp_dev *gxp)
 {
+	struct gxp_dma_iommu_manager *mgr =
+		container_of(gxp->dma_mgr, struct gxp_dma_iommu_manager, dma_mgr);
+
 	if (iommu_unregister_device_fault_handler(gxp->dev))
 		dev_err(gxp->dev,
 			"Failed to unregister SysMMU fault handler\n");
+	ida_destroy(&mgr->pasid_pool);
 }
 
 #define EXT_TPU_MBX_SIZE 0x2000
@@ -279,20 +293,43 @@ int gxp_dma_domain_attach_device(struct gxp_dev *gxp,
 				 struct gcip_iommu_domain *gdomain,
 				 uint core_list)
 {
-	int ret;
+	struct gxp_dma_iommu_manager *mgr =
+		container_of(gxp->dma_mgr, struct gxp_dma_iommu_manager, dma_mgr);
+	int pasid, ret;
 
-	ret = iommu_aux_attach_device(gdomain->domain, gxp->dev);
-	if (ret)
-		goto out;
-	gxp_dma_ssmt_program(gxp, gdomain->domain, core_list);
-out:
-	return ret;
+	/* PASID=0 is reserved for the default domain */
+	pasid = ida_alloc_range(&mgr->pasid_pool, 1, GXP_MAX_PASID - 1, GFP_KERNEL);
+	if (pasid < 0) {
+		dev_err(gxp->dev, "No pasid available for attaching domain: %d", pasid);
+		return pasid;
+	}
+
+	ret = iommu_attach_device_pasid(gdomain->domain, gxp->dev, pasid);
+	if (ret) {
+		dev_err(gxp->dev, "Attach IOMMU domain to pasid=%d failed: %d", pasid, ret);
+		ida_free(&mgr->pasid_pool, pasid);
+		return ret;
+	}
+
+	mgr->attached_domains[pasid] = gdomain;
+	gxp_dma_ssmt_program(gxp, gdomain, core_list);
+
+	return 0;
 }
 
 void gxp_dma_domain_detach_device(struct gxp_dev *gxp,
 				  struct gcip_iommu_domain *gdomain)
 {
-	iommu_aux_detach_device(gdomain->domain, gxp->dev);
+	struct gxp_dma_iommu_manager *mgr =
+		container_of(gxp->dma_mgr, struct gxp_dma_iommu_manager, dma_mgr);
+	int pasid = gxp_iommu_aux_get_pasid(gxp, gdomain);
+
+	if (pasid < 0)
+		return;
+
+	iommu_detach_device_pasid(gdomain->domain, gxp->dev, pasid);
+	ida_free(&mgr->pasid_pool, pasid);
+	mgr->attached_domains[pasid] = NULL;
 }
 
 int gxp_dma_map_core_resources(struct gxp_dev *gxp,
