@@ -10,6 +10,7 @@ kernel_module(
         "gcip-kernel-driver/drivers/gcip/Makefile",
         "Makefile",
     ]) + [
+        "//private/google-modules/power/mitigation:headers",
         "//private/google-modules/soc/gs:gs_soc_headers",
     ],
     outs = [
@@ -22,6 +23,7 @@ kernel_module(
     ],
     deps = [
         "//private/google-modules/edgetpu/rio/drivers/edgetpu:edgetpu.rio",
+        "//private/google-modules/power/mitigation:bcl",
         "//private/google-modules/soc/gs:gs_soc_module",
     ],
 )

@@ -11,7 +11,7 @@
 #include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
-#include <soc/google/bcl.h>
+#include <bcl.h>
 #include <soc/google/exynos_pm_qos.h>
 
 #include <gcip/gcip-pm.h>
