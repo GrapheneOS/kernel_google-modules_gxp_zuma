@@ -12,6 +12,7 @@
 #include <gcip/gcip-pm.h>
 
 #include "gxp-client.h"
+#include "gxp-config.h"
 #include "gxp-dma.h"
 #include "gxp-internal.h"
 #include "gxp-pm.h"
@@ -59,8 +60,7 @@ void gxp_client_destroy(struct gxp_client *client)
 			gxp_eventfd_put(client->mb_eventfds[core]);
 	}
 
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&             \
-	!IS_ENABLED(CONFIG_GXP_GEM5)
+#if HAS_TPU_EXT
 	if (client->tpu_file) {
 		if (client->vd) {
 			if (gxp->before_unmap_tpu_mbx_queue)
@@ -73,7 +73,7 @@ void gxp_client_destroy(struct gxp_client *client)
 		fput(client->tpu_file);
 		client->tpu_file = NULL;
 	}
-#endif
+#endif /* HAS_TPU_EXT */
 
 	if (client->has_block_wakelock) {
 		gcip_pm_put(client->gxp->power_mgr->pm);

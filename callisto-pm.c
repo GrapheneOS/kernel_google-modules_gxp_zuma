@@ -5,9 +5,9 @@
  * Copyright (C) 2023 Google LLC
  */
 
+#include <bcl.h>
 #include <linux/thermal.h> /* for fixing bug in gs_tmu_v3 */
 #include <linux/types.h>
-#include <bcl.h>
 #include <soc/google/gs_tmu_v3.h>
 
 #include "gxp-internal.h"

@@ -12,8 +12,10 @@
 
 #include "gxp-config.h"
 #include "gxp-internal.h"
+#include "gxp-kci.h"
 #include "gxp-lpm.h"
 #include "gxp-mcu-firmware.h"
+#include "gxp-mcu-platform.h"
 #include "gxp-mcu.h"
 #include "gxp-uci.h"
 
@@ -165,6 +167,7 @@ void gxp_mcu_exit(struct gxp_mcu *mcu)
 
 int gxp_mcu_reset(struct gxp_dev *gxp, bool release_reset)
 {
+	struct gxp_mcu *mcu = &to_mcu_dev(gxp)->mcu;
 	u32 gpout_lo_rd, gpin_lo_rd, orig;
 	int i, ret = 0;
 
@@ -194,6 +197,8 @@ int gxp_mcu_reset(struct gxp_dev *gxp, bool release_reset)
 	 * enough.
 	 */
 	usleep_range(1000, 2000);
+
+	gxp_mcu_reset_mailbox(mcu);
 
 	if (!release_reset)
 		return 0;
@@ -238,4 +243,10 @@ int gxp_mcu_reset(struct gxp_dev *gxp, bool release_reset)
 	lpm_write_32_psm(gxp, CORE_TO_PSM(GXP_MCU_CORE_ID), PSM_REG_DEBUG_CFG_OFFSET, 0);
 
 	return ret;
+}
+
+void gxp_mcu_reset_mailbox(struct gxp_mcu *mcu)
+{
+	gxp_uci_reinit(&mcu->uci);
+	gxp_kci_reinit(&mcu->kci);
 }

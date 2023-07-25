@@ -26,6 +26,7 @@
 #include "gxp-pm.h"
 #include "gxp-usage-stats.h"
 #include "gxp-vd.h"
+#include "mobile-soc.h"
 
 #define GXP_MCU_USAGE_BUFFER_SIZE 4096
 
@@ -33,14 +34,6 @@
 
 #define MBOX_CMD_QUEUE_NUM_ENTRIES 1024
 #define MBOX_RESP_QUEUE_NUM_ENTRIES 1024
-
-/*
- * Encode INT/MIF values as a 16 bit pair in the 32-bit return value
- * (in units of MHz, to provide enough range)
- */
-#define PM_QOS_INT_SHIFT (16)
-#define PM_QOS_MIF_MASK (0xFFFF)
-#define PM_QOS_FACTOR (1000)
 
 /* Callback functions for struct gcip_kci. */
 
@@ -95,17 +88,6 @@ static void gxp_kci_inc_resp_queue_head(struct gcip_kci *kci, u32 inc)
 					       CIRCULAR_QUEUE_WRAP_BIT);
 }
 
-static void gxp_kci_set_pm_qos(struct gxp_dev *gxp, u32 pm_qos_val)
-{
-	s32 int_val = (pm_qos_val >> PM_QOS_INT_SHIFT) * PM_QOS_FACTOR;
-	s32 mif_val = (pm_qos_val & PM_QOS_MIF_MASK) * PM_QOS_FACTOR;
-
-	dev_dbg(gxp->dev, "%s: pm_qos request - int = %d mif = %d\n", __func__,
-		int_val, mif_val);
-
-	gxp_pm_update_pm_qos(gxp, int_val, mif_val);
-}
-
 static void gxp_kci_handle_rkci(struct gxp_kci *gkci,
 				struct gcip_kci_response_element *resp)
 {
@@ -115,7 +97,7 @@ static void gxp_kci_handle_rkci(struct gxp_kci *gkci,
 	case GXP_RKCI_CODE_PM_QOS_BTS:
 		/* FW indicates to ignore the request by setting them to undefined values. */
 		if (resp->retval != (typeof(resp->retval))~0ull)
-			gxp_kci_set_pm_qos(gxp, resp->retval);
+			gxp_soc_pm_set_request(gxp, resp->retval);
 		if (resp->status != (typeof(resp->status))~0ull)
 			dev_warn_once(gxp->dev, "BTS is not supported");
 		gxp_kci_resp_rkci_ack(gkci, resp);
@@ -133,26 +115,17 @@ static void gxp_kci_handle_rkci(struct gxp_kci *gkci,
 		break;
 	}
 	case GCIP_RKCI_CLIENT_FATAL_ERROR_NOTIFY: {
-		uint core_list = (uint)(resp->status);
 		int client_id = (int)(resp->retval);
+
 		/*
-		 * core_list param is used for generating debug dumps of respective
-		 * cores in core_list. Dumps are not required to be generated for
-		 * secure client and hence resetting it irrespective of debug dumps
-		 * being enabled or not.
-		 */
-		if (client_id == SECURE_CLIENT_ID)
-			core_list = 0;
-		/*
-		 * Inside gxp_vd_invalidate_with_client_id() after invalidating the client, debug
-		 * dump if enabled would be checked and processed for individual cores in
-		 * core_list. Due to debug dump processing being a time consuming task
-		 * rkci ack is sent first to unblock the mcu to send furhter rkci's. Client
-		 * lock inside gxp_vd_invalidate_with_client_id() would make sure the correctness
-		 * of the logic against possible concurrent scenarios.
+		 * Inside gxp_vd_invalidate_with_client_id(), after invalidating the client,
+		 * synchronous call to gxp_kci_release_vmbox() would be made post which debug
+		 * dump if enabled would be checked and processed. Due to debug dump processing
+		 * being a time consuming task, rkci ack is sent first to unblock the mcu to send
+		 * furhter rkci's.
 		 */
 		gxp_kci_resp_rkci_ack(gkci, resp);
-		gxp_vd_invalidate_with_client_id(gxp, client_id, core_list, true);
+		gxp_vd_invalidate_with_client_id(gxp, client_id, true);
 
 		break;
 	}
@@ -211,6 +184,13 @@ gxp_kci_trigger_doorbell(struct gcip_kci *kci,
 	gxp_mailbox_generate_device_interrupt(mbx, BIT(0));
 }
 
+static inline bool gxp_kci_is_block_off(struct gcip_kci *kci)
+{
+	struct gxp_mailbox *mbx = gcip_kci_get_data(kci);
+
+	return gxp_pm_is_blk_down(mbx->gxp);
+}
+
 static const struct gcip_kci_ops kci_ops = {
 	.get_cmd_queue_head = gxp_kci_get_cmd_queue_head,
 	.get_cmd_queue_tail = gxp_kci_get_cmd_queue_tail,
@@ -222,6 +202,7 @@ static const struct gcip_kci_ops kci_ops = {
 	.trigger_doorbell = gxp_kci_trigger_doorbell,
 	.reverse_kci_handle_response = gxp_reverse_kci_handle_response,
 	.update_usage = gxp_kci_update_usage_wrapper,
+	.is_block_off = gxp_kci_is_block_off,
 };
 
 /* Callback functions for struct gxp_mailbox. */

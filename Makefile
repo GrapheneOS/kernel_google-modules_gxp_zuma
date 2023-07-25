@@ -29,17 +29,11 @@ gxp-objs += \
 		gxp-mapping.o \
 		gxp-mb-notification.o \
 		gxp-pm.o \
-		gxp-ssmt.o \
 		gxp-thermal.o \
 		gxp-trace.o \
 		gxp-vd.o
 
-ifeq ($(GXP_CHIP),CALLISTO)
-
-gxp-objs += \
-		callisto-platform.o \
-		callisto-pm.o \
-		gsx01-mailbox-driver.o \
+gxp-mcu-objs := \
 		gxp-dci.o \
 		gxp-kci.o \
 		gxp-mcu-firmware.o \
@@ -50,6 +44,21 @@ gxp-objs += \
 		gxp-uci.o \
 		gxp-usage-stats.o
 
+gsx01-objs := \
+		gxp-gsx01-mailbox.o \
+		gxp-gsx01-ssmt.o \
+		mobile-soc-gsx01.o
+
+ifeq ($(GXP_CHIP),CALLISTO)
+
+gxp-objs += \
+		$(gsx01-objs) \
+		$(gxp-mcu-objs) \
+		callisto-platform.o \
+		callisto-pm.o
+
+# TODO(b/292499332): remove this line once GKI for ZumaPro is upgraded
+ccflags-y += -DGCIP_FORCE_NO_VMA_FLAGS_API
 GMODULE_PATH := $(OUT_DIR)/../private/google-modules
 EDGETPU_CHIP := rio
 
@@ -88,17 +97,16 @@ gxp-flags := -DCONFIG_GXP_$(GXP_PLATFORM) -DCONFIG_$(GXP_CHIP)=1 \
 	     -I$(M)/include -I$(M)/gcip-kernel-driver/include \
 	     -I$(srctree)/$(M)/include \
 	     -I$(srctree)/$(M)/gcip-kernel-driver/include \
-	     -I$(srctree)/drivers/gxp/include
+	     -I$(srctree)/drivers/gxp/include \
+	     -I$(KERNEL_SRC)/../private/google-modules/power/mitigation
 ccflags-y += $(EXTRA_CFLAGS) $(gxp-flags)
-
-subdir-ccflags-y += \
-		-I$(KERNEL_SRC)/../private/google-modules/power/mitigation
 
 KBUILD_OPTIONS += GXP_CHIP=$(GXP_CHIP) GXP_PLATFORM=$(GXP_PLATFORM)
 
 # Access TPU driver's exported symbols.
-EXTRA_SYMBOLS += $(GMODULE_PATH)/edgetpu/$(EDGETPU_CHIP)/drivers/edgetpu/Module.symvers
-EXTRA_SYMBOLS += $(OUT_DIR)/../private/google-modules/power/mitigation/Module.symvers
+EXTRA_SYMBOLS += \
+                 $(GMODULE_PATH)/edgetpu/$(EDGETPU_CHIP)/drivers/edgetpu/Module.symvers \
+                 $(GMODULE_PATH)/power/mitigation/Module.symvers
 
 modules modules_install:
 	$(MAKE) -C $(KERNEL_SRC) M=$(M)/$(GCIP_DIR) gcip.o

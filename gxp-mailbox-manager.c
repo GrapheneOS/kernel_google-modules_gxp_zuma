@@ -82,6 +82,9 @@ static int debugfs_mailbox_execute_cmd(void *data, u64 val)
 		}
 
 		cmd_code = CORE_COMMAND;
+#else
+		dev_err(gxp->dev, "This platform only supports direct-mode.\n");
+		return -ENODEV;
 #endif /* GXP_HAS_MCU */
 	}
 

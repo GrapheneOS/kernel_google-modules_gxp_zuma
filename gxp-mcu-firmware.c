@@ -24,6 +24,7 @@
 #include "gxp-bpm.h"
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
+#include "gxp-debug-dump.h"
 #include "gxp-dma.h"
 #include "gxp-doorbell.h"
 #include "gxp-firmware-loader.h"
@@ -94,7 +95,14 @@ static int gxp_mcu_firmware_handshake(struct gxp_mcu_firmware *mcu_fw)
 	mcu_fw->fw_info.fw_build_time = 0;
 	mcu_fw->fw_info.fw_flavor = GCIP_FW_FLAVOR_UNKNOWN;
 	mcu_fw->fw_info.fw_changelist = 0;
-	fw_flavor = gxp_kci_fw_info(&mcu->kci, &mcu_fw->fw_info);
+	ret = gxp_mailbox_wait_for_device_mailbox_init(mcu->kci.mbx);
+	if (!ret) {
+		fw_flavor = gxp_kci_fw_info(&mcu->kci, &mcu_fw->fw_info);
+	} else {
+		fw_flavor = ret;
+		dev_err(gxp->dev, "Device mailbox init failed: %d", ret);
+	}
+	dev_info(gxp->dev, "MCU boot stage: %u\n", gxp_read_32(gxp, GXP_REG_MCU_BOOT_STAGE));
 	if (fw_flavor < 0) {
 		dev_err(gxp->dev, "MCU firmware handshake failed: %d",
 			fw_flavor);
@@ -305,6 +313,7 @@ static int gxp_mcu_firmware_start(struct gxp_mcu_firmware *mcu_fw)
 	if (ret)
 		return ret;
 
+	gxp_write_32(gxp, GXP_REG_MCU_BOOT_STAGE, 0);
 	if (mcu_fw->is_secure) {
 		state = gsa_send_dsp_cmd(gxp->gsa_dev, GSA_DSP_START);
 		if (state != GSA_DSP_STATE_RUNNING) {
@@ -448,10 +457,10 @@ static void gxp_mcu_firmware_stop_locked(struct gxp_mcu_firmware *mcu_fw)
 
 	gxp_kci_cancel_work_queues(&mcu->kci);
 	/*
-	 * Clears up all remaining KCI commands. Otherwise, MCU may drain them improperly after it
-	 * reboots.
+	 * Clears up all remaining UCI/KCI commands. Otherwise, MCU may drain them improperly after
+	 * it reboots.
 	 */
-	gxp_kci_reinit(&mcu->kci);
+	gxp_mcu_reset_mailbox(mcu);
 
 	gxp_mcu_firmware_shutdown(mcu_fw);
 }
@@ -462,9 +471,16 @@ static void gxp_mcu_firmware_stop_locked(struct gxp_mcu_firmware *mcu_fw)
 static int gxp_mcu_firmware_run_locked(struct gxp_mcu_firmware *mcu_fw)
 {
 	struct gxp_dev *gxp = mcu_fw->gxp;
+	struct gxp_mcu *mcu = container_of(mcu_fw, struct gxp_mcu, fw);
 	int ret;
 
 	lockdep_assert_held(&mcu_fw->lock);
+
+	/*
+	 * Resets UCI/KCI CSRs to ensure that no unconsumed commands are carried over from the last
+	 * execution.
+	 */
+	gxp_mcu_reset_mailbox(mcu);
 
 	ret = gxp_mcu_firmware_start(mcu_fw);
 	if (ret)
@@ -588,8 +604,41 @@ static ssize_t load_firmware_store(struct device *dev,
 
 static DEVICE_ATTR_RW(load_firmware);
 
+/* Provide the version info of the firmware including CL and privilege_level */
+static ssize_t firmware_version_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct gxp_dev *gxp = dev_get_drvdata(dev);
+	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
+	const char *priv;
+
+	if (mcu_fw->status != GCIP_FW_VALID) {
+		dev_warn(gxp->dev, "firmware_version is not available, firmware status: %d",
+			 mcu_fw->status);
+		return -ENODEV;
+	}
+
+	switch (mcu_fw->cfg_parser.last_config.privilege_level) {
+	case GCIP_FW_PRIV_LEVEL_GSA:
+		priv = "GSA";
+		break;
+	case GCIP_FW_PRIV_LEVEL_TZ:
+		priv = "secure";
+		break;
+	case GCIP_FW_PRIV_LEVEL_NS:
+		priv = "non-secure";
+		break;
+	default:
+		priv = "error";
+	}
+
+	return scnprintf(buf, PAGE_SIZE, "cl=%d priv=%s\n", mcu_fw->fw_info.fw_changelist, priv);
+}
+
+static DEVICE_ATTR_RO(firmware_version);
+
 static struct attribute *dev_attrs[] = {
 	&dev_attr_load_firmware.attr,
+	&dev_attr_firmware_version.attr,
 	NULL,
 };
 
@@ -781,7 +830,7 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 	 */
 	list_for_each_entry (client, &gxp->client_list, list_entry) {
 		if (client->has_block_wakelock && client->vd) {
-			gxp_vd_invalidate(gxp, client->vd);
+			gxp_vd_invalidate(gxp, client->vd, GXP_INVALIDATED_MCU_CRASH);
 			client->vd->mcu_crashed = true;
 		}
 	}
@@ -805,4 +854,6 @@ out:
 	mutex_unlock(&mcu_fw->lock);
 out_unlock_pm:
 	gcip_pm_unlock(pm);
+	/* Report MCU crash.*/
+	gxp_debug_dump_report_mcu_crash(gxp);
 }

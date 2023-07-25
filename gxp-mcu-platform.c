@@ -65,12 +65,7 @@ static int allocate_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 	if (vd->is_secure)
 		client_id = SECURE_CLIENT_ID;
 	else
-		client_id = gxp_iommu_aux_get_pasid(gxp, vd->domain);
-
-	if (client_id < 0) {
-		dev_err(gxp->dev, "Virtual device is not attached (%d)", client_id);
-		return client_id;
-	}
+		client_id = vd->domain->pasid;
 
 	ret = gxp_kci_allocate_vmbox(kci, client_id, vd->num_cores,
 				     vd->slice_index, vd->first_open);

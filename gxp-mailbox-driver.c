@@ -16,6 +16,7 @@
 #include "gxp-mailbox-driver.h"
 #include "gxp-mailbox-regs.h"
 #include "gxp-mailbox.h"
+#include "gxp-pm.h"
 
 static u32 data_read(struct gxp_mailbox *mailbox, uint reg_offset)
 {
@@ -28,40 +29,11 @@ static void data_write(struct gxp_mailbox *mailbox, uint reg_offset, u32 value)
 }
 
 /* IRQ Handling */
-
-/* Interrupt to signal a response from the device to host */
-#define MBOX_DEVICE_TO_HOST_RESPONSE_IRQ_MASK BIT(0)
-
 static irqreturn_t mailbox_irq_handler(int irq, void *arg)
 {
-	u32 masked_status;
 	struct gxp_mailbox *mailbox = (struct gxp_mailbox *)arg;
-	struct work_struct **handlers = mailbox->interrupt_handlers;
-	u32 next_int;
 
-	/* Contains only the non-masked, pending interrupt bits */
-	masked_status = gxp_mailbox_get_host_mask_status(mailbox);
-
-	/* Clear all pending IRQ bits */
-	gxp_mailbox_clear_host_interrupt(mailbox, masked_status);
-
-	if (masked_status & MBOX_DEVICE_TO_HOST_RESPONSE_IRQ_MASK) {
-		mailbox->handle_irq(mailbox);
-		masked_status &= ~MBOX_DEVICE_TO_HOST_RESPONSE_IRQ_MASK;
-	}
-
-	while ((next_int = ffs(masked_status))) {
-		next_int--; /* ffs returns 1-based indices */
-		masked_status &= ~BIT(next_int);
-
-		if (handlers[next_int])
-			schedule_work(handlers[next_int]);
-		else
-			pr_err_ratelimited(
-				"mailbox%d: received unknown interrupt bit 0x%X\n",
-				mailbox->core_id, next_int);
-	}
-
+	gxp_mailbox_chip_irq_handler(mailbox);
 	return IRQ_HANDLED;
 }
 
@@ -135,6 +107,7 @@ void gxp_mailbox_driver_exit(struct gxp_mailbox *mailbox)
 void gxp_mailbox_driver_enable_interrupts(struct gxp_mailbox *mailbox)
 {
 	register_irq(mailbox);
+	gxp_mailbox_enable_interrupt(mailbox);
 }
 
 void gxp_mailbox_driver_disable_interrupts(struct gxp_mailbox *mailbox)
@@ -512,5 +485,12 @@ void gxp_mailbox_gcip_ops_after_fetch_resps(struct gcip_mailbox *mailbox,
 	 */
 	if (num_resps == size)
 		gxp_mailbox_generate_device_interrupt(gxp_mbx, BIT(0));
+}
+
+bool gxp_mailbox_gcip_ops_is_block_off(struct gcip_mailbox *mailbox)
+{
+	struct gxp_mailbox *gxp_mbx = mailbox->data;
+
+	return gxp_pm_is_blk_down(gxp_mbx->gxp);
 }
 #endif /* !GXP_USE_LEGACY_MAILBOX */

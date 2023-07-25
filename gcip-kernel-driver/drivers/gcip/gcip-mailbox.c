@@ -457,6 +457,7 @@ static void gcip_mailbox_flush_awaiter(struct gcip_mailbox *mailbox)
 	struct gcip_mailbox_wait_list_elem *cur, *nxt;
 	struct gcip_mailbox_resp_awaiter *awaiter;
 	struct list_head resps_to_flush;
+	unsigned long flags;
 
 	/* If mailbox->ops is NULL, the mailbox is already released. */
 	if (!mailbox->ops)
@@ -469,7 +470,7 @@ static void gcip_mailbox_flush_awaiter(struct gcip_mailbox *mailbox)
 	 * handled already.
 	 */
 	INIT_LIST_HEAD(&resps_to_flush);
-	ACQUIRE_WAIT_LIST_LOCK(false, NULL);
+	ACQUIRE_WAIT_LIST_LOCK(true, &flags);
 	list_for_each_entry_safe (cur, nxt, &mailbox->wait_list, list) {
 		list_del(&cur->list);
 		if (cur->awaiter) {
@@ -490,7 +491,7 @@ static void gcip_mailbox_flush_awaiter(struct gcip_mailbox *mailbox)
 			kfree(cur);
 		}
 	}
-	RELEASE_WAIT_LIST_LOCK(false, 0);
+	RELEASE_WAIT_LIST_LOCK(true, flags);
 
 	/*
 	 * Cancel the timeout timer of and free any responses that were still in

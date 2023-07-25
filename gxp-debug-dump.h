@@ -12,6 +12,7 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
+#include "gxp-config.h"
 #include "gxp-dma.h"
 #include "gxp-internal.h"
 
@@ -20,6 +21,13 @@
 
 #if HAS_COREDUMP
 #include <linux/platform_data/sscoredump.h>
+#endif
+
+#if GXP_HAS_MCU
+/* Additional +1 is for the MCU core. */
+#define GXP_NUM_DEBUG_DUMP_CORES (GXP_NUM_CORES + 1)
+#else
+#define GXP_NUM_DEBUG_DUMP_CORES GXP_NUM_CORES
 #endif
 
 #define GXP_NUM_COMMON_SEGMENTS 2
@@ -51,6 +59,9 @@
 #define GXP_DEBUG_DUMP_INT 0x1
 #define GXP_DEBUG_DUMP_INT_MASK BIT(GXP_DEBUG_DUMP_INT)
 #define GXP_DEBUG_DUMP_RETRY_NUM 5
+
+/* Only one segment i.e. MCU log buffer needs to be dumped during the MCU crash. */
+#define GXP_NUM_MCU_TELEMETRY_SEGMENTS 1
 
 /*
  * For debug dump, the kernel driver header file version must be the same as
@@ -194,8 +205,8 @@ struct gxp_debug_dump_manager {
 	 */
 	struct mutex debug_dump_lock;
 #if HAS_COREDUMP
-	struct sscd_segment segs[GXP_NUM_CORES][GXP_NUM_SEGMENTS_PER_CORE];
-#endif
+	struct sscd_segment segs[GXP_NUM_DEBUG_DUMP_CORES][GXP_NUM_SEGMENTS_PER_CORE];
+#endif /* HAS_COREDUMP */
 };
 
 int gxp_debug_dump_init(struct gxp_dev *gxp, void *sscd_dev, void *sscd_pdata);
@@ -232,5 +243,11 @@ void gxp_debug_dump_invalidate_segments(struct gxp_dev *gxp, uint32_t core_id);
  */
 int gxp_debug_dump_process_dump_mcu_mode(struct gxp_dev *gxp, uint core_list,
 					 struct gxp_virtual_device *crashed_vd);
+
+/**
+ * gxp_debug_dump_report_mcu_crash() - Reports the SSCD module about the MCU crash.
+ * @gxp: The GXP device to obtain the handler for
+ */
+void gxp_debug_dump_report_mcu_crash(struct gxp_dev *gxp);
 
 #endif /* __GXP_DEBUG_DUMP_H__ */

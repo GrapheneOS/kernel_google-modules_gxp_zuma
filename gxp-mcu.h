@@ -48,6 +48,12 @@ void gxp_mcu_exit(struct gxp_mcu *mcu);
  */
 int gxp_mcu_reset(struct gxp_dev *gxp, bool release_reset);
 /*
+ * Resets UCI and KCI mailbox CSRs.
+ *
+ * This function must be called before running MCU FW to prevent MCU FW draining them improperly.
+ */
+void gxp_mcu_reset_mailbox(struct gxp_mcu *mcu);
+/*
  * A wrapper function to allocate memory from @mcu->remap_data_pool.
  *
  * Returns 0 on success, a negative errno otherwise.

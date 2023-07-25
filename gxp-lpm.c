@@ -183,6 +183,8 @@ static int psm_enable(struct gxp_dev *gxp, enum gxp_lpm_psm psm)
 
 void gxp_lpm_init(struct gxp_dev *gxp)
 {
+	if (gxp->lpm_init)
+		gxp->lpm_init(gxp);
 	/* Enable Top PSM */
 	if (psm_enable(gxp, LPM_PSM_TOP))
 		dev_err(gxp->dev, "Timed out when enabling Top PSM!\n");

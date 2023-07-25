@@ -77,6 +77,7 @@ struct gxp_virtual_device {
 	/* Used to save doorbell state on VD resume. */
 	uint doorbells_state[GXP_NUM_DOORBELLS_PER_VD];
 	enum gxp_virtual_device_state state;
+	u32 invalidated_reason;
 	/*
 	 * Record the gxp->power_mgr->blk_switch_count when the vd was
 	 * suspended. Use this information to know whether the block has been
@@ -275,6 +276,12 @@ void gxp_vd_mapping_remove(struct gxp_virtual_device *vd,
 			   struct gxp_mapping *map);
 
 /**
+ * gxp_vd_mapping_remove_locked() - The same as `gxp_vd_mapping_remove` but the caller holds
+ *                                  @vd->mappings_semaphore as write.
+ */
+void gxp_vd_mapping_remove_locked(struct gxp_virtual_device *vd, struct gxp_mapping *map);
+
+/**
  * gxp_vd_mapping_search() - Obtain a reference to the mapping starting at the
  *                           specified device address
  * @vd: The virtual device to search for the mapping
@@ -286,6 +293,13 @@ void gxp_vd_mapping_remove(struct gxp_virtual_device *vd,
  */
 struct gxp_mapping *gxp_vd_mapping_search(struct gxp_virtual_device *vd,
 					  dma_addr_t device_address);
+
+/**
+ * gxp_vd_mapping_search_locked() - The same as `gxp_vd_mapping_search` but the caller holds
+ *                                  @vd->mappings_semaphore.
+ */
+struct gxp_mapping *gxp_vd_mapping_search_locked(struct gxp_virtual_device *vd,
+						 dma_addr_t device_address);
 
 /**
  * gxp_vd_mapping_search_in_range() - Obtain a reference to the mapping which
@@ -412,11 +426,9 @@ void gxp_vd_put(struct gxp_virtual_device *vd);
  *
  * @gxp: The GXP device to obtain the handler for
  * @client_id: client_id of the crashed vd.
- * @core_list: A bitfield enumerating the physical cores on which crash is reported from firmware.
  * @release_vmbox: Releases the vmbox of the vd after invalidating it.
  */
-void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, uint core_list,
-				      bool release_vmbox);
+void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, bool release_vmbox);
 
 /*
  * Changes the status of the @vd to GXP_VD_UNAVAILABLE.
@@ -429,8 +441,9 @@ void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, uint c
  *
  * @gxp: The GXP device to obtain the handler for.
  * @vd: The virtual device to be invaliated.
+ * @reason: The reason why vd being invalidated.
  */
-void gxp_vd_invalidate(struct gxp_dev *gxp, struct gxp_virtual_device *vd);
+void gxp_vd_invalidate(struct gxp_dev *gxp, struct gxp_virtual_device *vd, u32 reason);
 
 /*
  * Generates a debug dump of @vd which utilizes @core_list cores.

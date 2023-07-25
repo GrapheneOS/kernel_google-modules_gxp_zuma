@@ -20,10 +20,11 @@
 #include "gxp-kci.h"
 #include "gxp-mcu.h"
 #endif /* GXP_HAS_MCU */
+#include "mobile-soc.h"
 
 static int gxp_thermal_get_rate(void *data, unsigned long *rate)
 {
-	*rate = exynos_acpm_get_rate(AUR_DVFS_DOMAIN, 0);
+	*rate = gxp_soc_pm_get_rate(AUR_DVFS_DOMAIN, 0);
 
 	return 0;
 }

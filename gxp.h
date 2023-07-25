@@ -13,7 +13,7 @@
 
 /* Interface Version */
 #define GXP_INTERFACE_VERSION_MAJOR 1
-#define GXP_INTERFACE_VERSION_MINOR 15
+#define GXP_INTERFACE_VERSION_MINOR 16
 #define GXP_INTERFACE_VERSION_BUILD 0
 
 /*
@@ -1046,5 +1046,20 @@ struct gxp_set_device_properties_ioctl {
  */
 #define GXP_SET_DEVICE_PROPERTIES                                              \
 	_IOW(GXP_IOCTL_BASE, 37, struct gxp_set_device_properties_ioctl)
+
+/*
+ * The reason why the device is invalidated.
+ * GXP_INVALIDATED_NONE: The device is not invalidated.
+ * GXP_INVALIDATED_MCU_CRASH: The device is invalidated because the MCU is broken.
+ * GXP_INVALIDATED_CLIENT_CRASH: The device is invalidated because the client is broken.
+ * GXP_INVALIDATED_VMBOX_RELEASE_FAILED: The vmbox is not released successfully.
+ */
+#define GXP_INVALIDATED_NONE 0
+#define GXP_INVALIDATED_MCU_CRASH 1
+#define GXP_INVALIDATED_CLIENT_CRASH 2
+#define GXP_INVALIDATED_VMBOX_RELEASE_FAILED 3
+
+/* Provides the reason why the device is invalidated.  */
+#define GXP_GET_INVALIDATED_REASON _IOR(GXP_IOCTL_BASE, 38, __u32)
 
 #endif /* __GXP_H__ */

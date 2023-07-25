@@ -5,7 +5,6 @@
  * Copyright (C) 2021 Google LLC
  */
 
-#include <linux/acpm_dvfs.h>
 #include <linux/bits.h>
 #include <linux/io.h>
 #include <linux/moduleparam.h>
@@ -14,7 +13,6 @@
 #include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
-#include <soc/google/exynos_pm_qos.h>
 
 #include <gcip/gcip-pm.h>
 
@@ -27,6 +25,7 @@
 #include "gxp-internal.h"
 #include "gxp-lpm.h"
 #include "gxp-pm.h"
+#include "mobile-soc.h"
 
 /* Don't attempt to touch the device when @busy_count equals this value. */
 #define BUSY_COUNT_OFF (~0ull)
@@ -52,21 +51,6 @@ static const uint aur_memory_state_array[] = {
 	AUR_MEM_UNDEFINED, AUR_MEM_MIN,	      AUR_MEM_VERY_LOW, AUR_MEM_LOW,
 	AUR_MEM_HIGH,	   AUR_MEM_VERY_HIGH, AUR_MEM_MAX
 };
-
-static const s32 aur_memory_state2int_table[] = { 0,
-						  AUR_MEM_INT_MIN,
-						  AUR_MEM_INT_VERY_LOW,
-						  AUR_MEM_INT_LOW,
-						  AUR_MEM_INT_HIGH,
-						  AUR_MEM_INT_VERY_HIGH,
-						  AUR_MEM_INT_MAX };
-static const s32 aur_memory_state2mif_table[] = { 0,
-						  AUR_MEM_MIF_MIN,
-						  AUR_MEM_MIF_VERY_LOW,
-						  AUR_MEM_MIF_LOW,
-						  AUR_MEM_MIF_HIGH,
-						  AUR_MEM_MIF_VERY_HIGH,
-						  AUR_MEM_MIF_MAX };
 
 static int gxp_pm_blkpwr_up(struct gxp_dev *gxp)
 {
@@ -120,8 +104,7 @@ static int gxp_pm_blkpwr_down(struct gxp_dev *gxp)
 			"pm_runtime_put_sync returned %d during blk down\n",
 			ret);
 	/* Remove our vote for INT/MIF state (if any) */
-	exynos_pm_qos_update_request(&gxp->power_mgr->int_min, 0);
-	exynos_pm_qos_update_request(&gxp->power_mgr->mif_min, 0);
+	gxp_soc_pm_reset(gxp);
 	return ret;
 }
 
@@ -141,7 +124,7 @@ static int gxp_pm_blk_set_state_acpm(struct gxp_dev *gxp, unsigned long state)
 
 int gxp_pm_blk_set_rate_acpm(struct gxp_dev *gxp, unsigned long rate)
 {
-	int ret = exynos_acpm_set_rate(AUR_DVFS_DOMAIN, rate);
+	int ret = gxp_soc_pm_set_rate(AUR_DVFS_DOMAIN, rate);
 
 	dev_dbg(gxp->dev, "set blk rate %lu, ret %d\n", rate, ret);
 	return ret;
@@ -248,7 +231,7 @@ out:
 
 int gxp_pm_blk_get_state_acpm(struct gxp_dev *gxp)
 {
-	int ret = exynos_acpm_get_rate(AUR_DVFS_DOMAIN, AUR_DEBUG_CORE_FREQ);
+	int ret = gxp_soc_pm_get_rate(AUR_DVFS_DOMAIN, AUR_DEBUG_CORE_FREQ);
 
 	dev_dbg(gxp->dev, "current blk state %d\n", ret);
 	return ret;
@@ -304,7 +287,7 @@ int gxp_pm_blk_off(struct gxp_dev *gxp)
 	return ret;
 }
 
-bool gxp_pm_is_blk_down(struct gxp_dev *gxp, uint timeout_ms)
+static bool gxp_pm_is_blk_down_timeout(struct gxp_dev *gxp, uint timeout_ms)
 {
 	int timeout_cnt = 0, max_delay_count;
 	int curr_state;
@@ -336,7 +319,7 @@ int gxp_pm_blk_reboot(struct gxp_dev *gxp, uint timeout_ms)
 		return ret;
 	}
 
-	if (!gxp_pm_is_blk_down(gxp, timeout_ms)) {
+	if (!gxp_pm_is_blk_down_timeout(gxp, timeout_ms)) {
 		dev_err(gxp->dev, "BLK_AUR hasn't been turned off");
 		return -EBUSY;
 	}
@@ -584,13 +567,6 @@ static int gxp_pm_update_requested_power_state(
 	return ret;
 }
 
-static int gxp_pm_req_pm_qos(struct gxp_dev *gxp, s32 int_val, s32 mif_val)
-{
-	exynos_pm_qos_update_request(&gxp->power_mgr->int_min, int_val);
-	exynos_pm_qos_update_request(&gxp->power_mgr->mif_min, mif_val);
-	return 0;
-}
-
 static void gxp_pm_req_pm_qos_async(struct work_struct *work)
 {
 	struct gxp_req_pm_qos_work *req_pm_qos_work =
@@ -598,9 +574,7 @@ static void gxp_pm_req_pm_qos_async(struct work_struct *work)
 
 	mutex_lock(&req_pm_qos_work->gxp->power_mgr->pm_lock);
 	if (req_pm_qos_work->gxp->power_mgr->curr_state != AUR_OFF)
-		gxp_pm_req_pm_qos(req_pm_qos_work->gxp,
-				  req_pm_qos_work->int_val,
-				  req_pm_qos_work->mif_val);
+		gxp_soc_pm_set_request(req_pm_qos_work->gxp, req_pm_qos_work->pm_value);
 	req_pm_qos_work->using = false;
 	mutex_unlock(&req_pm_qos_work->gxp->power_mgr->pm_lock);
 }
@@ -608,7 +582,6 @@ static void gxp_pm_req_pm_qos_async(struct work_struct *work)
 static int gxp_pm_req_memory_state_locked(struct gxp_dev *gxp,
 					  enum aur_memory_power_state state)
 {
-	s32 int_val = 0, mif_val = 0;
 	uint i;
 
 	if (state > AUR_MAX_ALLOW_MEMORY_STATE) {
@@ -640,10 +613,7 @@ static int gxp_pm_req_memory_state_locked(struct gxp_dev *gxp,
 			i = gxp->power_mgr->last_req_pm_qos_worker;
 		}
 
-		int_val = aur_memory_state2int_table[state];
-		mif_val = aur_memory_state2mif_table[state];
-		gxp->power_mgr->req_pm_qos_work[i].int_val = int_val;
-		gxp->power_mgr->req_pm_qos_work[i].mif_val = mif_val;
+		gxp_soc_set_pm_arg_from_state(&gxp->power_mgr->req_pm_qos_work[i], state);
 
 		/*
 		 * Schedule work to request the change, if not reusing an
@@ -755,11 +725,6 @@ int gxp_pm_update_requested_power_states(
 out:
 	mutex_unlock(&gxp->power_mgr->pm_lock);
 	return ret;
-}
-
-int gxp_pm_update_pm_qos(struct gxp_dev *gxp, s32 int_val, s32 mif_val)
-{
-	return gxp_pm_req_pm_qos(gxp, int_val, mif_val);
 }
 
 static int gxp_pm_power_up(void *data)
@@ -882,14 +847,15 @@ DEFINE_DEBUGFS_ATTRIBUTE(debugfs_blk_powerstate_fops,
 static void gxp_pm_on_busy(struct gxp_dev *gxp)
 {
 	set_cmu_pll_aur_mux_state(gxp, AUR_CMU_MUX_NORMAL);
-	/* TODO(b/279201155): set noc if the bug can be resolved */
+	set_cmu_noc_user_mux_state(gxp, AUR_CMU_MUX_NORMAL);
 }
 
 static void gxp_pm_on_idle(struct gxp_dev *gxp)
 {
-	if (gxp_slow_clk_on_idle)
+	if (gxp_slow_clk_on_idle) {
 		set_cmu_pll_aur_mux_state(gxp, AUR_CMU_MUX_LOW);
-	/* TODO(b/279201155): set noc if the bug can be resolved */
+		set_cmu_noc_user_mux_state(gxp, AUR_CMU_MUX_LOW);
+	}
 }
 
 int gxp_pm_init(struct gxp_dev *gxp)
@@ -958,8 +924,7 @@ int gxp_pm_init(struct gxp_dev *gxp)
 	}
 
 	pm_runtime_enable(gxp->dev);
-	exynos_pm_qos_add_request(&mgr->int_min, PM_QOS_DEVICE_THROUGHPUT, 0);
-	exynos_pm_qos_add_request(&mgr->mif_min, PM_QOS_BUS_THROUGHPUT, 0);
+	gxp_soc_pm_init(gxp);
 	gxp_pm_chip_init(gxp);
 
 	gxp->debugfs_wakelock_held = false;
@@ -983,8 +948,7 @@ int gxp_pm_destroy(struct gxp_dev *gxp)
 
 	gcip_pm_destroy(mgr->pm);
 
-	exynos_pm_qos_remove_request(&mgr->mif_min);
-	exynos_pm_qos_remove_request(&mgr->int_min);
+	gxp_soc_pm_exit(gxp);
 	pm_runtime_disable(gxp->dev);
 	flush_workqueue(mgr->wq);
 	destroy_workqueue(mgr->wq);

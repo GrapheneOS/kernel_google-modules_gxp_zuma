@@ -9,6 +9,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
+#include <linux/ktime.h>
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -18,6 +19,7 @@
 #include <gcip/gcip-alloc-helper.h>
 
 #include "gxp-client.h"
+#include "gxp-config.h"
 #include "gxp-debug-dump.h"
 #include "gxp-dma.h"
 #include "gxp-doorbell.h"
@@ -28,6 +30,8 @@
 #include "gxp-internal.h"
 #include "gxp-lpm.h"
 #include "gxp-mapping.h"
+#include "gxp-mcu.h"
+#include "gxp-mcu-telemetry.h"
 #include "gxp-notification.h"
 #include "gxp-pm.h"
 #include "gxp-vd.h"
@@ -42,6 +46,15 @@
 #define SYNC_BARRIER_BASE(_x_) ((_x_) << 12)
 
 #define DEBUG_DUMP_MEMORY_SIZE 0x400000 /* size in bytes */
+
+/*
+ * The minimum wait time in millisecond to be enforced between two successive calls to the SSCD
+ * module to prevent the overwrite of the previous generated core dump files. SSCD module generates
+ * the files whose name are at second precision i.e.
+ * crashinfo_<SUBSYSTEM_NAME>_<%Y-%m-%d_%H-%M-%S>.txt and
+ * coredump_<SUBSYSTEM_NAME>_<%Y-%m-%d_%H-%M-%S>.bin.
+ */
+#define SSCD_REPORT_WAIT_TIME (1000ULL)
 
 /*
  * CORE_FIRMWARE_RW_STRIDE & CORE_FIRMWARE_RW_ADDR must match with their
@@ -62,8 +75,11 @@ enum gxp_common_segments_idx {
 
 /* Whether or not the debug dump subsystem should be enabled. */
 #if IS_ENABLED(CONFIG_GXP_TEST)
+#include <gcip-unit/helper/test-sleep.h>
+#define TEST_SLEEP() test_sleep_may_sleep(1000)
 static int gxp_debug_dump_enable = 1;
 #else
+#define TEST_SLEEP()
 #if IS_ENABLED(CONFIG_CALLISTO)
 /*
  * TODO(b/277094681): Revert setting gxp_debug_dump_enable to 1
@@ -315,6 +331,9 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 	gxp_get_lpm_registers(gxp, &common_seg_header[GXP_LPM_REGISTERS_IDX],
 			      &common_dump_data->lpm_regs);
 
+	/* Insert a (may) sleep call for unit-testing to test race condition scenarios. */
+	TEST_SLEEP();
+
 	/*
 	 * Calling gcip_pm_put() here might power MCU down and handle RKCI to form
 	 * a lock dependency cycle.
@@ -335,18 +354,24 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 }
 
 #if HAS_COREDUMP
-static void gxp_send_to_sscd(struct gxp_dev *gxp, void *segs, int seg_cnt,
-			     const char *info)
+static void gxp_send_to_sscd(struct gxp_dev *gxp, void *segs, int seg_cnt, const char *info)
 {
 	int ret;
+	ktime_t now;
+	uint64_t diff_ms;
+	static ktime_t prev_sscd_report_time;
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
-	struct sscd_platform_data *pdata =
-		(struct sscd_platform_data *)mgr->sscd_pdata;
+	struct sscd_platform_data *pdata = (struct sscd_platform_data *)mgr->sscd_pdata;
 
-	if (!pdata->sscd_report) {
+	if (!pdata || !pdata->sscd_report) {
 		dev_err(gxp->dev, "Failed to generate coredump\n");
 		return;
 	}
+
+	now = ktime_get();
+	diff_ms = ktime_to_ms(ktime_sub(now, prev_sscd_report_time));
+	if (diff_ms < SSCD_REPORT_WAIT_TIME)
+		msleep(SSCD_REPORT_WAIT_TIME - diff_ms);
 
 	ret = pdata->sscd_report(gxp->debug_dump_mgr->sscd_dev, segs, seg_cnt,
 				 SSCD_FLAGS_ELFARM64HDR, info);
@@ -354,6 +379,8 @@ static void gxp_send_to_sscd(struct gxp_dev *gxp, void *segs, int seg_cnt,
 		dev_err(gxp->dev, "Unable to send the report to SSCD daemon (ret=%d)\n", ret);
 		return;
 	}
+
+	prev_sscd_report_time = ktime_get();
 }
 
 /*
@@ -453,6 +480,7 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 		daddr = (dma_addr_t)user_buf->device_addr;
 		mapping = gxp_vd_mapping_search_in_range(vd, daddr);
 		if (!mapping) {
+			dev_err(gxp->dev, "Mappings for %#llx user buffer not found.", daddr);
 			user_buf->size = 0;
 			continue;
 		}
@@ -469,20 +497,23 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 		gxp_mapping_put(mapping);
 
 		if (IS_ERR(vaddr)) {
-			gxp_user_buffers_vunmap(gxp, vd, core_header);
-			return 0;
+			dev_err(gxp->dev,
+				"Kernel mapping for %#llx user buffer failed with error %ld.\n",
+				daddr, PTR_ERR(vaddr));
+			user_buf->size = 0;
+			continue;
 		}
 
 		/* Get kernel address of the user buffer inside the mapping */
-		user_buf_vaddrs[i] =
-			vaddr + daddr -
-			(mapping->device_address & ~(PAGE_SIZE - 1));
+		user_buf_vaddrs[i] = vaddr + daddr - (mapping->device_address & PAGE_MASK);
 
 		/* Check that the entire user buffer is mapped */
 		if ((user_buf_vaddrs[i] + user_buf->size) >
-		    (vaddr + mapping->size)) {
-			gxp_user_buffers_vunmap(gxp, vd, core_header);
-			return 0;
+		    (vaddr + mapping->size + (mapping->device_address & ~PAGE_MASK))) {
+			dev_err(gxp->dev, "%#llx user buffer requested with invalid size(%#x).\n",
+				daddr, user_buf->size);
+			user_buf->size = 0;
+			continue;
 		}
 
 		cnt++;
@@ -768,25 +799,13 @@ out:
 static void gxp_generate_debug_dump(struct gxp_dev *gxp, uint core_id,
 				    struct gxp_virtual_device *vd)
 {
-	bool gxp_generate_coredump_called = true;
 	mutex_lock(&gxp->debug_dump_mgr->debug_dump_lock);
 
-	if (gxp_generate_coredump(gxp, vd, core_id)) {
-		gxp_generate_coredump_called = false;
+	if (gxp_generate_coredump(gxp, vd, core_id))
 		dev_err(gxp->dev, "Failed to generate the coredump.\n");
-	}
 
 	/* Invalidate segments to prepare for the next debug dump trigger */
 	gxp_debug_dump_invalidate_segments(gxp, core_id);
-
-	/*
-	 * This delay is needed to ensure there's sufficient time
-	 * in between sscd_report() being called, as the file name of
-	 * the core dump files generated by the SSCD daemon includes a
-	 * time format with a seconds precision.
-	 */
-	if (gxp_generate_coredump_called)
-		msleep(1000);
 
 	mutex_unlock(&gxp->debug_dump_mgr->debug_dump_lock);
 }
@@ -841,11 +860,20 @@ int gxp_debug_dump_process_dump_mcu_mode(struct gxp_dev *gxp, uint core_list,
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (!(BIT(core) & core_list))
 			continue;
+
 		core_dump_header = &mgr->core_dump->core_dump_header[core];
-		/* Check if dump has been generated by core firmware */
-		if (core_dump_header &&
-		    core_dump_header->core_header.dump_available == 1)
-			gxp_generate_debug_dump(gxp, core, crashed_vd);
+		if (core_dump_header == NULL) {
+			dev_err(gxp->dev, "Coredump header not allocated for core %u\n.", core);
+			continue;
+		}
+
+		/* Check if the dump has been generated by core firmware */
+		if (core_dump_header->core_header.dump_available != 1) {
+			dev_err(gxp->dev, "Core dump not available core %u\n", core);
+			continue;
+		}
+
+		gxp_generate_debug_dump(gxp, core, crashed_vd);
 	}
 	return 0;
 }
@@ -964,3 +992,24 @@ bool gxp_debug_dump_is_enabled(void)
 {
 	return gxp_debug_dump_enable;
 }
+
+#if HAS_COREDUMP && GXP_HAS_MCU
+void gxp_debug_dump_report_mcu_crash(struct gxp_dev *gxp)
+{
+	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
+	struct gxp_mcu *mcu = gxp_mcu_of(gxp);
+	struct gxp_mcu_telemetry_ctx *tel = &mcu->telemetry;
+	int seg_idx = 0;
+	char sscd_msg[SSCD_MSG_LENGTH];
+
+	snprintf(sscd_msg, SSCD_MSG_LENGTH - 1, "MCU crashed.");
+	mutex_lock(&gxp->debug_dump_mgr->debug_dump_lock);
+
+	mgr->segs[GXP_MCU_CORE_ID][seg_idx].addr = tel->log_mem.vaddr;
+	mgr->segs[GXP_MCU_CORE_ID][seg_idx].size = tel->log_mem.size;
+	seg_idx++;
+	gxp_send_to_sscd(gxp, mgr->segs[GXP_MCU_CORE_ID], seg_idx, sscd_msg);
+
+	mutex_unlock(&gxp->debug_dump_mgr->debug_dump_lock);
+}
+#endif /* HAS_COREDUMP && GXP_HAS_MCU */

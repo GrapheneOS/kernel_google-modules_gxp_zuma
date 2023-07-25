@@ -356,6 +356,7 @@ static const struct gcip_mailbox_ops gxp_uci_gcip_mbx_ops = {
 	.handle_awaiter_arrived = gxp_uci_handle_awaiter_arrived,
 	.handle_awaiter_timedout = gxp_uci_handle_awaiter_timedout,
 	.release_awaiter_data = gxp_uci_release_awaiter_data,
+	.is_block_off = gxp_mailbox_gcip_ops_is_block_off,
 };
 
 static int gxp_uci_allocate_resources(struct gxp_mailbox *mailbox,
@@ -452,6 +453,12 @@ int gxp_uci_init(struct gxp_mcu *mcu)
 		return PTR_ERR(uci->mbx);
 	gxp_uci_mailbox_manager_set_ops(gxp->mailbox_mgr);
 
+	return 0;
+}
+
+int gxp_uci_reinit(struct gxp_uci *uci)
+{
+	gxp_mailbox_reset(uci->mbx);
 	return 0;
 }
 

@@ -40,15 +40,45 @@ void __iomem *gxp_mailbox_get_csr_base(struct gxp_dev *gxp, uint index);
 void __iomem *gxp_mailbox_get_data_base(struct gxp_dev *gxp, uint index);
 
 void gxp_mailbox_reset_hw(struct gxp_mailbox *mailbox);
-
+/**
+ * gxp_mailbox_generate_device_interrupt(): Trigger interrupt to device.
+ * @mailbox: Mailbox for which to generate interrupt.
+ * @int_mask: Bitset of interrupt line to trigger.
+ */
 void gxp_mailbox_generate_device_interrupt(struct gxp_mailbox *mailbox,
 					   u32 int_mask);
-u32 gxp_mailbox_get_device_mask_status(struct gxp_mailbox *mailbox);
-
-void gxp_mailbox_clear_host_interrupt(struct gxp_mailbox *mailbox,
-				      u32 int_mask);
-void gxp_mailbox_mask_host_interrupt(struct gxp_mailbox *mailbox, u32 int_mask);
-u32 gxp_mailbox_get_host_mask_status(struct gxp_mailbox *mailbox);
+/**
+ * gxp_mailbox_clear_interrupts() - Clear set bits corresponding to interrupts
+ *                                  coming to AP/Host.
+ * @mailbox: Mailbox for which to clear interrupts.
+ * @intr_bits: Bitset of interrupt lines to clear.
+ */
+void gxp_mailbox_clear_interrupts(struct gxp_mailbox *mailbox, u32 intr_bits);
+/**
+ * gxp_mailbox_enable_interrupt() - Enable the interrupt coming to AP/Host.
+ * @mailbox: Mailbox for which to enable interrupts.
+ */
+void gxp_mailbox_enable_interrupt(struct gxp_mailbox *mailbox);
+/**
+ * gxp_mailbox_get_interrupt_status() - Retrieve the set interrupt bits coming
+ *                                      to AP/Host.
+ * @mailbox: Mailbox for which to get interrupt status.
+ */
+u32 gxp_mailbox_get_interrupt_status(struct gxp_mailbox *mailbox);
+/* gxp_mailbox_wait_for_device_mailbox_init() - Wait for mailbox to get
+ *                                              enabled/initialised by device.
+ * @mailbox: Mailbox to get it enabled from device end.
+ *
+ * Return: 0 on success else -ETIMEDOUT.
+ */
+int gxp_mailbox_wait_for_device_mailbox_init(struct gxp_mailbox *mailbox);
+/**
+ * gxp_mailbox_chip_irq_handler() - IRQ handler based on chip.
+ * @mailbox: Mailbox on which interrupt received.
+ *
+ * Context: Interrupt context.
+ */
+void gxp_mailbox_chip_irq_handler(struct gxp_mailbox *mailbox);
 
 void gxp_mailbox_write_status(struct gxp_mailbox *mailbox, u32 status);
 void gxp_mailbox_write_descriptor(struct gxp_mailbox *mailbox,
@@ -170,6 +200,7 @@ int gxp_mailbox_gcip_ops_after_enqueue_cmd(struct gcip_mailbox *mailbox,
 					   void *cmd);
 void gxp_mailbox_gcip_ops_after_fetch_resps(struct gcip_mailbox *mailbox,
 					    u32 num_resps);
+bool gxp_mailbox_gcip_ops_is_block_off(struct gcip_mailbox *mailbox);
 #endif /* !GXP_USE_LEGACY_MAILBOX */
 
 #endif /* __GXP_MAILBOX_DRIVER_H__ */

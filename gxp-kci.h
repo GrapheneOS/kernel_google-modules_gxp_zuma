@@ -28,6 +28,8 @@
 #ifndef GXP_KCI_TIMEOUT
 #if IS_ENABLED(CONFIG_GXP_TEST)
 #define GXP_KCI_TIMEOUT (200) /* Fake firmware could respond in a short time. */
+#elif IS_ENABLED(CONFIG_GXP_IP_ZEBU)
+#define GXP_KCI_TIMEOUT (10000) /* 10 secs. */
 #else
 #define GXP_KCI_TIMEOUT (5000) /* 5 secs. */
 #endif

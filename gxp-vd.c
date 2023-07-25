@@ -624,7 +624,11 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	INIT_LIST_HEAD(&vd->gxp_fence_list);
 	mutex_init(&vd->debug_dump_lock);
 
+#ifdef GXP_USE_DEFAULT_DOMAIN
+	vd->domain = gxp_iommu_get_domain_for_dev(gxp);
+#else
 	vd->domain = gxp_domain_pool_alloc(gxp->domain_pool);
+#endif
 	if (!vd->domain) {
 		err = -EBUSY;
 		goto error_free_vd;
@@ -702,7 +706,9 @@ error_free_slice_index:
 	if (vd->slice_index >= 0)
 		ida_free(&gxp->shared_slice_idp, vd->slice_index);
 error_free_domain:
+#ifndef GXP_USE_DEFAULT_DOMAIN
 	gxp_domain_pool_free(gxp->domain_pool, vd->domain);
+#endif
 error_free_vd:
 	kfree(vd);
 
@@ -753,7 +759,9 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	kfree(vd->mailbox_resp_queues);
 	if (vd->slice_index >= 0)
 		ida_free(&vd->gxp->shared_slice_idp, vd->slice_index);
+#ifndef GXP_USE_DEFAULT_DOMAIN
 	gxp_domain_pool_free(vd->gxp->domain_pool, vd->domain);
+#endif
 
 	if (vd->invalidate_eventfd)
 		gxp_eventfd_put(vd->invalidate_eventfd);
@@ -787,7 +795,7 @@ int gxp_vd_block_ready(struct gxp_virtual_device *vd)
 	if (gxp->after_vd_block_ready) {
 		ret = gxp->after_vd_block_ready(gxp, vd);
 		if (ret) {
-			gxp_dma_domain_detach_device(gxp, vd->domain);
+			gxp_dma_domain_detach_device(gxp, vd->domain, vd->core_list);
 			vd->state = orig_state;
 			return ret;
 		}
@@ -816,7 +824,7 @@ void gxp_vd_block_unready(struct gxp_virtual_device *vd)
 		gxp->before_vd_block_unready(gxp, vd);
 	if (vd->state == GXP_VD_READY)
 		vd->state = GXP_VD_OFF;
-	gxp_dma_domain_detach_device(gxp, vd->domain);
+	gxp_dma_domain_detach_device(gxp, vd->domain, vd->core_list);
 
 	if (vd->is_secure)
 		gxp_pm_idle(gxp);
@@ -1272,14 +1280,19 @@ void gxp_vd_mapping_remove(struct gxp_virtual_device *vd,
 			   struct gxp_mapping *map)
 {
 	down_write(&vd->mappings_semaphore);
+	gxp_vd_mapping_remove_locked(vd, map);
+	up_write(&vd->mappings_semaphore);
+}
+
+void gxp_vd_mapping_remove_locked(struct gxp_virtual_device *vd, struct gxp_mapping *map)
+{
+	lockdep_assert_held_write(&vd->mappings_semaphore);
 
 	/* Drop the mapping from this virtual device's records */
 	rb_erase(&map->node, &vd->mappings_root);
 
 	/* Release the reference obtained in gxp_vd_mapping_store() */
 	gxp_mapping_put(map);
-
-	up_write(&vd->mappings_semaphore);
 }
 
 static bool is_device_address_in_mapping(struct gxp_mapping *mapping,
@@ -1296,7 +1309,7 @@ gxp_vd_mapping_internal_search(struct gxp_virtual_device *vd,
 	struct rb_node *node;
 	struct gxp_mapping *mapping;
 
-	down_read(&vd->mappings_semaphore);
+	lockdep_assert_held(&vd->mappings_semaphore);
 
 	node = vd->mappings_root.rb_node;
 
@@ -1306,7 +1319,6 @@ gxp_vd_mapping_internal_search(struct gxp_virtual_device *vd,
 		    (check_range &&
 		     is_device_address_in_mapping(mapping, device_address))) {
 			gxp_mapping_get(mapping);
-			up_read(&vd->mappings_semaphore);
 			return mapping; /* Found it */
 		} else if (mapping->device_address > device_address) {
 			node = node->rb_left;
@@ -1315,13 +1327,23 @@ gxp_vd_mapping_internal_search(struct gxp_virtual_device *vd,
 		}
 	}
 
-	up_read(&vd->mappings_semaphore);
-
 	return NULL;
 }
 
 struct gxp_mapping *gxp_vd_mapping_search(struct gxp_virtual_device *vd,
 					  dma_addr_t device_address)
+{
+	struct gxp_mapping *mapping;
+
+	down_read(&vd->mappings_semaphore);
+	mapping = gxp_vd_mapping_search_locked(vd, device_address);
+	up_read(&vd->mappings_semaphore);
+
+	return mapping;
+}
+
+struct gxp_mapping *gxp_vd_mapping_search_locked(struct gxp_virtual_device *vd,
+						 dma_addr_t device_address)
 {
 	return gxp_vd_mapping_internal_search(vd, device_address, false);
 }
@@ -1330,7 +1352,13 @@ struct gxp_mapping *
 gxp_vd_mapping_search_in_range(struct gxp_virtual_device *vd,
 			       dma_addr_t device_address)
 {
-	return gxp_vd_mapping_internal_search(vd, device_address, true);
+	struct gxp_mapping *mapping;
+
+	down_read(&vd->mappings_semaphore);
+	mapping = gxp_vd_mapping_internal_search(vd, device_address, true);
+	up_read(&vd->mappings_semaphore);
+
+	return mapping;
 }
 
 struct gxp_mapping *gxp_vd_mapping_search_host(struct gxp_virtual_device *vd,
@@ -1405,7 +1433,7 @@ void gxp_vd_put(struct gxp_virtual_device *vd)
 		kfree(vd);
 }
 
-static void gxp_vd_invalidate_locked(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
+static void gxp_vd_invalidate_locked(struct gxp_dev *gxp, struct gxp_virtual_device *vd, u32 reason)
 {
 	lockdep_assert_held_write(&gxp->vd_semaphore);
 
@@ -1414,6 +1442,7 @@ static void gxp_vd_invalidate_locked(struct gxp_dev *gxp, struct gxp_virtual_dev
 
 	if (vd->state != GXP_VD_UNAVAILABLE) {
 		vd->state = GXP_VD_UNAVAILABLE;
+		vd->invalidated_reason = reason;
 		if (vd->invalidate_eventfd)
 			gxp_eventfd_signal(vd->invalidate_eventfd);
 	} else {
@@ -1421,11 +1450,9 @@ static void gxp_vd_invalidate_locked(struct gxp_dev *gxp, struct gxp_virtual_dev
 	}
 }
 
-void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, uint core_list,
-				      bool release_vmbox)
+void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, bool release_vmbox)
 {
 	struct gxp_client *client = NULL, *c;
-	uint core;
 
 	/*
 	 * Prevent @gxp->client_list is being changed while handling the crash.
@@ -1452,25 +1479,11 @@ void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, uint c
 	mutex_unlock(&gxp->client_list_lock);
 
 	if (!client) {
-		dev_err(gxp->dev, "Failed to find a VD, client_id=%d",
-			client_id);
-		/*
-		 * Invalidate all debug dump segments if debug dump
-		 * is enabled and core_list is not empty.
-		 */
-		if (!gxp_debug_dump_is_enabled() || !core_list)
-			return;
-		for (core = 0; core < GXP_NUM_CORES; core++) {
-			if (!(BIT(core) & core_list))
-				continue;
-			mutex_lock(&gxp->debug_dump_mgr->debug_dump_lock);
-			gxp_debug_dump_invalidate_segments(gxp, core);
-			mutex_unlock(&gxp->debug_dump_mgr->debug_dump_lock);
-		}
+		dev_err(gxp->dev, "Failed to find a VD, client_id=%d", client_id);
 		return;
 	}
 
-	gxp_vd_invalidate_locked(gxp, client->vd);
+	gxp_vd_invalidate_locked(gxp, client->vd, GXP_INVALIDATED_CLIENT_CRASH);
 
 	/*
 	 * Release @client->semaphore first because we need this lock to block ioctls while
@@ -1480,15 +1493,14 @@ void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, uint c
 
 	if (release_vmbox)
 		gxp_vd_release_vmbox(gxp, client->vd);
-	gxp_vd_generate_debug_dump(gxp, client->vd, core_list);
 
 	up_write(&gxp->vd_semaphore);
 }
 
-void gxp_vd_invalidate(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
+void gxp_vd_invalidate(struct gxp_dev *gxp, struct gxp_virtual_device *vd, u32 reason)
 {
 	down_write(&gxp->vd_semaphore);
-	gxp_vd_invalidate_locked(gxp, vd);
+	gxp_vd_invalidate_locked(gxp, vd, reason);
 	up_write(&gxp->vd_semaphore);
 }
 
@@ -1552,7 +1564,7 @@ void gxp_vd_release_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 		dev_err(gxp->dev,
 			"Firmware failed to gracefully release a VMBox for client %d, core_list=%d",
 			vd->client_id, core_list);
-		gxp_vd_invalidate_locked(gxp, vd);
+		gxp_vd_invalidate_locked(gxp, vd, GXP_INVALIDATED_VMBOX_RELEASE_FAILED);
 		gxp_vd_generate_debug_dump(gxp, vd, core_list);
 	} else {
 		dev_err(gxp->dev, "Failed to request releasing VMBox for client %d: %d",

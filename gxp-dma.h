@@ -12,13 +12,10 @@
 #include <linux/dma-mapping.h>
 #include <linux/iommu.h>
 #include <linux/types.h>
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&             \
-	!IS_ENABLED(CONFIG_GXP_GEM5)
-#include <soc/google/tpu-ext.h>
-#endif
 
 #include <gcip/gcip-iommu.h>
 
+#include "gxp-config.h"
 #include "gxp-internal.h"
 
 struct gxp_coherent_buf {
@@ -102,11 +99,12 @@ int gxp_dma_domain_attach_device(struct gxp_dev *gxp,
  * gxp_dma_domain_detach_device() - Detach the page table from the device.
  * @gxp: The GXP device to detach
  * @gdomain: The IOMMU domain to be detached
+ * @core_list: The physical cores to detach.
  *
  * Caller ensures a BLOCK wakelock is hold for the iommu detaching.
  */
-void gxp_dma_domain_detach_device(struct gxp_dev *gxp,
-				  struct gcip_iommu_domain *gdomain);
+void gxp_dma_domain_detach_device(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
+				  uint core_list);
 
 /**
  * gxp_dma_init_default_resources() - Set the various buffers/registers with
@@ -156,8 +154,8 @@ void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
 				  struct gcip_iommu_domain *gdomain,
 				  uint core_list);
 
-#if (IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&             \
-	!IS_ENABLED(CONFIG_GXP_GEM5)
+#if HAS_TPU_EXT
+#include <soc/google/tpu-ext.h>
 /**
  * gxp_dma_map_tpu_buffer() - Map the tpu mbx queue buffers with fixed IOVAs
  * @gxp: The GXP device to set up the mappings for
@@ -182,7 +180,7 @@ int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp,
 void gxp_dma_unmap_tpu_buffer(struct gxp_dev *gxp,
 			      struct gcip_iommu_domain *gdomain,
 			      struct gxp_tpu_mbx_desc mbx_desc);
-#endif // (CONFIG_GXP_TEST || CONFIG_ANDROID) && !CONFIG_GXP_GEM5
+#endif /* HAS_TPU_EXT */
 
 /**
  * gxp_dma_map_allocated_coherent_buffer() - Map a coherent buffer
@@ -355,16 +353,6 @@ void gxp_dma_unmap_dmabuf_attachment(struct gxp_dev *gxp,
  * Return: Domain embedding default IOMMU domain information.
  */
 struct gcip_iommu_domain *gxp_iommu_get_domain_for_dev(struct gxp_dev *gxp);
-
-/**
- * gxp_iommu_aux_get_pasid() - Get PASID corresponding to gdomain
- * @gxp: The GXP device attached to IOMMU
- * @gdomain: The IOMMU domain to get the PASID for
- *
- * Return: PASID of the passed domain or -EINVAL if not attached
- */
-int gxp_iommu_aux_get_pasid(struct gxp_dev *gxp,
-			    struct gcip_iommu_domain *gdomain);
 
 /**
  * gxp_iommu_setup_shareability() - Set shareability to enable IO-Coherency.

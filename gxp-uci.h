@@ -152,6 +152,15 @@ struct gxp_uci {
 int gxp_uci_init(struct gxp_mcu *mcu);
 
 /**
+ * gxp_uci_reinit() - Re-initializes the initialized UCI object.
+ * @uci: The UCI to be initialized
+ *
+ * Return:
+ * * 0       - Initialization finished successfully
+ */
+int gxp_uci_reinit(struct gxp_uci *uci);
+
+/**
  * gxp_uci_exit() - API for releasing the UCI mailbox of MCU.
  * @uci: The UCI to be released
  */

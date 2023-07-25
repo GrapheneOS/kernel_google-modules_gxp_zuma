@@ -10,6 +10,8 @@
 #include <linux/slab.h>
 #include <linux/version.h>
 
+#include <gcip/gcip-config.h>
+
 #include "gxp-dma.h"
 #include "gxp-dmabuf.h"
 #include "gxp-vd.h"
@@ -77,6 +79,11 @@ struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp,
 		ret = PTR_ERR(attachment);
 		goto err_attach;
 	}
+
+#if GCIP_IS_GKI
+	/* Skip CPU cache syncs while mapping this dmabuf */
+	attachment->dma_map_attrs = attachment->dma_map_attrs | DMA_ATTR_SKIP_CPU_SYNC;
+#endif
 
 	sgt = gxp_dma_map_dmabuf_attachment(gxp, domain, attachment, flags, dir);
 	if (IS_ERR(sgt)) {

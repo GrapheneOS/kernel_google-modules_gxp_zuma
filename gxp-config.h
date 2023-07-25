@@ -8,6 +8,8 @@
 #ifndef __GXP_CONFIG_H__
 #define __GXP_CONFIG_H__
 
+#include <gcip/gcip-config.h>
+
 #if IS_ENABLED(CONFIG_CALLISTO)
 
 #include "callisto/config.h"
@@ -18,8 +20,10 @@
 
 #endif /* unknown */
 
-#if defined(CONFIG_GXP_ZEBU) || defined(CONFIG_GXP_IP_ZEBU)
-#define GXP_TIME_DELAY_FACTOR 20
+#if IS_ENABLED(CONFIG_GXP_ZEBU)
+#define GXP_TIME_DELAY_FACTOR 100
+#elif IS_ENABLED(CONFIG_GXP_IP_ZEBU)
+#define GXP_TIME_DELAY_FACTOR 500
 #else
 #define GXP_TIME_DELAY_FACTOR 1
 #endif
@@ -45,8 +49,9 @@
  * 1. Unit testing, or
  * 2. Production on Android (to exclude vanilla Linux for bringup) but not GEM5.
  */
-#define HAS_TPU_EXT                                                            \
-	((IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_ANDROID)) &&        \
-	 !IS_ENABLED(CONFIG_GXP_GEM5))
+#define HAS_TPU_EXT ((IS_ENABLED(CONFIG_GXP_TEST) || GCIP_IS_GKI) &&		\
+		    !IS_ENABLED(CONFIG_GXP_GEM5) &&				\
+		    !IS_ENABLED(CONFIG_GXP_IP_ZEBU) &&				\
+		    !IS_ENABLED(CONFIG_GXP_ZEBU))
 
 #endif /* __GXP_CONFIG_H__ */

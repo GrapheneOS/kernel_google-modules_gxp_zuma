@@ -76,6 +76,7 @@ struct gxp_dma_manager;
 struct gxp_fw_data_manager;
 struct gxp_power_manager;
 struct gxp_core_telemetry_manager;
+struct gxp_soc_data;
 struct gxp_thermal_manager;
 struct gxp_usage_stats;
 struct gxp_power_states;
@@ -96,6 +97,8 @@ struct gxp_dev {
 	struct gxp_debug_dump_manager *debug_dump_mgr;
 	struct gxp_firmware_loader_manager *fw_loader_mgr;
 	struct gxp_firmware_manager *firmware_mgr;
+	/* SoC-specific data */
+	struct gxp_soc_data *soc_data;
 	/*
 	 * Lock to ensure only one thread at a time is ever calling
 	 * `pin_user_pages_fast()` during mapping, otherwise it will fail.
@@ -265,6 +268,13 @@ struct gxp_dev {
 	 */
 	void (*before_unmap_tpu_mbx_queue)(struct gxp_dev *gxp,
 					   struct gxp_client *client);
+	/*
+	 * Called as the first step in gxp_lpm_init(), to perform chip-specific initialization if
+	 * any.
+	 *
+	 * This callback is optional.
+	 */
+	void (*lpm_init)(struct gxp_dev *gxp);
 };
 
 /* GXP device IO functions */

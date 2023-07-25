@@ -32,10 +32,23 @@ int gxp_domain_pool_init(struct gxp_dev *gxp,
 {
 	int ret = gcip_iommu_domain_pool_init(pool, gxp->dev, 0, 0, SZ_4K, size,
 					      gxp_gcip_iommu_domain_type);
+	u32 num_bits, num_pasids;
 	__maybe_unused int i;
 
 	if (ret)
 		return ret;
+
+	ret = of_property_read_u32(gxp->dev->of_node, "pasid-num-bits", &num_bits);
+	if (ret || num_bits > 31) {
+		/* TODO(b/285949227) remove fallback once device-trees are updated */
+		dev_warn(gxp->dev, "Failed to fetch pasid-num-bits, defaulting to 8 PASIDs (%d)\n",
+			 ret);
+		num_pasids = 8;
+	} else {
+		num_pasids = 1 << num_bits;
+	}
+	/* PASID 0 is reserved for the default domain */
+	gcip_iommu_domain_pool_set_pasid_range(gxp->domain_pool, 1, num_pasids - 1);
 
 	if (!gxp_gcip_dma_window_enable)
 		gcip_iommu_domain_pool_enable_legacy_mode(pool);
@@ -47,13 +60,10 @@ int gxp_domain_pool_init(struct gxp_dev *gxp,
 
 		/*
 		 * Gem5 uses arm-smmu-v3 which requires domain finalization to do iommu map. Calling
-		 * iommu_attach_device_pasid to finalize the allocated domain and detach the device
+		 * iommu_aux_attach_device to finalize the allocated domain and detach the device
 		 * right after that.
-		 *
-		 * Use a PASID of 1 since 0 is reserved for the default domain, but it otherwise
-		 * doesn't matter what value is used.
 		 */
-		ret = iommu_attach_device_pasid(domain, gxp->dev, 1);
+		ret = iommu_aux_attach_device(domain, gxp->dev);
 		if (ret) {
 			dev_err(gxp->dev,
 				"Failed to attach device to iommu domain %d of %u, ret=%d\n",
@@ -62,7 +72,7 @@ int gxp_domain_pool_init(struct gxp_dev *gxp,
 			return ret;
 		}
 
-		iommu_detach_device_pasid(domain, gxp->dev, 1);
+		iommu_aux_detach_device(domain, gxp->dev);
 	}
 #endif /* CONFIG_GXP_GEM5 */
 

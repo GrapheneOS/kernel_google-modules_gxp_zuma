@@ -37,9 +37,6 @@
 /* The max number of active virtual devices. */
 #define GXP_NUM_SHARED_SLICES 7
 
-/* Max number of IOMMU domains that can be attached at once */
-#define GXP_MAX_PASID 8
-
 /*
  * Can be coherent with AP
  *

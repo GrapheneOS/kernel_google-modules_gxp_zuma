@@ -359,6 +359,7 @@ static const struct gcip_mailbox_ops gxp_dci_gcip_mbx_ops = {
 	.handle_awaiter_timedout = gxp_dci_handle_awaiter_timedout,
 	.flush_awaiter = gxp_dci_flush_awaiter,
 	.release_awaiter_data = gxp_dci_release_awaiter_data,
+	.is_block_off = gxp_mailbox_gcip_ops_is_block_off,
 };
 
 static int gxp_dci_allocate_resources(struct gxp_mailbox *mailbox,

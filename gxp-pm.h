@@ -7,18 +7,19 @@
 #ifndef __GXP_PM_H__
 #define __GXP_PM_H__
 
+#include <linux/io.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
-#include <bcl.h>
-#include <soc/google/exynos_pm_qos.h>
 
 #include <gcip/gcip-pm.h>
 
 #include "gxp-internal.h"
 
 #define AUR_DVFS_MIN_RATE AUR_UUD_RATE
+
+struct bcl_device;
 
 enum aur_power_state {
 	AUR_OFF = 0,
@@ -103,8 +104,7 @@ struct gxp_set_acpm_state_work {
 struct gxp_req_pm_qos_work {
 	struct work_struct work;
 	struct gxp_dev *gxp;
-	s32 int_val;
-	s32 mif_val;
+	u64 pm_value;
 	bool using;
 };
 
@@ -148,9 +148,6 @@ struct gxp_power_manager {
 	/* Serializes searching for an open worker in req_pm_qos_work[] */
 	struct mutex req_pm_qos_work_lock;
 	struct workqueue_struct *wq;
-	/* INT/MIF requests for memory bandwidth */
-	struct exynos_pm_qos_request int_min;
-	struct exynos_pm_qos_request mif_min;
 	/* BCL device handler. */
 	struct bcl_device *bcl_dev;
 	int force_mux_normal_count;
@@ -186,16 +183,6 @@ int gxp_pm_blk_on(struct gxp_dev *gxp);
  * * 0       - BLK OFF successfully
  */
 int gxp_pm_blk_off(struct gxp_dev *gxp);
-
-/**
- * gxp_pm_is_blk_down() - Check weather the blk is turned off or not.
- * @gxp: The GXP device to check
- * @timeout_ms: Wait for the block to be turned off for this duration.
- *
- * Return:
- * * true       - blk is turned off.
- */
-bool gxp_pm_is_blk_down(struct gxp_dev *gxp, uint timeout_ms);
 
 /**
  * gxp_pm_blk_reboot() - Reboot the blk.
@@ -276,7 +263,7 @@ int gxp_pm_destroy(struct gxp_dev *gxp);
  *
  * Return:
  * * 0       - Set finished successfully
- * * Other   - Set rate encounter issue in exynos_acpm_set_rate
+ * * Other   - Set rate encounter issue in gxp_soc_pm_set_rate
  */
 int gxp_pm_blk_set_rate_acpm(struct gxp_dev *gxp, unsigned long rate);
 
@@ -308,22 +295,6 @@ int gxp_pm_blk_get_state_acpm(struct gxp_dev *gxp);
 int gxp_pm_update_requested_power_states(struct gxp_dev *gxp,
 					 struct gxp_power_states origin_states,
 					 struct gxp_power_states requested_states);
-
-/**
- * gxp_pm_update_pm_qos() - API for updating the memory power state but passing the values of
- * INT and MIF frequencies directly. This function will ignore the vote ratings and update the
- * frequencies right away.
- * @gxp: The GXP device to operate.
- * @int_val: The value of INT frequency.
- * @mif_val: The value of MIF frequency.
- *
- * Note: This function will not update the @curr_memory_state of gxp_power_manager.
- *
- * Return:
- * * 0       - The memory power state has been changed
- * * -EINVAL - Invalid requested state
- */
-int gxp_pm_update_pm_qos(struct gxp_dev *gxp, s32 int_val, s32 mif_val);
 
 /*
  * gxp_pm_force_clkmux_normal() - Force PLL_CON0_NOC_USER and PLL_CON0_PLL_AUR MUX
@@ -381,5 +352,19 @@ void gxp_pm_chip_set_ops(struct gxp_power_manager *mgr);
  * management files but not by gxp-pm.c.
  */
 void gxp_pm_chip_init(struct gxp_dev *gxp);
+
+/**
+ * gxp_pm_is_blk_down() - Check weather the blk is turned off or not via @gxp->aur_status.
+ * @gxp: The GXP device to check
+ *
+ * Note: This function might be called in in_interrupt() context.
+ * Return:
+ * * true       - blk is turned off.
+ */
+static inline bool gxp_pm_is_blk_down(struct gxp_dev *gxp)
+{
+	return gxp->power_mgr->aur_status ? !readl(gxp->power_mgr->aur_status) :
+					    gxp->power_mgr->curr_state == AUR_OFF;
+}
 
 #endif /* __GXP_PM_H__ */
