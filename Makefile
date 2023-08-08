@@ -58,7 +58,7 @@ gxp-objs += \
 		callisto-pm.o
 
 # TODO(b/292499332): remove this line once GKI for ZumaPro is upgraded
-ccflags-y += -DGCIP_FORCE_NO_VMA_FLAGS_API
+# ccflags-y += -DGCIP_FORCE_NO_VMA_FLAGS_API
 GMODULE_PATH := $(OUT_DIR)/../private/google-modules
 EDGETPU_CHIP := rio
 
