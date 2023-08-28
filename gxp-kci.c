@@ -699,3 +699,29 @@ out:
 	mutex_unlock(&dev_prop->lock);
 	return ret;
 }
+
+int gxp_kci_fault_injection(struct gcip_fault_inject *injection)
+{
+	struct gxp_kci *gkci = injection->kci_data;
+	struct gcip_kci_command_element cmd = {
+		.code = GCIP_KCI_CODE_FAULT_INJECTION,
+	};
+	struct gxp_mapped_resource buf;
+	int ret;
+
+	if (!gkci || !gkci->mbx)
+		return -ENODEV;
+
+	if (gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(injection->opaque)))
+		return -ENOSPC;
+
+	memcpy(buf.vaddr, injection->opaque, sizeof(injection->opaque));
+	cmd.dma.address = buf.daddr;
+	cmd.dma.size = sizeof(injection->opaque);
+
+	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
+
+	gxp_mcu_mem_free_data(gkci->mcu, &buf);
+
+	return ret;
+}

@@ -5,11 +5,13 @@
  * Copyright (C) 2021 Google LLC
  */
 
+#include <linux/atomic.h>
 #include <linux/dma-mapping.h>
 #include <linux/ktime.h>
 #include <linux/mm.h>
 #include <linux/mmap_lock.h>
 #include <linux/moduleparam.h>
+#include <linux/sched/mm.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 
@@ -57,6 +59,7 @@ static void destroy_mapping(struct gxp_mapping *mapping)
 {
 	struct sg_page_iter sg_iter;
 	struct page *page;
+	unsigned long num_pages = 0;
 
 	mutex_destroy(&mapping->vlock);
 	mutex_destroy(&mapping->sync_lock);
@@ -84,8 +87,11 @@ static void destroy_mapping(struct gxp_mapping *mapping)
 		}
 
 		unpin_user_page(page);
+		num_pages++;
 	}
 
+	atomic64_sub(num_pages, &mapping->owning_mm->pinned_vm);
+	mmdrop(mapping->owning_mm);
 	/* Free the mapping book-keeping */
 	sg_free_table(&mapping->sgt);
 	kfree(mapping);
@@ -132,8 +138,10 @@ struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
 	/* Pin the user pages */
 	offset = user_address & (PAGE_SIZE - 1);
 	if (unlikely((size + offset) / PAGE_SIZE >= UINT_MAX - 1 ||
-		     size + offset < size))
+		     size + offset < size)) {
+		dev_err(gxp->dev, "Buffer size overflow: size=%#zx", size);
 		return ERR_PTR(-EFAULT);
+	}
 	num_pages = (size + offset) / PAGE_SIZE;
 	if ((size + offset) % PAGE_SIZE)
 		num_pages++;
@@ -170,9 +178,8 @@ struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
 		dev_err(gxp->dev, "address fault mapping %s buffer",
 			dir == DMA_TO_DEVICE ? "read-only" : "writeable");
 	if (ret < 0 || ret < num_pages) {
-		dev_dbg(gxp->dev,
-			"Get user pages failed: user_add=%pK, num_pages=%u, ret=%d\n",
-			(void *)user_address, num_pages, ret);
+		dev_err(gxp->dev, "Pin user pages failed: user_add=%#llx, num_pages=%u, ret=%d\n",
+			user_address, num_pages, ret);
 		num_pages = ret < 0 ? 0 : ret;
 		ret = ret >= 0 ? -EFAULT : ret;
 		goto error_unpin_pages;
@@ -215,6 +222,9 @@ struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
 
 	mutex_init(&mapping->sync_lock);
 	mutex_init(&mapping->vlock);
+	mmgrab(current->mm);
+	mapping->owning_mm = current->mm;
+	atomic64_add(num_pages, &mapping->owning_mm->pinned_vm);
 
 	kvfree(pages);
 	return mapping;

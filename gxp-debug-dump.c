@@ -993,23 +993,25 @@ bool gxp_debug_dump_is_enabled(void)
 	return gxp_debug_dump_enable;
 }
 
-#if HAS_COREDUMP && GXP_HAS_MCU
+#if GXP_HAS_MCU
 void gxp_debug_dump_report_mcu_crash(struct gxp_dev *gxp)
 {
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
 	struct gxp_mcu *mcu = gxp_mcu_of(gxp);
-	struct gxp_mcu_telemetry_ctx *tel = &mcu->telemetry;
-	int seg_idx = 0;
+	__maybe_unused struct gxp_mcu_telemetry_ctx *tel = &mcu->telemetry;
+	__maybe_unused int seg_idx = 0;
 	char sscd_msg[SSCD_MSG_LENGTH];
 
 	snprintf(sscd_msg, SSCD_MSG_LENGTH - 1, "MCU crashed.");
-	mutex_lock(&gxp->debug_dump_mgr->debug_dump_lock);
+	mutex_lock(&mgr->debug_dump_lock);
 
+#if HAS_COREDUMP
 	mgr->segs[GXP_MCU_CORE_ID][seg_idx].addr = tel->log_mem.vaddr;
 	mgr->segs[GXP_MCU_CORE_ID][seg_idx].size = tel->log_mem.size;
 	seg_idx++;
 	gxp_send_to_sscd(gxp, mgr->segs[GXP_MCU_CORE_ID], seg_idx, sscd_msg);
+#endif /* HAS_COREDUMP */
 
-	mutex_unlock(&gxp->debug_dump_mgr->debug_dump_lock);
+	mutex_unlock(&mgr->debug_dump_lock);
 }
-#endif /* HAS_COREDUMP && GXP_HAS_MCU */
+#endif /* GXP_HAS_MCU */

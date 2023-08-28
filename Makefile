@@ -57,8 +57,6 @@ gxp-objs += \
 		callisto-platform.o \
 		callisto-pm.o
 
-# TODO(b/292499332): remove this line once GKI for ZumaPro is upgraded
-# ccflags-y += -DGCIP_FORCE_NO_VMA_FLAGS_API
 GMODULE_PATH := $(OUT_DIR)/../private/google-modules
 EDGETPU_CHIP := rio
 
@@ -100,6 +98,8 @@ gxp-flags := -DCONFIG_GXP_$(GXP_PLATFORM) -DCONFIG_$(GXP_CHIP)=1 \
 	     -I$(srctree)/drivers/gxp/include \
 	     -I$(KERNEL_SRC)/../private/google-modules/power/mitigation
 ccflags-y += $(EXTRA_CFLAGS) $(gxp-flags)
+# Flags needed for external modules.
+ccflags-y += -DCONFIG_GOOGLE_BCL
 
 KBUILD_OPTIONS += GXP_CHIP=$(GXP_CHIP) GXP_PLATFORM=$(GXP_PLATFORM)
 

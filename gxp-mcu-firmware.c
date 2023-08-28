@@ -17,6 +17,7 @@
 #include <linux/workqueue.h>
 
 #include <gcip/gcip-common-image-header.h>
+#include <gcip/gcip-fault-injection.h>
 #include <gcip/gcip-image-config.h>
 #include <gcip/gcip-pm.h>
 #include <gcip/gcip-thermal.h>
@@ -36,6 +37,7 @@
 #include "gxp-mcu-platform.h"
 #include "gxp-mcu.h"
 #include "gxp-pm.h"
+#include "mobile-soc.h"
 
 #if IS_GXP_TEST
 #define TEST_FLUSH_KCI_WORKERS(kci)                                   \
@@ -61,6 +63,7 @@ static void program_iremap_csr(struct gxp_dev *gxp,
 			       struct gxp_mapped_resource *buf)
 {
 	dev_info(gxp->dev, "Program instruction remap CSRs");
+	gxp_soc_set_iremap_context(gxp);
 	gxp_write_32(gxp, GXP_REG_CFGVECTABLE0, buf->daddr);
 
 	gxp_write_32(gxp, GXP_REG_IREMAP_LOW, buf->daddr);
@@ -486,6 +489,8 @@ static int gxp_mcu_firmware_run_locked(struct gxp_mcu_firmware *mcu_fw)
 	if (ret)
 		return ret;
 
+	gcip_fault_inject_send(mcu_fw->fault_inject);
+
 	ret = gxp_mcu_firmware_handshake(mcu_fw);
 	if (ret) {
 		dev_warn(gxp->dev, "Retry MCU firmware handshake with resetting MCU");
@@ -677,6 +682,32 @@ static void gxp_mcu_firmware_crash_handler_work(struct work_struct *work)
 	gxp_mcu_firmware_crash_handler(mcu_fw->gxp, GCIP_FW_CRASH_UNRECOVERABLE_FAULT);
 }
 
+static int gxp_mcu_firmware_fault_inject_init(struct gxp_mcu_firmware *mcu_fw)
+{
+	struct gxp_dev *gxp = mcu_fw->gxp;
+	struct gxp_mcu *mcu = container_of(mcu_fw, struct gxp_mcu, fw);
+	struct gcip_fault_inject *injection;
+	const struct gcip_fault_inject_args args = { .dev = gxp->dev,
+						     .parent_dentry = gxp->d_entry,
+						     .pm = gxp->power_mgr->pm,
+						     .send_kci = gxp_kci_fault_injection,
+						     .kci_data = &mcu->kci };
+
+	injection = gcip_fault_inject_create(&args);
+
+	if (IS_ERR(injection))
+		return PTR_ERR(injection);
+
+	mcu_fw->fault_inject = injection;
+
+	return 0;
+}
+
+static void gxp_mcu_firmware_fault_inject_exit(struct gxp_mcu_firmware *mcu_fw)
+{
+	gcip_fault_inject_destroy(mcu_fw->fault_inject);
+}
+
 int gxp_mcu_firmware_init(struct gxp_dev *gxp, struct gxp_mcu_firmware *mcu_fw)
 {
 	static const struct gcip_image_config_ops image_config_parser_ops = {
@@ -703,15 +734,24 @@ int gxp_mcu_firmware_init(struct gxp_dev *gxp, struct gxp_mcu_firmware *mcu_fw)
 	INIT_WORK(&mcu_fw->fw_crash_handler_work, gxp_mcu_firmware_crash_handler_work);
 
 	ret = device_add_group(gxp->dev, &firmware_attr_group);
-	if (ret)
+	if (ret) {
 		dev_err(gxp->dev, "failed to create firmware device group");
-	return ret;
+		return ret;
+	}
+
+	ret = gxp_mcu_firmware_fault_inject_init(mcu_fw);
+	if (ret)
+		dev_warn(gxp->dev, "failed to init fault injection: %d", ret);
+
+	return 0;
 }
 
 void gxp_mcu_firmware_exit(struct gxp_mcu_firmware *mcu_fw)
 {
 	if (IS_GXP_TEST && (!mcu_fw || !mcu_fw->gxp))
 		return;
+
+	gxp_mcu_firmware_fault_inject_exit(mcu_fw);
 	cancel_work_sync(&mcu_fw->fw_crash_handler_work);
 	device_remove_group(mcu_fw->gxp->dev, &firmware_attr_group);
 }

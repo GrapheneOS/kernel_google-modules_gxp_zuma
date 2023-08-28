@@ -550,7 +550,7 @@ int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
 	if (timeout <= 0) {
 		spin_unlock_irq(&uci_resp_queue->lock);
 		/* unusual case - this only happens when there is no command pushed */
-		return timeout ? -ETIMEDOUT : timeout;
+		return -ETIMEDOUT;
 	}
 	async_resp = list_first_entry(&uci_resp_queue->dest_queue,
 				      struct gxp_uci_async_response,

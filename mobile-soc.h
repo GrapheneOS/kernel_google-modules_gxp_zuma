@@ -88,4 +88,10 @@ void gxp_soc_activate_context(struct gxp_dev *gxp, struct gcip_iommu_domain *gdo
 void gxp_soc_deactivate_context(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 				uint core_list);
 
+/**
+ * gxp_soc_set_iremap_context() - Set context for MCU accesses through remap region.
+ * @gxp: The GXP device to set context for.
+ */
+void gxp_soc_set_iremap_context(struct gxp_dev *gxp);
+
 #endif /* __MOBILE_SOC_H__ */

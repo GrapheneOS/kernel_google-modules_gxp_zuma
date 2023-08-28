@@ -29,6 +29,8 @@ struct gxp_mcu_firmware {
 
 	/* Worker to handle the MCU FW unrecoverable crash. */
 	struct work_struct fw_crash_handler_work;
+	/* The container of fault injection data. */
+	struct gcip_fault_inject *fault_inject;
 };
 
 /*

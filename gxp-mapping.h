@@ -8,6 +8,7 @@
 #define __GXP_MAPPING_H__
 
 #include <linux/dma-direction.h>
+#include <linux/mm_types.h>
 #include <linux/mutex.h>
 #include <linux/rbtree.h>
 #include <linux/refcount.h>
@@ -36,6 +37,8 @@ struct gxp_mapping {
 	 * should not be used if a regular buffer mapping was expected.
 	 */
 	u64 host_address;
+	/* For holding a reference to MM. */
+	struct mm_struct *owning_mm;
 	struct gxp_dev *gxp;
 	struct gcip_iommu_domain *domain;
 	/*

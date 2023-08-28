@@ -165,3 +165,7 @@ void gxp_soc_deactivate_context(struct gxp_dev *gxp, struct gcip_iommu_domain *g
 		gxp_gsx01_ssmt_deactivate_scid(ssmt, gdomain->pasid);
 	}
 }
+
+void gxp_soc_set_iremap_context(struct gxp_dev *gxp)
+{
+}

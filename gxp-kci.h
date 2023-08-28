@@ -10,6 +10,7 @@
 
 #include <linux/bits.h>
 
+#include <gcip/gcip-fault-injection.h>
 #include <gcip/gcip-kci.h>
 #include <gcip/gcip-telemetry.h>
 
@@ -241,5 +242,13 @@ void gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,
  */
 int gxp_kci_set_device_properties(struct gxp_kci *gkci,
 				  struct gxp_dev_prop *device_prop);
+
+/**
+ * gxp_kci_fault_injection() - Sends the fault injection KCI command to the firmware.
+ * @injection: The container of fault injection data.
+ *
+ * Return: 0 if the command is sent successfully.
+ */
+int gxp_kci_fault_injection(struct gcip_fault_inject *injection);
 
 #endif /* __GXP_KCI_H__ */
