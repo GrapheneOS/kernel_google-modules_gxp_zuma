@@ -87,9 +87,8 @@ struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp,
 
 	sgt = gxp_dma_map_dmabuf_attachment(gxp, domain, attachment, flags, dir);
 	if (IS_ERR(sgt)) {
-		dev_err(gxp->dev,
-			"Failed to map dma-buf attachment (ret=%ld)\n",
-			PTR_ERR(sgt));
+		dev_err(gxp->dev, "Failed to map dma-buf attachment (ret=%ld, exporter=%s)\n",
+			PTR_ERR(sgt), dmabuf->exp_name);
 		ret = PTR_ERR(sgt);
 		goto err_map_attachment;
 	}

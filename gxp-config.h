@@ -44,6 +44,10 @@
 #define GXP_HAS_MCU 1
 #endif
 
+#ifndef GXP_MMU_REQUIRE_ATTACH
+#define GXP_MMU_REQUIRE_ATTACH 0
+#endif
+
 /*
  * Only supports interop with TPU when
  * 1. Unit testing, or

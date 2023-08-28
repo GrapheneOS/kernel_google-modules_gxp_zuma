@@ -147,9 +147,9 @@ static inline enum gcip_telemetry_type to_gcip_telemetry_type(u8 type)
 		return GCIP_TELEMETRY_TRACE;
 }
 
-static int gxp_register_mcu_telemetry_eventfd(
-	struct gxp_client *client,
-	struct gxp_register_telemetry_eventfd_ioctl __user *argp)
+static int
+gxp_ioctl_register_mcu_telemetry_eventfd(struct gxp_client *client,
+					 struct gxp_register_telemetry_eventfd_ioctl __user *argp)
 {
 	struct gxp_mcu *mcu = gxp_mcu_of(client->gxp);
 	struct gxp_register_telemetry_eventfd_ioctl ibuf;
@@ -161,9 +161,9 @@ static int gxp_register_mcu_telemetry_eventfd(
 		mcu, to_gcip_telemetry_type(ibuf.type), ibuf.eventfd);
 }
 
-static int gxp_unregister_mcu_telemetry_eventfd(
-	struct gxp_client *client,
-	struct gxp_register_telemetry_eventfd_ioctl __user *argp)
+static int
+gxp_ioctl_unregister_mcu_telemetry_eventfd(struct gxp_client *client,
+					   struct gxp_register_telemetry_eventfd_ioctl __user *argp)
 {
 	struct gxp_mcu *mcu = gxp_mcu_of(client->gxp);
 	struct gxp_register_telemetry_eventfd_ioctl ibuf;
@@ -191,10 +191,10 @@ long gxp_mcu_ioctl(struct file *file, uint cmd, ulong arg)
 		ret = -EOPNOTSUPP;
 		break;
 	case GXP_REGISTER_MCU_TELEMETRY_EVENTFD:
-		ret = gxp_register_mcu_telemetry_eventfd(client, argp);
+		ret = gxp_ioctl_register_mcu_telemetry_eventfd(client, argp);
 		break;
 	case GXP_UNREGISTER_MCU_TELEMETRY_EVENTFD:
-		ret = gxp_unregister_mcu_telemetry_eventfd(client, argp);
+		ret = gxp_ioctl_unregister_mcu_telemetry_eventfd(client, argp);
 		break;
 	case GXP_MAILBOX_UCI_COMMAND:
 		ret = gxp_ioctl_uci_command(client, argp);

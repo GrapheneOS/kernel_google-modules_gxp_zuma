@@ -9,6 +9,7 @@
 #include <linux/bitops.h>
 #include <linux/idr.h>
 #include <linux/iommu.h>
+#include <linux/pm_runtime.h>
 #include <linux/refcount.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -345,6 +346,34 @@ static void gxp_vd_imgcfg_unmap(void *data, dma_addr_t daddr, size_t size,
 	unmap_ns_region(vd, daddr);
 }
 
+/* TODO(b/299037074): Remove core's accesses to LPM. */
+static int map_remote_lpm(struct gxp_virtual_device *vd,
+			  struct gcip_image_config *img_cfg)
+{
+	struct gxp_mapped_resource res;
+	int ret;
+
+	if (img_cfg->num_iommu_mappings != REMOTE_LPM_IDX + 1)
+		/* Core doesn't require remote lpm */
+		return 0;
+
+	res.daddr = img_cfg->iommu_mappings[REMOTE_LPM_IDX].virt_address;
+	res.paddr = (img_cfg->iommu_mappings[REMOTE_LPM_IDX].image_config_value) &
+		    GCIP_IMG_CFG_ADDR_MASK;
+	res.size = gcip_config_to_size(img_cfg->iommu_mappings[REMOTE_LPM_IDX].image_config_value);
+	ret = map_resource(vd, &res);
+	if (ret)
+		return ret;
+
+	vd->lpm = res;
+	return 0;
+}
+
+static void unmap_remote_lpm(struct gxp_virtual_device *vd)
+{
+	unmap_resource(vd, &vd->lpm);
+}
+
 static int
 map_fw_image_config(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 		    struct gxp_firmware_loader_manager *fw_loader_mgr)
@@ -370,16 +399,26 @@ map_fw_image_config(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 	ret = map_cfg_regions(vd, cfg);
 	if (ret) {
 		dev_err(gxp->dev, "Config regions mapping failed");
-		gcip_image_config_clear(&vd->cfg_parser);
-		return ret;
+		goto err;
+	}
+
+	ret = map_remote_lpm(vd, cfg);
+	if (ret) {
+		dev_err(gxp->dev, "Remote LPM mapping failed");
+		unmap_cfg_regions(vd);
+		goto err;
 	}
 
 	return 0;
+err:
+	gcip_image_config_clear(&vd->cfg_parser);
+	return ret;
 }
 
 static void unmap_fw_image_config(struct gxp_dev *gxp,
 				  struct gxp_virtual_device *vd)
 {
+	unmap_remote_lpm(vd);
 	unmap_cfg_regions(vd);
 	gcip_image_config_clear(&vd->cfg_parser);
 }
@@ -591,6 +630,56 @@ static inline void debug_dump_unlock(struct gxp_virtual_device *vd)
 	mutex_unlock(&vd->debug_dump_lock);
 }
 
+/* TODO(b/298143784):  Remove when we don't require domain finalisation before map operation. */
+#if GXP_MMU_REQUIRE_ATTACH
+static int gxp_attach_mmu_domain(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
+{
+	int ret;
+
+	/*
+	 * Domain attach requires block to be in on state.
+	 * TODO(b/298143784):  Remove when we have official resolution on attach/detach domain.
+	 */
+	ret = pm_runtime_resume_and_get(gxp->dev);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to power on during domain attach: %d", ret);
+		return ret;
+	}
+
+	ret = gxp_dma_domain_attach_device(gxp, vd->domain, vd->core_list);
+	if (ret)
+		dev_err(gxp->dev, "Failed to attach domain: %d", ret);
+	ret = pm_runtime_put_sync(gxp->dev);
+	if (ret)
+		dev_err(gxp->dev, "Failed to power off during domain attach: %d", ret);
+
+	return ret;
+}
+
+static int gxp_detach_mmu_domain(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
+{
+	int ret;
+
+	/*
+	 * Domain detach requires block to be in on state.
+	 * TODO(b/298143784):  Remove when we have official resolution on attach/detach domain.
+	 */
+	ret = pm_runtime_resume_and_get(gxp->dev);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to power on during domain attach: %d", ret);
+		return ret;
+	}
+
+	gxp_dma_domain_detach_device(gxp, vd->domain, vd->core_list);
+	ret = pm_runtime_put_sync(gxp->dev);
+	if (ret)
+		dev_err(gxp->dev, "Failed to power off during domain attach: %d", ret);
+
+	return ret;
+
+}
+#endif /* GXP_MMU_REQUIRE_ATTACH */
+
 struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 					   u16 requested_cores)
 {
@@ -662,13 +751,19 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	if (err)
 		goto error_free_resp_queues;
 
+#if GXP_MMU_REQUIRE_ATTACH
+	err = gxp_attach_mmu_domain(gxp, vd);
+	if (err)
+		goto error_unassign_cores;
+#endif
+
 	/*
 	 * Here assumes firmware is requested before allocating a VD, which is
 	 * true because we request firmware on first GXP device open.
 	 */
 	err = map_fw_image_config(gxp, vd, gxp->fw_loader_mgr);
 	if (err)
-		goto error_unassign_cores;
+		goto error_detach_domain;
 
 	/* After map_fw_image_config because it needs vd->vd/core_cfg. */
 	gxp_fw_data_populate_vd_cfg(gxp, vd);
@@ -698,7 +793,11 @@ error_unmap_core_resources:
 	gxp_dma_unmap_core_resources(gxp, vd->domain, vd->core_list);
 error_unmap_imgcfg:
 	unmap_fw_image_config(gxp, vd);
+error_detach_domain:
+#if GXP_MMU_REQUIRE_ATTACH
+	gxp_detach_mmu_domain(gxp, vd);
 error_unassign_cores:
+#endif
 	unassign_cores(vd);
 error_free_resp_queues:
 	kfree(vd->mailbox_resp_queues);
@@ -739,6 +838,9 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	unmap_fw_image(gxp, vd);
 	gxp_dma_unmap_core_resources(gxp, vd->domain, core_list);
 	unmap_fw_image_config(gxp, vd);
+#if GXP_MMU_REQUIRE_ATTACH
+	gxp_detach_mmu_domain(gxp, vd);
+#endif
 	unassign_cores(vd);
 
 	vd->gxp->mailbox_mgr->release_unconsumed_async_resps(vd);

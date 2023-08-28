@@ -679,11 +679,10 @@ void gxp_dma_sync_sg_for_device(struct gxp_dev *gxp, struct scatterlist *sg,
 	dma_sync_sg_for_device(gxp->dev, sg, nents, direction);
 }
 
-struct sg_table *
-gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
-			      struct gcip_iommu_domain *gdomain,
-			      struct dma_buf_attachment *attachment, u32 flags,
-			      enum dma_data_direction direction)
+struct sg_table *gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
+					       struct gcip_iommu_domain *gdomain,
+					       struct dma_buf_attachment *attachment, u32 flags,
+					       enum dma_data_direction direction)
 {
 	struct sg_table *sgt;
 	bool coherent = flags & GXP_MAP_COHERENT ? true : false;
@@ -694,9 +693,7 @@ gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
 	/* Map the attachment into the default domain */
 	sgt = dma_buf_map_attachment(attachment, direction);
 	if (IS_ERR(sgt)) {
-		dev_err(gxp->dev,
-			"DMA: dma_buf_map_attachment failed (ret=%ld)\n",
-			PTR_ERR(sgt));
+		dev_err(gxp->dev, "DMA: dma_buf_map_attachment failed (ret=%ld)\n", PTR_ERR(sgt));
 		return sgt;
 	}
 

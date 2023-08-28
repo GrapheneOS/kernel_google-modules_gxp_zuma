@@ -205,8 +205,7 @@ static inline enum dma_data_direction mapping_flags_to_dma_dir(u32 flags)
 	return DMA_NONE;
 }
 
-static int gxp_map_buffer(struct gxp_client *client,
-			  struct gxp_map_ioctl __user *argp)
+static int gxp_ioctl_map_buffer(struct gxp_client *client, struct gxp_map_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_map_ioctl ibuf;
@@ -278,7 +277,7 @@ error_destroy:
 	return ret;
 }
 
-static int gxp_unmap_buffer(struct gxp_client *client, struct gxp_map_ioctl __user *argp)
+static int gxp_ioctl_unmap_buffer(struct gxp_client *client, struct gxp_map_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_map_ioctl ibuf;
@@ -334,8 +333,7 @@ out:
 	return ret;
 }
 
-static int gxp_sync_buffer(struct gxp_client *client,
-			   struct gxp_sync_ioctl __user *argp)
+static int gxp_ioctl_sync_buffer(struct gxp_client *client, struct gxp_sync_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_sync_ioctl ibuf;
@@ -376,8 +374,8 @@ out:
 	return ret;
 }
 
-static int gxp_mailbox_command(struct gxp_client *client,
-			       struct gxp_mailbox_command_ioctl __user *argp)
+static int gxp_ioctl_mailbox_command(struct gxp_client *client,
+				     struct gxp_mailbox_command_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_mailbox_command_ioctl ibuf;
@@ -482,8 +480,8 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
-static int gxp_mailbox_response(struct gxp_client *client,
-				struct gxp_mailbox_response_ioctl __user *argp)
+static int gxp_ioctl_mailbox_response(struct gxp_client *client,
+				      struct gxp_mailbox_response_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_mailbox_response_ioctl ibuf;
@@ -526,8 +524,7 @@ out:
 	return ret;
 }
 
-static int gxp_get_specs(struct gxp_client *client,
-			 struct gxp_specs_ioctl __user *argp)
+static int gxp_ioctl_get_specs(struct gxp_client *client, struct gxp_specs_ioctl __user *argp)
 {
 	struct buffer_data *logging_buff_data;
 	struct gxp_dev *gxp = client->gxp;
@@ -556,8 +553,8 @@ static int gxp_get_specs(struct gxp_client *client,
 	return 0;
 }
 
-static int gxp_allocate_vd(struct gxp_client *client,
-			   struct gxp_virtual_device_ioctl __user *argp)
+static int gxp_ioctl_allocate_vd(struct gxp_client *client,
+				 struct gxp_virtual_device_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_virtual_device_ioctl ibuf;
@@ -597,9 +594,8 @@ static int gxp_allocate_vd(struct gxp_client *client,
 	return 0;
 }
 
-static int
-gxp_etm_trace_start_command(struct gxp_client *client,
-			    struct gxp_etm_trace_start_ioctl __user *argp)
+static int gxp_ioctl_etm_trace_start_command(struct gxp_client *client,
+					     struct gxp_etm_trace_start_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_etm_trace_start_ioctl ibuf;
@@ -652,8 +648,7 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
-static int gxp_etm_trace_sw_stop_command(struct gxp_client *client,
-					 __u16 __user *argp)
+static int gxp_ioctl_etm_trace_sw_stop_command(struct gxp_client *client, __u16 __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	u16 virtual_core_id;
@@ -689,8 +684,7 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
-static int gxp_etm_trace_cleanup_command(struct gxp_client *client,
-					 __u16 __user *argp)
+static int gxp_ioctl_etm_trace_cleanup_command(struct gxp_client *client, __u16 __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	u16 virtual_core_id;
@@ -726,9 +720,8 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
-static int
-gxp_etm_get_trace_info_command(struct gxp_client *client,
-			       struct gxp_etm_get_trace_info_ioctl __user *argp)
+static int gxp_ioctl_etm_get_trace_info_command(struct gxp_client *client,
+						struct gxp_etm_get_trace_info_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_etm_get_trace_info_ioctl ibuf;
@@ -895,8 +888,8 @@ static void unmap_tpu_mbx_queue(struct gxp_client *client,
 			       FREE_EXTERNAL_MAILBOX, &gxp_tpu_info, NULL);
 }
 
-static int gxp_map_tpu_mbx_queue(struct gxp_client *client,
-				 struct gxp_tpu_mbx_queue_ioctl __user *argp)
+static int gxp_ioctl_map_tpu_mbx_queue(struct gxp_client *client,
+				       struct gxp_tpu_mbx_queue_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_tpu_mbx_queue_ioctl ibuf;
@@ -965,8 +958,8 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
-static int gxp_unmap_tpu_mbx_queue(struct gxp_client *client,
-				   struct gxp_tpu_mbx_queue_ioctl __user *argp)
+static int gxp_ioctl_unmap_tpu_mbx_queue(struct gxp_client *client,
+					 struct gxp_tpu_mbx_queue_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_tpu_mbx_queue_ioctl ibuf;
@@ -1007,14 +1000,14 @@ out:
 
 #else /* HAS_TPU_EXT */
 
-#define gxp_map_tpu_mbx_queue(...) (-ENODEV)
-#define gxp_unmap_tpu_mbx_queue(...) (-ENODEV)
+#define gxp_ioctl_map_tpu_mbx_queue(...) (-ENODEV)
+#define gxp_ioctl_unmap_tpu_mbx_queue(...) (-ENODEV)
 
 #endif /* HAS_TPU_EXT */
 
-static int gxp_register_core_telemetry_eventfd(
-	struct gxp_client *client,
-	struct gxp_register_telemetry_eventfd_ioctl __user *argp)
+static int
+gxp_ioctl_register_core_telemetry_eventfd(struct gxp_client *client,
+					  struct gxp_register_telemetry_eventfd_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_register_telemetry_eventfd_ioctl ibuf;
@@ -1026,9 +1019,8 @@ static int gxp_register_core_telemetry_eventfd(
 						   ibuf.eventfd);
 }
 
-static int gxp_unregister_core_telemetry_eventfd(
-	struct gxp_client *client,
-	struct gxp_register_telemetry_eventfd_ioctl __user *argp)
+static int gxp_ioctl_unregister_core_telemetry_eventfd(
+	struct gxp_client *client, struct gxp_register_telemetry_eventfd_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_register_telemetry_eventfd_ioctl ibuf;
@@ -1039,8 +1031,7 @@ static int gxp_unregister_core_telemetry_eventfd(
 	return gxp_core_telemetry_unregister_eventfd(gxp, ibuf.type);
 }
 
-static int gxp_read_global_counter(struct gxp_client *client,
-				   __u64 __user *argp)
+static int gxp_ioctl_read_global_counter(struct gxp_client *client, __u64 __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	u32 high_first, high_second, low;
@@ -1115,8 +1106,8 @@ static bool validate_wake_lock_power(struct gxp_dev *gxp,
 	return true;
 }
 
-static int gxp_acquire_wake_lock(struct gxp_client *client,
-				 struct gxp_acquire_wakelock_ioctl __user *argp)
+static int gxp_ioctl_acquire_wake_lock(struct gxp_client *client,
+				       struct gxp_acquire_wakelock_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_acquire_wakelock_ioctl ibuf;
@@ -1213,7 +1204,7 @@ out:
 	return ret;
 }
 
-static int gxp_release_wake_lock(struct gxp_client *client, __u32 __user *argp)
+static int gxp_ioctl_release_wake_lock(struct gxp_client *client, __u32 __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	u32 wakelock_components;
@@ -1240,8 +1231,7 @@ static int gxp_release_wake_lock(struct gxp_client *client, __u32 __user *argp)
 	return ret;
 }
 
-static int gxp_map_dmabuf(struct gxp_client *client,
-			  struct gxp_map_dmabuf_ioctl __user *argp)
+static int gxp_ioctl_map_dmabuf(struct gxp_client *client, struct gxp_map_dmabuf_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_map_dmabuf_ioctl ibuf;
@@ -1299,7 +1289,8 @@ out_unlock:
 	return ret;
 }
 
-static int gxp_unmap_dmabuf(struct gxp_client *client, struct gxp_map_dmabuf_ioctl __user *argp)
+static int gxp_ioctl_unmap_dmabuf(struct gxp_client *client,
+				  struct gxp_map_dmabuf_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_map_dmabuf_ioctl ibuf;
@@ -1354,9 +1345,9 @@ out:
 	return ret;
 }
 
-static int gxp_register_mailbox_eventfd(
-	struct gxp_client *client,
-	struct gxp_register_mailbox_eventfd_ioctl __user *argp)
+static int
+gxp_ioctl_register_mailbox_eventfd(struct gxp_client *client,
+				   struct gxp_register_mailbox_eventfd_ioctl __user *argp)
 {
 	struct gxp_register_mailbox_eventfd_ioctl ibuf;
 	struct gxp_eventfd *eventfd;
@@ -1396,9 +1387,9 @@ out:
 	return ret;
 }
 
-static int gxp_unregister_mailbox_eventfd(
-	struct gxp_client *client,
-	struct gxp_register_mailbox_eventfd_ioctl __user *argp)
+static int
+gxp_ioctl_unregister_mailbox_eventfd(struct gxp_client *client,
+				     struct gxp_register_mailbox_eventfd_ioctl __user *argp)
 {
 	struct gxp_register_mailbox_eventfd_ioctl ibuf;
 	int ret = 0;
@@ -1442,9 +1433,8 @@ static inline const char *get_driver_commit(void)
 #endif
 }
 
-static int
-gxp_get_interface_version(struct gxp_client *client,
-			  struct gxp_interface_version_ioctl __user *argp)
+static int gxp_ioctl_get_interface_version(struct gxp_client *client,
+					   struct gxp_interface_version_ioctl __user *argp)
 {
 	struct gxp_interface_version_ioctl ibuf;
 	int ret;
@@ -1469,8 +1459,7 @@ gxp_get_interface_version(struct gxp_client *client,
 	return 0;
 }
 
-static int gxp_trigger_debug_dump(struct gxp_client *client,
-				  __u32 __user *argp)
+static int gxp_ioctl_trigger_debug_dump(struct gxp_client *client, __u32 __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	int phys_core, i;
@@ -1524,9 +1513,8 @@ out_unlock_client_semaphore:
 	return ret;
 }
 
-static int
-gxp_create_sync_fence(struct gxp_client *client,
-		      struct gxp_create_sync_fence_data __user *datap)
+static int gxp_ioctl_create_sync_fence(struct gxp_client *client,
+				       struct gxp_create_sync_fence_data __user *datap)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_create_sync_fence_data data;
@@ -1550,8 +1538,7 @@ gxp_create_sync_fence(struct gxp_client *client,
 	return ret;
 }
 
-static int
-gxp_signal_sync_fence(struct gxp_signal_sync_fence_data __user *datap)
+static int gxp_ioctl_signal_sync_fence(struct gxp_signal_sync_fence_data __user *datap)
 {
 	struct gxp_signal_sync_fence_data data;
 
@@ -1560,7 +1547,7 @@ gxp_signal_sync_fence(struct gxp_signal_sync_fence_data __user *datap)
 	return gcip_dma_fence_signal(data.fence, data.error, false);
 }
 
-static int gxp_sync_fence_status(struct gxp_sync_fence_status __user *datap)
+static int gxp_ioctl_sync_fence_status(struct gxp_sync_fence_status __user *datap)
 {
 	struct gxp_sync_fence_status data;
 	int ret;
@@ -1575,9 +1562,9 @@ static int gxp_sync_fence_status(struct gxp_sync_fence_status __user *datap)
 	return ret;
 }
 
-static int gxp_register_invalidated_eventfd(
-	struct gxp_client *client,
-	struct gxp_register_invalidated_eventfd_ioctl __user *argp)
+static int
+gxp_ioctl_register_invalidated_eventfd(struct gxp_client *client,
+				       struct gxp_register_invalidated_eventfd_ioctl __user *argp)
 {
 	struct gxp_register_invalidated_eventfd_ioctl ibuf;
 	struct gxp_eventfd *eventfd;
@@ -1608,9 +1595,9 @@ out:
 	return ret;
 }
 
-static int gxp_unregister_invalidated_eventfd(
-	struct gxp_client *client,
-	struct gxp_register_invalidated_eventfd_ioctl __user *argp)
+static int
+gxp_ioctl_unregister_invalidated_eventfd(struct gxp_client *client,
+					 struct gxp_register_invalidated_eventfd_ioctl __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
 	int ret = 0;
@@ -1633,7 +1620,7 @@ out:
 }
 
 /* Provide the invalidated_reason of the client if client->vd exists */
-static int gxp_get_invalidated_reason(struct gxp_client *client, __u32 __user *argp)
+static int gxp_ioctl_get_invalidated_reason(struct gxp_client *client, __u32 __user *argp)
 {
 	u32 ibuf;
 
@@ -1670,94 +1657,94 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 
 	switch (cmd) {
 	case GXP_MAP_BUFFER:
-		ret = gxp_map_buffer(client, argp);
+		ret = gxp_ioctl_map_buffer(client, argp);
 		break;
 	case GXP_UNMAP_BUFFER:
-		ret = gxp_unmap_buffer(client, argp);
+		ret = gxp_ioctl_unmap_buffer(client, argp);
 		break;
 	case GXP_SYNC_BUFFER:
-		ret = gxp_sync_buffer(client, argp);
+		ret = gxp_ioctl_sync_buffer(client, argp);
 		break;
 	case GXP_MAILBOX_RESPONSE:
-		ret = gxp_mailbox_response(client, argp);
+		ret = gxp_ioctl_mailbox_response(client, argp);
 		break;
 	case GXP_GET_SPECS:
-		ret = gxp_get_specs(client, argp);
+		ret = gxp_ioctl_get_specs(client, argp);
 		break;
 	case GXP_ALLOCATE_VIRTUAL_DEVICE:
-		ret = gxp_allocate_vd(client, argp);
+		ret = gxp_ioctl_allocate_vd(client, argp);
 		break;
 	case GXP_ETM_TRACE_START_COMMAND:
-		ret = gxp_etm_trace_start_command(client, argp);
+		ret = gxp_ioctl_etm_trace_start_command(client, argp);
 		break;
 	case GXP_ETM_TRACE_SW_STOP_COMMAND:
-		ret = gxp_etm_trace_sw_stop_command(client, argp);
+		ret = gxp_ioctl_etm_trace_sw_stop_command(client, argp);
 		break;
 	case GXP_ETM_TRACE_CLEANUP_COMMAND:
-		ret = gxp_etm_trace_cleanup_command(client, argp);
+		ret = gxp_ioctl_etm_trace_cleanup_command(client, argp);
 		break;
 	case GXP_ETM_GET_TRACE_INFO_COMMAND:
-		ret = gxp_etm_get_trace_info_command(client, argp);
+		ret = gxp_ioctl_etm_get_trace_info_command(client, argp);
 		break;
 	case GXP_MAP_TPU_MBX_QUEUE:
-		ret = gxp_map_tpu_mbx_queue(client, argp);
+		ret = gxp_ioctl_map_tpu_mbx_queue(client, argp);
 		break;
 	case GXP_UNMAP_TPU_MBX_QUEUE:
-		ret = gxp_unmap_tpu_mbx_queue(client, argp);
+		ret = gxp_ioctl_unmap_tpu_mbx_queue(client, argp);
 		break;
 	case GXP_REGISTER_CORE_TELEMETRY_EVENTFD:
-		ret = gxp_register_core_telemetry_eventfd(client, argp);
+		ret = gxp_ioctl_register_core_telemetry_eventfd(client, argp);
 		break;
 	case GXP_UNREGISTER_CORE_TELEMETRY_EVENTFD:
-		ret = gxp_unregister_core_telemetry_eventfd(client, argp);
+		ret = gxp_ioctl_unregister_core_telemetry_eventfd(client, argp);
 		break;
 	case GXP_READ_GLOBAL_COUNTER:
-		ret = gxp_read_global_counter(client, argp);
+		ret = gxp_ioctl_read_global_counter(client, argp);
 		break;
 	case GXP_RELEASE_WAKE_LOCK:
-		ret = gxp_release_wake_lock(client, argp);
+		ret = gxp_ioctl_release_wake_lock(client, argp);
 		break;
 	case GXP_MAP_DMABUF:
-		ret = gxp_map_dmabuf(client, argp);
+		ret = gxp_ioctl_map_dmabuf(client, argp);
 		break;
 	case GXP_UNMAP_DMABUF:
-		ret = gxp_unmap_dmabuf(client, argp);
+		ret = gxp_ioctl_unmap_dmabuf(client, argp);
 		break;
 	case GXP_MAILBOX_COMMAND:
-		ret = gxp_mailbox_command(client, argp);
+		ret = gxp_ioctl_mailbox_command(client, argp);
 		break;
 	case GXP_REGISTER_MAILBOX_EVENTFD:
-		ret = gxp_register_mailbox_eventfd(client, argp);
+		ret = gxp_ioctl_register_mailbox_eventfd(client, argp);
 		break;
 	case GXP_UNREGISTER_MAILBOX_EVENTFD:
-		ret = gxp_unregister_mailbox_eventfd(client, argp);
+		ret = gxp_ioctl_unregister_mailbox_eventfd(client, argp);
 		break;
 	case GXP_ACQUIRE_WAKE_LOCK:
-		ret = gxp_acquire_wake_lock(client, argp);
+		ret = gxp_ioctl_acquire_wake_lock(client, argp);
 		break;
 	case GXP_GET_INTERFACE_VERSION:
-		ret = gxp_get_interface_version(client, argp);
+		ret = gxp_ioctl_get_interface_version(client, argp);
 		break;
 	case GXP_TRIGGER_DEBUG_DUMP:
-		ret = gxp_trigger_debug_dump(client, argp);
+		ret = gxp_ioctl_trigger_debug_dump(client, argp);
 		break;
 	case GXP_CREATE_SYNC_FENCE:
-		ret = gxp_create_sync_fence(client, argp);
+		ret = gxp_ioctl_create_sync_fence(client, argp);
 		break;
 	case GXP_SIGNAL_SYNC_FENCE:
-		ret = gxp_signal_sync_fence(argp);
+		ret = gxp_ioctl_signal_sync_fence(argp);
 		break;
 	case GXP_SYNC_FENCE_STATUS:
-		ret = gxp_sync_fence_status(argp);
+		ret = gxp_ioctl_sync_fence_status(argp);
 		break;
 	case GXP_REGISTER_INVALIDATED_EVENTFD:
-		ret = gxp_register_invalidated_eventfd(client, argp);
+		ret = gxp_ioctl_register_invalidated_eventfd(client, argp);
 		break;
 	case GXP_UNREGISTER_INVALIDATED_EVENTFD:
-		ret = gxp_unregister_invalidated_eventfd(client, argp);
+		ret = gxp_ioctl_unregister_invalidated_eventfd(client, argp);
 		break;
 	case GXP_GET_INVALIDATED_REASON:
-		ret = gxp_get_invalidated_reason(client, argp);
+		ret = gxp_ioctl_get_invalidated_reason(client, argp);
 		break;
 	default:
 		ret = -ENOTTY; /* unknown command */

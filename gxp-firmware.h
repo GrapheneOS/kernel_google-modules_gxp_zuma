@@ -22,6 +22,8 @@ enum gxp_imgcfg_idx {
 	CORE_CFG_REGION_IDX,
 	VD_CFG_REGION_IDX,
 	SYS_CFG_REGION_IDX,
+	/* TODO(b/299037074): Remove core's accesses to LPM. */
+	REMOTE_LPM_IDX = 7,
 };
 
 struct gxp_firmware_manager {

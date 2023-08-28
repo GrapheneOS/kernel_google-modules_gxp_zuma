@@ -325,11 +325,10 @@ void gxp_dma_sync_sg_for_device(struct gxp_dev *gxp, struct scatterlist *sg,
  * Return: A scatter-gather table describing the mapping of the dma-buf
  *         into the default IOMMU domain. Returns ERR_PTR on failure.
  */
-struct sg_table *
-gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
-			      struct gcip_iommu_domain *gdomain,
-			      struct dma_buf_attachment *attachment, u32 flags,
-			      enum dma_data_direction direction);
+struct sg_table *gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
+					       struct gcip_iommu_domain *gdomain,
+					       struct dma_buf_attachment *attachment, u32 flags,
+					       enum dma_data_direction direction);
 
 /**
  * gxp_dma_unmap_dmabuf_attachment() - Unmap a dma-buf

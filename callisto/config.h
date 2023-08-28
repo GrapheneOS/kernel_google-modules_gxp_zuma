@@ -51,6 +51,11 @@
 #define GXP_WDG_ENABLE_BIT 0
 #define GXP_WDG_INT_CLEAR_BIT 5
 
+#if IS_ENABLED(CONFIG_GXP_GEM5)
+/* Zuma DSP on gem5 uses ARM SMMU. */
+#define GXP_MMU_REQUIRE_ATTACH 1
+#endif
+
 #include "config-pwr-state.h"
 #include "context.h"
 #include "csrs.h"

@@ -443,6 +443,10 @@ static void gxp_mcu_firmware_stop_locked(struct gxp_mcu_firmware *mcu_fw)
 	if (ret)
 		dev_warn(gxp->dev, "KCI shutdown failed: %d", ret);
 
+	/* TODO(b/296980539): revert this change after the bug is fixed. */
+#if IS_ENABLED(CONFIG_GXP_GEM5)
+	gxp_lpm_set_state(gxp, LPM_PSM_MCU, LPM_PG_STATE, true);
+#else
 	/*
 	 * Waits for MCU transiting to PG state. If KCI shutdown was failed above (ret != 0), it
 	 * will wait for that with ringing the doorbell.
@@ -454,6 +458,7 @@ static void gxp_mcu_firmware_stop_locked(struct gxp_mcu_firmware *mcu_fw)
 		 * from here.
 		 */
 	}
+#endif /* IS_ENABLED(CONFIG_GXP_GEM5) */
 
 	/* To test the case of the MCU FW sending FW_CRASH RKCI in the middle. */
 	TEST_FLUSH_KCI_WORKERS(mcu->kci);

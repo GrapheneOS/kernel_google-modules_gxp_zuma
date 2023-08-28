@@ -89,12 +89,11 @@ static ssize_t gcip_fault_injection_set(struct file *filp, const char __user *bu
 
 	memset(injection->opaque, 0, sizeof(injection->opaque));
 	for (i = 0; i < ARRAY_SIZE(injection->opaque); i++) {
-		if (sscanf(input + start, "%u%n", &val, &consume) > 0) {
-			start += consume;
-			injection->opaque[i] = val;
-		} else {
+		if (sscanf(input + start, "%u%n", &val, &consume) <= 0)
 			break;
-		}
+
+		start += consume;
+		injection->opaque[i] = val;
 	}
 
 	injection->is_pending = true;

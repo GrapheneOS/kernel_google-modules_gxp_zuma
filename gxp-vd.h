@@ -25,8 +25,7 @@
 #include "gxp-internal.h"
 #include "gxp-mapping.h"
 
-/* TODO(b/259192112): set to 8 once the runtime has added the credit limit. */
-#define GXP_COMMAND_CREDIT_PER_VD 256
+#define GXP_COMMAND_CREDIT_PER_VD 16
 
 /* A special client ID for secure workloads pre-agreed with MCU firmware. */
 #define SECURE_CLIENT_ID (3 << 10)
@@ -102,7 +101,7 @@ struct gxp_virtual_device {
 	 * The config regions specified in image config.
 	 * core_cfg's size should be a multiple of GXP_NUM_CORES.
 	 */
-	struct gxp_mapped_resource core_cfg, vd_cfg, sys_cfg;
+	struct gxp_mapped_resource core_cfg, vd_cfg, sys_cfg, lpm;
 	uint core_list;
 	/*
 	 * The ID of DSP client. -1 if it is not allocated.

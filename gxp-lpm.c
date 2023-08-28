@@ -5,7 +5,6 @@
  * Copyright (C) 2021 Google LLC
  */
 
-#include <linux/acpm_dvfs.h>
 #include <linux/bitops.h>
 #include <linux/io.h>
 #include <linux/pm_runtime.h>

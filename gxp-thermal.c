@@ -5,7 +5,6 @@
  * Copyright (C) 2021-2023 Google LLC
  */
 
-#include <linux/acpm_dvfs.h>
 #include <linux/device.h>
 #include <linux/minmax.h>
 

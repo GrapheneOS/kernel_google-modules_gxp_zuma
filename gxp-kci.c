@@ -311,6 +311,40 @@ static inline int gxp_kci_send_cmd(struct gxp_mailbox *mailbox,
 	return ret;
 }
 
+/**
+ * gxp_kci_send_cmd_with_data() - Sends the KCI command with given kci code and data.
+ * @gkci: The container of gxp_mailbox and gxp_mcu.
+ * @code: The KCI code of the command.
+ * @data: The pointer of the data to be sent.
+ * @size: The size of the data.
+ *
+ * Return: Returns error number if failed.
+ */
+static int gxp_kci_send_cmd_with_data(struct gxp_kci *gkci, u16 code, const void *data, size_t size)
+{
+	struct gcip_kci_command_element cmd = {
+		.code = code,
+	};
+	struct gxp_mapped_resource buf;
+	int ret;
+
+	if (!gkci || !gkci->mbx)
+		return -ENODEV;
+
+	if (gxp_mcu_mem_alloc_data(gkci->mcu, &buf, size))
+		return -ENOSPC;
+
+	memcpy(buf.vaddr, data, size);
+	cmd.dma.address = buf.daddr;
+	cmd.dma.size = size;
+
+	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
+
+	gxp_mcu_mem_free_data(gkci->mcu, &buf);
+
+	return ret;
+}
+
 int gxp_kci_init(struct gxp_mcu *mcu)
 {
 	struct gxp_dev *gxp = mcu->gxp;
@@ -545,94 +579,35 @@ int gxp_kci_shutdown(struct gxp_kci *gkci)
 int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u32 client_id, u8 num_cores,
 			   u8 slice_index, bool first_open)
 {
-	struct gcip_kci_command_element cmd = {
-		.code = GCIP_KCI_CODE_ALLOCATE_VMBOX,
-	};
-	struct gxp_kci_allocate_vmbox_detail *detail;
-	struct gxp_mapped_resource buf;
-	int ret;
+	struct gxp_kci_allocate_vmbox_detail detail = { .client_id = client_id,
+							.num_cores = num_cores,
+							.slice_index = slice_index,
+							.first_open = first_open };
 
-	if (!gkci || !gkci->mbx)
-		return -ENODEV;
-
-	ret = gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(*detail));
-	if (ret)
-		return -ENOMEM;
-
-	detail = buf.vaddr;
-	detail->client_id = client_id;
-	detail->num_cores = num_cores;
-	detail->slice_index = slice_index;
-	detail->first_open = first_open;
-
-	cmd.dma.address = buf.daddr;
-	cmd.dma.size = sizeof(*detail);
-
-	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
-	gxp_mcu_mem_free_data(gkci->mcu, &buf);
-
-	return ret;
+	return gxp_kci_send_cmd_with_data(gkci, GCIP_KCI_CODE_ALLOCATE_VMBOX, &detail,
+					  sizeof(detail));
 }
 
 int gxp_kci_release_vmbox(struct gxp_kci *gkci, u32 client_id)
 {
-	struct gcip_kci_command_element cmd = {
-		.code = GCIP_KCI_CODE_RELEASE_VMBOX,
-	};
-	struct gxp_kci_release_vmbox_detail *detail;
-	struct gxp_mapped_resource buf;
-	int ret;
+	struct gxp_kci_release_vmbox_detail detail = { .client_id = client_id };
 
-	if (!gkci || !gkci->mbx)
-		return -ENODEV;
-
-	ret = gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(*detail));
-	if (ret)
-		return -ENOMEM;
-
-	detail = buf.vaddr;
-	detail->client_id = client_id;
-
-	cmd.dma.address = buf.daddr;
-	cmd.dma.size = sizeof(*detail);
-
-	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
-	gxp_mcu_mem_free_data(gkci->mcu, &buf);
-
-	return ret;
+	return gxp_kci_send_cmd_with_data(gkci, GCIP_KCI_CODE_RELEASE_VMBOX, &detail,
+					  sizeof(detail));
 }
 
 int gxp_kci_link_unlink_offload_vmbox(
 	struct gxp_kci *gkci, u32 client_id, u32 offload_client_id,
 	enum gcip_kci_offload_chip_type offload_chip_type, bool link)
 {
-	struct gcip_kci_command_element cmd = {
-		.code = link ? GCIP_KCI_CODE_LINK_OFFLOAD_VMBOX :
-			       GCIP_KCI_CODE_UNLINK_OFFLOAD_VMBOX,
+	u16 code = link ? GCIP_KCI_CODE_LINK_OFFLOAD_VMBOX : GCIP_KCI_CODE_UNLINK_OFFLOAD_VMBOX;
+	struct gxp_kci_link_unlink_offload_vmbox_detail detail = {
+		.client_id = client_id,
+		.offload_client_id = offload_client_id,
+		.offload_chip_type = offload_chip_type
 	};
-	struct gxp_kci_link_unlink_offload_vmbox_detail *detail;
-	struct gxp_mapped_resource buf;
-	int ret;
 
-	if (!gkci || !gkci->mbx)
-		return -ENODEV;
-
-	ret = gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(*detail));
-	if (ret)
-		return -ENOMEM;
-
-	detail = buf.vaddr;
-	detail->client_id = client_id;
-	detail->offload_client_id = offload_client_id;
-	detail->offload_chip_type = offload_chip_type;
-
-	cmd.dma.address = buf.daddr;
-	cmd.dma.size = sizeof(*detail);
-
-	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
-	gxp_mcu_mem_free_data(gkci->mcu, &buf);
-
-	return ret;
+	return gxp_kci_send_cmd_with_data(gkci, code, &detail, sizeof(detail));
 }
 
 int gxp_kci_notify_throttling(struct gxp_kci *gkci, u32 rate)
@@ -669,31 +644,14 @@ void gxp_kci_resp_rkci_ack(struct gxp_kci *gkci,
 int gxp_kci_set_device_properties(struct gxp_kci *gkci,
 				  struct gxp_dev_prop *dev_prop)
 {
-	struct gcip_kci_command_element cmd = {
-		.code = GCIP_KCI_CODE_SET_DEVICE_PROPERTIES,
-	};
-	struct gxp_mapped_resource buf;
 	int ret = 0;
-
-	if (!gkci || !gkci->mbx)
-		return -ENODEV;
 
 	mutex_lock(&dev_prop->lock);
 	if (!dev_prop->initialized)
 		goto out;
 
-	if (gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(dev_prop->opaque))) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	memcpy(buf.vaddr, &dev_prop->opaque, sizeof(dev_prop->opaque));
-
-	cmd.dma.address = buf.daddr;
-	cmd.dma.size = sizeof(dev_prop->opaque);
-
-	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
-	gxp_mcu_mem_free_data(gkci->mcu, &buf);
+	ret = gxp_kci_send_cmd_with_data(gkci, GCIP_KCI_CODE_SET_DEVICE_PROPERTIES,
+					 &dev_prop->opaque, sizeof(dev_prop->opaque));
 
 out:
 	mutex_unlock(&dev_prop->lock);
@@ -702,26 +660,6 @@ out:
 
 int gxp_kci_fault_injection(struct gcip_fault_inject *injection)
 {
-	struct gxp_kci *gkci = injection->kci_data;
-	struct gcip_kci_command_element cmd = {
-		.code = GCIP_KCI_CODE_FAULT_INJECTION,
-	};
-	struct gxp_mapped_resource buf;
-	int ret;
-
-	if (!gkci || !gkci->mbx)
-		return -ENODEV;
-
-	if (gxp_mcu_mem_alloc_data(gkci->mcu, &buf, sizeof(injection->opaque)))
-		return -ENOSPC;
-
-	memcpy(buf.vaddr, injection->opaque, sizeof(injection->opaque));
-	cmd.dma.address = buf.daddr;
-	cmd.dma.size = sizeof(injection->opaque);
-
-	ret = gxp_kci_send_cmd(gkci->mbx, &cmd);
-
-	gxp_mcu_mem_free_data(gkci->mcu, &buf);
-
-	return ret;
+	return gxp_kci_send_cmd_with_data(injection->kci_data, GCIP_KCI_CODE_FAULT_INJECTION,
+					  injection->opaque, sizeof(injection->opaque));
 }
