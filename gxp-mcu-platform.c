@@ -28,35 +28,6 @@ module_param_named(work_mode, gxp_work_mode_name, charp, 0660);
 static char *chip_rev = "a0";
 module_param(chip_rev, charp, 0660);
 
-static int gxp_mcu_request_power_states(struct gxp_client *client,
-					struct gxp_power_states power_states)
-{
-	struct gxp_dev *gxp = client->gxp;
-	struct gxp_mcu *mcu = gxp_mcu_of(gxp);
-	struct gxp_uci_command cmd;
-	int ret;
-
-	if (gxp_is_direct_mode(gxp))
-		return -EOPNOTSUPP;
-
-	/* Plus 1 to align with power states in MCU firmware. */
-	cmd.wakelock_command_params.dsp_operating_point =
-		power_states.power + 1;
-	cmd.wakelock_command_params.memory_operating_point =
-		power_states.memory;
-	cmd.type = WAKELOCK_COMMAND;
-	cmd.client_id = client->vd->client_id;
-
-	ret = gxp_uci_send_command(
-		&mcu->uci, client->vd, &cmd,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
-		client->mb_eventfds[UCI_RESOURCE_ID]);
-	return ret;
-}
-
 static int allocate_vmbox(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
 	struct gxp_kci *kci = &(gxp_mcu_of(gxp)->kci);
@@ -327,7 +298,6 @@ void gxp_mcu_dev_init(struct gxp_mcu_dev *mcu_dev)
 	gxp->handle_mmap = gxp_mcu_mmap;
 	gxp->after_vd_block_ready = gxp_mcu_platform_after_vd_block_ready;
 	gxp->before_vd_block_unready = gxp_mcu_platform_before_vd_block_unready;
-	gxp->request_power_states = gxp_mcu_request_power_states;
 	gxp->pm_after_blk_on = gxp_mcu_pm_after_blk_on;
 	gxp->pm_before_blk_off = gxp_mcu_pm_before_blk_off;
 #if HAS_TPU_EXT

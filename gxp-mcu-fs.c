@@ -19,14 +19,73 @@
 #include "gxp-uci.h"
 #include "gxp.h"
 
-static int
-gxp_ioctl_uci_command(struct gxp_client *client,
-		      struct gxp_mailbox_uci_command_ioctl __user *argp)
+#define GXP_UCI_NULL_COMMAND_FLAG (1 << 0)
+
+static int gxp_ioctl_uci_command_compat(struct gxp_client *client,
+					struct gxp_mailbox_uci_command_compat_ioctl __user *argp)
+{
+	struct gxp_mailbox_uci_command_compat_ioctl ibuf;
+	struct gxp_dev *gxp = client->gxp;
+	struct gxp_mcu *mcu = gxp_mcu_of(gxp);
+	struct gxp_uci_command cmd = {};
+	int ret;
+
+	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
+		return -EFAULT;
+
+	down_read(&client->semaphore);
+
+	if (!gxp_client_has_available_vd(client, "GXP_MAILBOX_UCI_COMMAND_COMPAT")) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	/* Caller must hold BLOCK wakelock */
+	if (!client->has_block_wakelock) {
+		dev_err(gxp->dev,
+			"GXP_MAILBOX_UCI_COMMAND_COMPAT requires the client hold a BLOCK wakelock\n");
+		ret = -ENODEV;
+		goto out;
+	}
+
+	memcpy(cmd.opaque, ibuf.opaque, sizeof(cmd.opaque));
+
+	cmd.client_id = client->vd->client_id;
+
+	ret = gxp_uci_send_command(
+		&mcu->uci, client->vd, &cmd, NULL,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
+		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
+		client->mb_eventfds[UCI_RESOURCE_ID]);
+
+	up_read(&client->semaphore);
+
+	if (ret) {
+		dev_err(gxp->dev,
+			"Failed to enqueue mailbox command (ret=%d)\n", ret);
+		return ret;
+	}
+	ibuf.sequence_number = cmd.seq;
+
+	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
+		return -EFAULT;
+
+	return 0;
+out:
+	up_read(&client->semaphore);
+	return ret;
+}
+
+static int gxp_ioctl_uci_command(struct gxp_client *client,
+				 struct gxp_mailbox_uci_command_ioctl __user *argp)
 {
 	struct gxp_mailbox_uci_command_ioctl ibuf;
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_mcu *mcu = gxp_mcu_of(gxp);
 	struct gxp_uci_command cmd = {};
+	struct gxp_uci_additional_info additional_info = {};
 	int ret;
 
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
@@ -51,8 +110,17 @@ gxp_ioctl_uci_command(struct gxp_client *client,
 
 	cmd.client_id = client->vd->client_id;
 
+	if (argp->flags & GXP_UCI_NULL_COMMAND_FLAG)
+		cmd.type = NULL_COMMAND;
+
+	/*
+	 * TODO(b/296162006): Get fence IDs of in/out-fence FDs in argp via IIF driver.
+	 *                    After that, pass them to this function.
+	 */
+	gxp_uci_fill_additional_info(&additional_info, NULL, 0, NULL, 0, argp->timeout_ms, NULL, 0);
+
 	ret = gxp_uci_send_command(
-		&mcu->uci, client->vd, &cmd,
+		&mcu->uci, client->vd, &cmd, &additional_info,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
@@ -195,6 +263,9 @@ long gxp_mcu_ioctl(struct file *file, uint cmd, ulong arg)
 		break;
 	case GXP_UNREGISTER_MCU_TELEMETRY_EVENTFD:
 		ret = gxp_ioctl_unregister_mcu_telemetry_eventfd(client, argp);
+		break;
+	case GXP_MAILBOX_UCI_COMMAND_COMPAT:
+		ret = gxp_ioctl_uci_command_compat(client, argp);
 		break;
 	case GXP_MAILBOX_UCI_COMMAND:
 		ret = gxp_ioctl_uci_command(client, argp);

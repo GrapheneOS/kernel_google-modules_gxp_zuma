@@ -10,14 +10,18 @@
 
 #include <soc/google/exynos_pm_qos.h>
 
+#include <gcip/gcip-slc.h>
+
 #include "gxp-gsx01-ssmt.h"
 
 struct gxp_soc_data {
-	/* INT/MIF requests for memory bandwidth */
+	/* INT/MIF requests for memory bandwidth. */
 	struct exynos_pm_qos_request int_min;
 	struct exynos_pm_qos_request mif_min;
 	/* The Stream Security Mapping Table support. */
 	struct gxp_ssmt ssmt;
+	/* The SLC configurations. */
+	struct gcip_slc slc;
 };
 
 #endif /* __MOBILE_SOC_GSX01_H__ */

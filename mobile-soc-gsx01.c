@@ -10,6 +10,7 @@
 #include <soc/google/exynos_pm_qos.h>
 
 #include <gcip/gcip-kci.h>
+#include <gcip/gcip-slc.h>
 
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
@@ -127,13 +128,21 @@ int gxp_soc_init(struct gxp_dev *gxp)
 		return ret;
 	}
 
+	gcip_slc_debugfs_init(&gxp->soc_data->slc, gxp->dev, gxp->d_entry);
+
 	return 0;
+}
+
+void gxp_soc_exit(struct gxp_dev *gxp)
+{
+	gcip_slc_debugfs_exit(&gxp->soc_data->slc);
 }
 
 void gxp_soc_activate_context(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 			      uint core_list)
 {
 	struct gxp_ssmt *ssmt = &gxp->soc_data->ssmt;
+	struct gcip_slc *slc = &gxp->soc_data->slc;
 	uint core;
 
 	/* Program VID only when cores are managed by us. */
@@ -147,6 +156,9 @@ void gxp_soc_activate_context(struct gxp_dev *gxp, struct gcip_iommu_domain *gdo
 	} else {
 		gxp_gsx01_ssmt_activate_scid(ssmt, gdomain->pasid);
 	}
+
+	if (gcip_slc_is_valid(slc))
+		gxp_gsx01_ssmt_set_slc_attr(ssmt, slc);
 }
 
 void gxp_soc_deactivate_context(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,

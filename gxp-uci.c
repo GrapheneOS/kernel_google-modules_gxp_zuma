@@ -5,6 +5,7 @@
  * Copyright (C) 2022 Google LLC
  */
 
+#include <linux/align.h>
 #include <linux/bitops.h>
 #include <linux/kthread.h>
 #include <linux/slab.h>
@@ -31,6 +32,14 @@
 
 #define MBOX_CMD_QUEUE_NUM_ENTRIES 1024
 #define MBOX_RESP_QUEUE_NUM_ENTRIES 1024
+
+#define ADDITIONAL_INFO_ALIGN SZ_16
+/*
+ * As the firmware side will use the same length of the per-cmd timeout, we should give a margin to
+ * the kernel-side mailbox to prevent the corner case of the firmware returning a response right
+ * after the timeout.
+ */
+#define PER_CMD_TIMEOUT_MARGIN_MS 1000
 
 static int gxp_uci_mailbox_manager_execute_cmd(
 	struct gxp_client *client, struct gxp_mailbox *mailbox, int virt_core,
@@ -59,7 +68,6 @@ static int gxp_uci_mailbox_manager_execute_cmd(
 	cmd.core_command_params.dsp_operating_point = power_states.power + 1;
 	cmd.core_command_params.memory_operating_point = power_states.memory;
 	cmd.type = cmd_code;
-	cmd.core_id = 0;
 	cmd.client_id = vd->client_id;
 
 	/*
@@ -321,12 +329,32 @@ static void gxp_uci_release_awaiter_data(void *data)
 	 * This function might be called when the VD is already released, don't do VD operations in
 	 * this case.
 	 */
+	if (async_resp->additional_info_buf.vaddr)
+		gxp_mcu_mem_free_data(async_resp->uci->mcu, &async_resp->additional_info_buf);
 	if (async_resp->vd->state != GXP_VD_RELEASED)
 		gxp_vd_release_credit(async_resp->vd);
 	if (async_resp->eventfd)
 		gxp_eventfd_put(async_resp->eventfd);
 	gxp_vd_put(async_resp->vd);
 	kfree(async_resp);
+}
+
+static u32 gxp_uci_get_cmd_timeout(struct gcip_mailbox *mailbox, void *cmd, void *resp, void *data)
+{
+	struct gxp_uci_async_response *async_resp = data;
+	struct gxp_uci_additional_info_header *header;
+	struct gxp_uci_additional_info_root *root;
+
+	if (!async_resp->additional_info_buf.vaddr)
+		return MAILBOX_TIMEOUT;
+
+	header = async_resp->additional_info_buf.vaddr;
+	root = async_resp->additional_info_buf.vaddr + header->root_offset;
+
+	if (!root->timeout_ms)
+		return MAILBOX_TIMEOUT;
+
+	return root->timeout_ms + PER_CMD_TIMEOUT_MARGIN_MS;
 }
 
 static const struct gcip_mailbox_ops gxp_uci_gcip_mbx_ops = {
@@ -348,8 +376,7 @@ static const struct gcip_mailbox_ops gxp_uci_gcip_mbx_ops = {
 	.set_resp_elem_seq = gxp_uci_set_resp_elem_seq,
 	.acquire_wait_list_lock = gxp_mailbox_gcip_ops_acquire_wait_list_lock,
 	.release_wait_list_lock = gxp_mailbox_gcip_ops_release_wait_list_lock,
-	.wait_for_cmd_queue_not_full =
-		gxp_mailbox_gcip_ops_wait_for_cmd_queue_not_full,
+	.wait_for_cmd_queue_not_full = gxp_mailbox_gcip_ops_wait_for_cmd_queue_not_full,
 	.before_enqueue_wait_list = gxp_uci_before_enqueue_wait_list,
 	.after_enqueue_cmd = gxp_mailbox_gcip_ops_after_enqueue_cmd,
 	.after_fetch_resps = gxp_mailbox_gcip_ops_after_fetch_resps,
@@ -357,6 +384,7 @@ static const struct gcip_mailbox_ops gxp_uci_gcip_mbx_ops = {
 	.handle_awaiter_timedout = gxp_uci_handle_awaiter_timedout,
 	.release_awaiter_data = gxp_uci_release_awaiter_data,
 	.is_block_off = gxp_mailbox_gcip_ops_is_block_off,
+	.get_cmd_timeout = gxp_uci_get_cmd_timeout,
 };
 
 static int gxp_uci_allocate_resources(struct gxp_mailbox *mailbox,
@@ -431,6 +459,95 @@ static struct gxp_mailbox_ops gxp_uci_gxp_mbx_ops = {
 	.gcip_ops.mbx = &gxp_uci_gcip_mbx_ops,
 };
 
+/*
+ * Calculates an aligned start offset of the field which is expected to be start at @offset with
+ * @size of buffer. If the end offset is already aligned, the returned offset will be the same
+ * with @offset. Otherwise, a padded start offset will be returned.
+ */
+static uint32_t gxp_uci_additional_info_align_offset(uint32_t offset, uint32_t size)
+{
+	uint32_t end = offset + size, aligned;
+
+	aligned = ALIGN(end, ADDITIONAL_INFO_ALIGN);
+
+	return offset + (aligned - end);
+}
+
+/* Fills the header part of the additional_info. */
+static void gxp_uci_additional_info_fill_header(struct gxp_uci_additional_info_header *header)
+{
+	header->identifier = 0;
+	header->version = 0;
+	header->root_offset = gxp_uci_additional_info_align_offset(
+		sizeof(*header), sizeof(struct gxp_uci_additional_info_root));
+}
+
+/* Fills the root part of the additional info. */
+static void gxp_uci_additional_info_fill_root(struct gxp_uci_additional_info_root *root,
+					      uint32_t root_offset, uint32_t in_fences_size,
+					      uint32_t out_fences_size, uint32_t timeout_ms,
+					      uint32_t runtime_additional_info_size)
+{
+	uint32_t in_fences_size_b = sizeof(uint16_t) * in_fences_size;
+	uint32_t out_fences_size_b = sizeof(uint16_t) * out_fences_size;
+
+	root->object_size = sizeof(*root);
+	root->in_fences_offset =
+		gxp_uci_additional_info_align_offset(sizeof(*root), in_fences_size_b);
+	root->in_fences_size = in_fences_size;
+	root->out_fences_offset = gxp_uci_additional_info_align_offset(
+		root->in_fences_offset + in_fences_size_b, out_fences_size_b);
+	root->out_fences_size = out_fences_size;
+	root->timeout_ms = timeout_ms;
+	root->runtime_additional_info_offset = gxp_uci_additional_info_align_offset(
+		root->out_fences_offset + out_fences_size_b, runtime_additional_info_size);
+	root->runtime_additional_info_size = runtime_additional_info_size;
+}
+
+/*
+ * Allocates a buffer for the additional_info from the MCU data memory pool and copy the data from
+ * @info to the allocated buffer.
+ */
+static int gxp_uci_allocate_additional_info(struct gxp_uci_async_response *async_resp,
+					    struct gxp_uci_additional_info *info)
+{
+	int ret;
+	struct gxp_uci *uci = async_resp->uci;
+	struct gxp_mapped_resource *buf = &async_resp->additional_info_buf;
+	size_t size = info->header.root_offset + info->root.runtime_additional_info_offset +
+		      info->root.runtime_additional_info_size;
+
+	ret = gxp_mcu_mem_alloc_data(uci->mcu, buf, size);
+	if (ret) {
+		dev_err(uci->gxp->dev, "Failed to allocate additional info: %d", ret);
+		return ret;
+	}
+
+	/* Copy header. */
+	memcpy(buf->vaddr, &info->header, sizeof(info->header));
+
+	/* Copy root. */
+	memcpy(buf->vaddr + info->header.root_offset, &info->root, sizeof(info->root));
+
+	/* Copy in_fences. */
+	if (info->root.in_fences_size)
+		memcpy(buf->vaddr + info->header.root_offset + info->root.in_fences_offset,
+		       info->in_fences, sizeof(uint16_t) * info->root.in_fences_size);
+
+	/* Copy out_fences. */
+	if (info->root.out_fences_size)
+		memcpy(buf->vaddr + info->header.root_offset + info->root.out_fences_offset,
+		       info->out_fences, sizeof(uint16_t) * info->root.out_fences_size);
+
+	/* Copy runtime-defined additional info. */
+	if (info->root.runtime_additional_info_size)
+		memcpy(buf->vaddr + info->header.root_offset +
+			       info->root.runtime_additional_info_offset,
+		       info->runtime_additional_info, info->root.runtime_additional_info_size);
+
+	return 0;
+}
+
 int gxp_uci_init(struct gxp_mcu *mcu)
 {
 	struct gxp_dev *gxp = mcu->gxp;
@@ -472,6 +589,7 @@ void gxp_uci_exit(struct gxp_uci *uci)
 
 int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 			 struct gxp_uci_command *cmd,
+			 struct gxp_uci_additional_info *additional_info,
 			 struct list_head *wait_queue,
 			 struct list_head *resp_queue, spinlock_t *queue_lock,
 			 wait_queue_head_t *queue_waitq,
@@ -492,19 +610,21 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 	async_resp->uci = uci;
 	async_resp->vd = gxp_vd_get(vd);
 	async_resp->wait_queue = wait_queue;
-	/*
-	 * If the command is a wakelock command, keep dest_queue as a null
-	 * pointer to indicate that we will not expose the response to the
-	 * client.
-	 */
-	if (cmd->type != WAKELOCK_COMMAND)
-		async_resp->dest_queue = resp_queue;
+	async_resp->dest_queue = resp_queue;
 	async_resp->queue_lock = queue_lock;
 	async_resp->dest_queue_waitq = queue_waitq;
 	if (eventfd && gxp_eventfd_get(eventfd))
 		async_resp->eventfd = eventfd;
 	else
 		async_resp->eventfd = NULL;
+
+	if (additional_info) {
+		ret = gxp_uci_allocate_additional_info(async_resp, additional_info);
+		if (ret)
+			goto err_free_async_resp;
+		cmd->additional_info_address = async_resp->additional_info_buf.daddr;
+		cmd->additional_info_size = async_resp->additional_info_buf.size;
+	}
 
 	/*
 	 * @async_resp->awaiter will be set from the `gxp_uci_before_enqueue_wait_list`
@@ -520,9 +640,12 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 	return 0;
 
 err_free_resp:
+	if (additional_info)
+		gxp_mcu_mem_free_data(uci->mcu, &async_resp->additional_info_buf);
 	if (async_resp->eventfd)
 		gxp_eventfd_put(async_resp->eventfd);
 	gxp_vd_put(vd);
+err_free_async_resp:
 	kfree(async_resp);
 err_release_credit:
 	gxp_vd_release_credit(vd);
@@ -595,4 +718,19 @@ int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
 	gcip_mailbox_release_awaiter(async_resp->awaiter);
 
 	return ret;
+}
+
+void gxp_uci_fill_additional_info(struct gxp_uci_additional_info *info, uint16_t *in_fences,
+				  uint32_t in_fences_size, uint16_t *out_fences,
+				  uint32_t out_fences_size, uint32_t timeout_ms,
+				  uint8_t *runtime_additional_info,
+				  uint32_t runtime_additional_info_size)
+{
+	gxp_uci_additional_info_fill_header(&info->header);
+	gxp_uci_additional_info_fill_root(&info->root, info->header.root_offset, in_fences_size,
+					  out_fences_size, timeout_ms,
+					  runtime_additional_info_size);
+	info->in_fences = in_fences;
+	info->out_fences = out_fences;
+	info->runtime_additional_info = runtime_additional_info;
 }

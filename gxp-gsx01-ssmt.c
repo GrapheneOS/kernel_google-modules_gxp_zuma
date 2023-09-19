@@ -7,6 +7,8 @@
 
 #include <linux/platform_device.h>
 
+#include <gcip/gcip-slc.h>
+
 #include "gxp-config.h"
 #include "gxp-gsx01-ssmt.h"
 #include "gxp-internal.h"
@@ -18,10 +20,29 @@ static inline bool ssmt_is_client_driven(struct gxp_ssmt *ssmt)
 
 static inline void ssmt_set_vid_for_idx(void __iomem *ssmt, uint vid, uint idx)
 {
-	/* NS_READ_STREAM_VID_<sid> */
-	writel(vid, ssmt + 0x1000u + 0x4u * idx);
-	/* NS_WRITE_STREAM_VID_<sid> */
-	writel(vid, ssmt + 0x1200u + 0x4u * idx);
+	writel(vid, ssmt + SSMT_NS_READ_STREAM_VID_OFFSET + 0x4u * idx);
+	writel(vid, ssmt + SSMT_NS_WRITE_STREAM_VID_OFFSET + 0x4u * idx);
+}
+
+static inline void ssmt_set_slc_for_sid(void __iomem *ssmt, struct gcip_slc *slc, uint sid)
+{
+	writel(slc->pid, ssmt + SSMT_NS_READ_PID_OFFSET + 0x4u * sid);
+	writel(slc->pid, ssmt + SSMT_NS_WRITE_PID_OFFSET + 0x4u * sid);
+	writel(slc->cache, ssmt + SSMT_NS_CACHE_OFFSET + 0x4u * sid);
+	writel(slc->r_alloc_override,
+	       ssmt + SSMT_NS_READ_ALLOCATE_OVERRIDE_OFFSET + 0x4u * sid);
+	writel(slc->w_alloc_override,
+	       ssmt + SSMT_NS_WRITE_ALLOCATE_OVERRIDE_OFFSET + 0x4u * sid);
+}
+
+void gxp_gsx01_ssmt_set_slc_attr(struct gxp_ssmt *ssmt, struct gcip_slc *slc)
+{
+	uint sid;
+
+	for (sid = 0; sid < SSMT_NUM_STREAMS; ++sid) {
+		ssmt_set_slc_for_sid(ssmt->idma_ssmt_base, slc, sid);
+		ssmt_set_slc_for_sid(ssmt->inst_data_ssmt_base, slc, sid);
+	}
 }
 
 int gxp_gsx01_ssmt_init(struct gxp_dev *gxp, struct gxp_ssmt *ssmt)

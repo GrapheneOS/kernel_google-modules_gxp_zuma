@@ -26,6 +26,7 @@ struct gxp_mcu_firmware {
 	struct gcip_fw_info fw_info;
 	struct gcip_image_config_parser cfg_parser;
 	bool is_secure;
+	int crash_cnt;
 
 	/* Worker to handle the MCU FW unrecoverable crash. */
 	struct work_struct fw_crash_handler_work;

@@ -2131,7 +2131,7 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	if (gxp->parse_dt) {
 		ret = gxp->parse_dt(pdev, gxp);
 		if (ret)
-			return ret;
+			goto err_remove_debugdir;
 	}
 
 	ret = gxp_soc_init(gxp);
@@ -2142,12 +2142,12 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 
 	ret = gxp_set_reg_resources(pdev, gxp);
 	if (ret)
-		goto err_remove_debugdir;
+		goto err_soc_exit;
 
 	ret = gxp_pm_init(gxp);
 	if (ret) {
 		dev_err(dev, "Failed to init power management (ret=%d)\n", ret);
-		goto err_remove_debugdir;
+		goto err_soc_exit;
 	}
 
 	gxp_get_gsa_dev(gxp);
@@ -2302,6 +2302,8 @@ err_put_tpu_dev:
 	gxp_put_tpu_dev(gxp);
 	gxp_put_gsa_dev(gxp);
 	gxp_pm_destroy(gxp);
+err_soc_exit:
+	gxp_soc_exit(gxp);
 err_remove_debugdir:
 	gxp_remove_debugdir(gxp);
 	return ret;
@@ -2333,6 +2335,7 @@ static int gxp_common_platform_remove(struct platform_device *pdev)
 	gxp_put_tpu_dev(gxp);
 	gxp_put_gsa_dev(gxp);
 	gxp_pm_destroy(gxp);
+	gxp_soc_exit(gxp);
 	gxp_remove_debugdir(gxp);
 
 	gxp_debug_pointer = NULL;

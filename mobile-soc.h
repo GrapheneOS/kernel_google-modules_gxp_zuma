@@ -21,6 +21,12 @@
 int gxp_soc_init(struct gxp_dev *gxp);
 
 /**
+ * gxp_soc_exit() - Cleans up resources allocated in gxp_soc_init().
+ * @gxp: The GXP device to be initialized.
+ */
+void gxp_soc_exit(struct gxp_dev *gxp);
+
+/**
  * gxp_soc_pm_init() - Initializes the pm requests.
  * @gxp: The GXP device which is the container of target pm.
  *

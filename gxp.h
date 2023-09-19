@@ -13,7 +13,7 @@
 
 /* Interface Version */
 #define GXP_INTERFACE_VERSION_MAJOR 1
-#define GXP_INTERFACE_VERSION_MINOR 17
+#define GXP_INTERFACE_VERSION_MINOR 18
 #define GXP_INTERFACE_VERSION_BUILD 0
 
 /*
@@ -382,42 +382,6 @@ struct gxp_etm_get_trace_info_ioctl {
 
 #define GXP_TELEMETRY_TYPE_LOGGING (0)
 #define GXP_TELEMETRY_TYPE_TRACING (1)
-
-/*
- * Enable either logging or software tracing for all cores.
- * Accepts either `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`
- * to specify whether logging or software tracing is to be enabled.
- *
- * Buffers for logging or tracing must have already been mapped via an `mmap()`
- * call with the respective offset and initialized by the client, prior to
- * calling this ioctl.
- *
- * If firmware is already running on any cores, they will be signaled to begin
- * logging/tracing to their buffers. Any cores booting after this call will
- * begin logging/tracing as soon as their firmware is able to.
- *
- * This has become obsolete and will return -ENOTTY.
- */
-#define GXP_ENABLE_CORE_TELEMETRY _IOWR(GXP_IOCTL_BASE, 11, __u8)
-
-/*
- * Disable either logging or software tracing for all cores.
- * Accepts either `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`
- * to specify whether logging or software tracing is to be disabled.
- *
- * This call will block until any running cores have been notified and ACKed
- * that they have disabled the specified telemetry type.
- *
- * This has become obsolete and will return -ENOTTY.
- */
-#define GXP_DISABLE_CORE_TELEMETRY _IOWR(GXP_IOCTL_BASE, 12, __u8)
-
-/*
- * For backward compatibility.
- * These macros have become obsolete now.
- */
-#define GXP_ENABLE_TELEMETRY GXP_ENABLE_CORE_TELEMETRY
-#define GXP_DISABLE_TELEMETRY GXP_DISABLE_CORE_TELEMETRY
 
 struct gxp_tpu_mbx_queue_ioctl {
 	__u32 tpu_fd; /* TPU virtual device group fd */
@@ -885,7 +849,7 @@ struct gxp_interface_version_ioctl {
 #define GXP_UNREGISTER_MCU_TELEMETRY_EVENTFD                                   \
 	_IOW(GXP_IOCTL_BASE, 29, struct gxp_register_telemetry_eventfd_ioctl)
 
-struct gxp_mailbox_uci_command_ioctl {
+struct gxp_mailbox_uci_command_compat_ioctl {
 	/*
 	 * Output:
 	 * The sequence number assigned to this command. The caller can use
@@ -906,9 +870,12 @@ struct gxp_mailbox_uci_command_ioctl {
  * Push an element to the UCI command queue.
  *
  * The client must hold a BLOCK wakelock.
+ *
+ * Note that this ioctl is deprecated and the runtime should use
+ * GXP_MAILBOX_UCI_COMMAND instead.
  */
-#define GXP_MAILBOX_UCI_COMMAND                                                \
-	_IOWR(GXP_IOCTL_BASE, 30, struct gxp_mailbox_uci_command_ioctl)
+#define GXP_MAILBOX_UCI_COMMAND_COMPAT                                         \
+	_IOWR(GXP_IOCTL_BASE, 30, struct gxp_mailbox_uci_command_compat_ioctl)
 
 struct gxp_mailbox_uci_response_ioctl {
 	/*
@@ -1061,5 +1028,68 @@ struct gxp_set_device_properties_ioctl {
 
 /* Provides the reason why the device is invalidated.  */
 #define GXP_GET_INVALIDATED_REASON _IOR(GXP_IOCTL_BASE, 38, __u32)
+
+#define GXP_MAX_FENCES_PER_UCI_COMMAND 4
+
+struct gxp_mailbox_uci_command_ioctl {
+	/*
+	 * Output:
+	 * The sequence number assigned to this command. The caller can use
+	 * this value to match responses fetched via `GXP_MAILBOX_UCI_RESPONSE`
+	 * with this command.
+	 */
+	__u64 sequence_number;
+	/*
+	 * Input:
+	 * The FDs of in-fences that this command will waits for. The kernel
+	 * driver will read FDs from this array until it meets 0 or
+	 * end-of-array. (i.e., reads at most 4 fences) The fences can be
+	 * either IIF or in-kernel fence.
+	 */
+	__u32 in_fences[GXP_MAX_FENCES_PER_UCI_COMMAND];
+	/*
+	 * Input:
+	 * The concept is the same with `in_fences`, but these are out-fences
+	 * that this command will signal once its job is finisehd.
+	 */
+	__u32 out_fences[GXP_MAX_FENCES_PER_UCI_COMMAND];
+	/*
+	 * Input:
+	 * The user-defined timeout in milliseconds.
+	 */
+	__u32 timeout_ms;
+	/*
+	 * Input:
+	 * Flags indicating attribute of the command.
+	 *
+	 * Bitfields:
+	 *    [0:0]    - Nullity of the command. The purpose of this is to
+	 *               support a command which requires more than 4 fan-in or
+	 *               fan-out fences. By having a NULL command which does
+	 *               NO-OP, but waits on / signals fences, we can achieve
+	 *               that as a workaround.
+	 *                 0 = normal command
+	 *                 1 = NULL command
+	 *    [31:1]   - RESERVED
+	 *
+	 */
+	__u32 flags;
+	/*
+	 * Input:
+	 * RuntimeCommand which will be copied to the UCI command without
+	 * modification by the kernel driver.
+	 */
+	__u8 opaque[48];
+	/* Reserved fields. */
+	__u8 reserved[32];
+};
+
+/*
+ * Push an element to the UCI command queue.
+ *
+ * The client must hold a BLOCK wakelock.
+ */
+#define GXP_MAILBOX_UCI_COMMAND                                                \
+	_IOWR(GXP_IOCTL_BASE, 39, struct gxp_mailbox_uci_command_ioctl)
 
 #endif /* __GXP_H__ */

@@ -8,6 +8,8 @@
 #ifndef __GXP_SSMT_H__
 #define __GXP_SSMT_H__
 
+#include <gcip/gcip-slc.h>
+
 #include "gxp-internal.h"
 
 #define SSMT_CFG_OFFSET (0x0004)
@@ -16,6 +18,15 @@
 
 #define SSMT_CLAMP_MODE_BYPASS (1u << 31)
 #define MAX_NUM_CONTEXTS 8
+
+#define SSMT_NUM_STREAMS (128)
+#define SSMT_NS_READ_STREAM_VID_OFFSET (0x1000u)
+#define SSMT_NS_WRITE_STREAM_VID_OFFSET (0x1200u)
+#define SSMT_NS_READ_PID_OFFSET (0x4000u)
+#define SSMT_NS_WRITE_PID_OFFSET (0x4200u)
+#define SSMT_NS_CACHE_OFFSET (0x4400u)
+#define SSMT_NS_READ_ALLOCATE_OVERRIDE_OFFSET (0x4600u)
+#define SSMT_NS_WRITE_ALLOCATE_OVERRIDE_OFFSET (0x4800u)
 
 struct gxp_ssmt {
 	struct gxp_dev *gxp;
@@ -52,5 +63,10 @@ void gxp_gsx01_ssmt_activate_scid(struct gxp_ssmt *ssmt, uint scid);
  * transactions.
  */
 void gxp_gsx01_ssmt_deactivate_scid(struct gxp_ssmt *ssmt, uint scid);
+
+/**
+ * gxp_gsx01_ssmt_set_slc_attr() - Sets the SSMT with SLC attributes.
+ */
+void gxp_gsx01_ssmt_set_slc_attr(struct gxp_ssmt *ssmt, struct gcip_slc *slc);
 
 #endif /* __GXP_SSMT_H__ */

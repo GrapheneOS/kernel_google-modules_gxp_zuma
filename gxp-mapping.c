@@ -125,7 +125,11 @@ struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
 	 * default to read/write if find_extend_vma returns NULL
 	 */
 	mmap_read_lock(current->mm);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 14, 1)
 	vma = find_extend_vma(current->mm, user_address & PAGE_MASK);
+#else
+	vma = vma_lookup(current->mm, user_address & PAGE_MASK);
+#endif
 	if (vma) {
 		if (!(vma->vm_flags & VM_WRITE))
 			foll_flags &= ~FOLL_WRITE;

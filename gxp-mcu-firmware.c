@@ -646,9 +646,22 @@ static ssize_t firmware_version_show(struct device *dev, struct device_attribute
 
 static DEVICE_ATTR_RO(firmware_version);
 
+/* Provide the count of firmwre crash. */
+static ssize_t firmware_crash_counter_show(struct device *dev, struct device_attribute *attr,
+					   char *buf)
+{
+	struct gxp_dev *gxp = dev_get_drvdata(dev);
+	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", mcu_fw->crash_cnt);
+}
+
+static DEVICE_ATTR_RO(firmware_crash_counter);
+
 static struct attribute *dev_attrs[] = {
 	&dev_attr_load_firmware.attr,
 	&dev_attr_firmware_version.attr,
+	&dev_attr_firmware_crash_counter.attr,
 	NULL,
 };
 
@@ -735,6 +748,7 @@ int gxp_mcu_firmware_init(struct gxp_dev *gxp, struct gxp_mcu_firmware *mcu_fw)
 	}
 	mcu_fw->gxp = gxp;
 	mcu_fw->status = GCIP_FW_INVALID;
+	mcu_fw->crash_cnt = 0;
 	mutex_init(&mcu_fw->lock);
 	INIT_WORK(&mcu_fw->fw_crash_handler_work, gxp_mcu_firmware_crash_handler_work);
 
@@ -807,6 +821,8 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 		return;
 
 	dev_err(gxp->dev, "Unrecoverable MCU firmware fault, handle it");
+
+	mcu_fw->crash_cnt += 1;
 
 	/*
 	 * In the case of stopping MCU FW while it is handling `CLIENT_FATAL_ERROR` RKCI, it will
