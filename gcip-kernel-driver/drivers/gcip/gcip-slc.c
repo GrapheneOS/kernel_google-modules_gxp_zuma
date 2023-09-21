@@ -13,14 +13,15 @@
 
 static int gcip_debugfs_slc_pid_set(void *data, u64 val)
 {
-	struct gcip_slc *slc = (struct gcip_slc *)data;
+	struct gcip_slc *slc = data;
 	int ret = 0;
 
+	/* User can set a dedicated invalid pid to disable the SLC */
 	if ((val >= GCIP_SLC_MIN_PID && val <= GCIP_SLC_MAX_PID) || (val == GCIP_SLC_INVALID_PID)) {
 		slc->pid = val;
 	} else {
 		ret = -EINVAL;
-		dev_err(slc->dev, "Invalid SLC pid: %llu\n", val);
+		dev_err(slc->dev, "Setting out of range SLC pid: %llu\n", val);
 	}
 
 	return ret;
@@ -28,7 +29,7 @@ static int gcip_debugfs_slc_pid_set(void *data, u64 val)
 
 static int gcip_debugfs_slc_pid_get(void *data, u64 *val)
 {
-	struct gcip_slc *slc = (struct gcip_slc *)data;
+	struct gcip_slc *slc = data;
 
 	*val = slc->pid;
 
@@ -37,7 +38,7 @@ static int gcip_debugfs_slc_pid_get(void *data, u64 *val)
 
 static int gcip_debugfs_slc_cache_set(void *data, u64 val)
 {
-	struct gcip_slc *slc = (struct gcip_slc *)data;
+	struct gcip_slc *slc = data;
 
 	slc->cache = val;
 
@@ -46,7 +47,7 @@ static int gcip_debugfs_slc_cache_set(void *data, u64 val)
 
 static int gcip_debugfs_slc_cache_get(void *data, u64 *val)
 {
-	struct gcip_slc *slc = (struct gcip_slc *)data;
+	struct gcip_slc *slc = data;
 
 	*val = slc->cache;
 
@@ -55,7 +56,7 @@ static int gcip_debugfs_slc_cache_get(void *data, u64 *val)
 
 static int gcip_debugfs_slc_r_alloc_override_set(void *data, u64 val)
 {
-	struct gcip_slc *slc = (struct gcip_slc *)data;
+	struct gcip_slc *slc = data;
 
 	slc->r_alloc_override = val;
 
@@ -64,7 +65,7 @@ static int gcip_debugfs_slc_r_alloc_override_set(void *data, u64 val)
 
 static int gcip_debugfs_slc_r_alloc_override_get(void *data, u64 *val)
 {
-	struct gcip_slc *slc = (struct gcip_slc *)data;
+	struct gcip_slc *slc = data;
 
 	*val = slc->r_alloc_override;
 
@@ -73,7 +74,7 @@ static int gcip_debugfs_slc_r_alloc_override_get(void *data, u64 *val)
 
 static int gcip_debugfs_slc_w_alloc_override_set(void *data, u64 val)
 {
-	struct gcip_slc *slc = (struct gcip_slc *)data;
+	struct gcip_slc *slc = data;
 
 	slc->w_alloc_override = val;
 
@@ -82,7 +83,7 @@ static int gcip_debugfs_slc_w_alloc_override_set(void *data, u64 val)
 
 static int gcip_debugfs_slc_w_alloc_override_get(void *data, u64 *val)
 {
-	struct gcip_slc *slc = (struct gcip_slc *)data;
+	struct gcip_slc *slc = data;
 
 	*val = slc->w_alloc_override;
 
@@ -109,7 +110,6 @@ void gcip_slc_debugfs_init(struct gcip_slc *slc, struct device *dev, struct dent
 	slc->d_entry = debugfs_create_dir(GCIP_SLC_NAME, d_entry);
 	slc->pid = GCIP_SLC_INVALID_PID;
 	if (IS_ERR(slc->d_entry)) {
-		dev_warn(dev, "Create SLC debugfs dir failed: %ld", PTR_ERR(slc->d_entry));
 		slc->d_entry = NULL;
 	} else {
 		debugfs_create_file(GCIP_DEBUGFS_SLC_PID, 0600, slc->d_entry, slc,

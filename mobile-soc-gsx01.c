@@ -17,6 +17,7 @@
 #include "gxp-firmware.h"
 #include "gxp-gsx01-ssmt.h"
 #include "gxp-kci.h"
+#include "gxp-lpm.h"
 #include "gxp-pm.h"
 #include "mobile-soc-gsx01.h"
 #include "mobile-soc.h"
@@ -180,4 +181,16 @@ void gxp_soc_deactivate_context(struct gxp_dev *gxp, struct gcip_iommu_domain *g
 
 void gxp_soc_set_iremap_context(struct gxp_dev *gxp)
 {
+}
+
+void gxp_soc_lpm_init(struct gxp_dev *gxp)
+{
+	/* Startup TOP's PSM */
+	gxp_lpm_init(gxp);
+}
+
+void gxp_soc_lpm_destroy(struct gxp_dev *gxp)
+{
+	/* Shutdown TOP's PSM */
+	gxp_lpm_destroy(gxp);
 }

@@ -15,6 +15,8 @@
 #include <linux/scatterlist.h>
 #include <linux/types.h>
 
+#include <gcip/gcip-iommu.h>
+
 #include "gxp-internal.h"
 
 #if IS_ENABLED(CONFIG_GXP_TEST)
@@ -28,6 +30,7 @@ extern bool gxp_log_iova;
 #define GXP_IOVA_LOG_DMABUF (1u << 1)
 
 struct gxp_mapping {
+	struct gcip_iommu_mapping *gcip_mapping;
 	struct rb_node node;
 	refcount_t refcount;
 	void (*destructor)(struct gxp_mapping *mapping);
@@ -40,20 +43,8 @@ struct gxp_mapping {
 	/* For holding a reference to MM. */
 	struct mm_struct *owning_mm;
 	struct gxp_dev *gxp;
-	struct gcip_iommu_domain *domain;
-	/*
-	 * `device_address` and `size` are the base address and size of the
-	 * user buffer a mapping represents.
-	 *
-	 * Due to alignment requirements from hardware, the actual IOVA space
-	 * allocated may be larger and start at a different address, but that
-	 * information is contained in the scatter-gather table, `sgt` below.
-	 */
-	dma_addr_t device_address;
 	size_t size;
 	uint gxp_dma_flags;
-	enum dma_data_direction dir;
-	struct sg_table sgt;
 	/* A mapping can only be synced by one thread at a time */
 	struct mutex sync_lock;
 	/*

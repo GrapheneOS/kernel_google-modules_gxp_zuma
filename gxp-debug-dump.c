@@ -505,11 +505,13 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 		}
 
 		/* Get kernel address of the user buffer inside the mapping */
-		user_buf_vaddrs[i] = vaddr + daddr - (mapping->device_address & PAGE_MASK);
+		user_buf_vaddrs[i] =
+			vaddr + daddr - (mapping->gcip_mapping->device_address & PAGE_MASK);
 
 		/* Check that the entire user buffer is mapped */
 		if ((user_buf_vaddrs[i] + user_buf->size) >
-		    (vaddr + mapping->size + (mapping->device_address & ~PAGE_MASK))) {
+		    (vaddr + mapping->size +
+		     (mapping->gcip_mapping->device_address & ~PAGE_MASK))) {
 			dev_err(gxp->dev, "%#llx user buffer requested with invalid size(%#x).\n",
 				daddr, user_buf->size);
 			user_buf->size = 0;

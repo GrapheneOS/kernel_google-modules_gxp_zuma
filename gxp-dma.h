@@ -314,38 +314,6 @@ void gxp_dma_sync_sg_for_device(struct gxp_dev *gxp, struct scatterlist *sg,
 				int nents, enum dma_data_direction direction);
 
 /**
- * gxp_dma_map_dmabuf_attachment() - Create a mapping for a dma-buf
- * @gxp: The GXP device to map the dma-buf for
- * @gdomain: The IOMMU domain the dma-buf to be mapped on
- * @attachment: An attachment, representing the dma-buf, obtained from
- *              `dma_buf_attach()`
- * @flags: flag indicating mapping attributes
- * @direction: DMA direction
- *
- * Return: A scatter-gather table describing the mapping of the dma-buf
- *         into the default IOMMU domain. Returns ERR_PTR on failure.
- */
-struct sg_table *gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
-					       struct gcip_iommu_domain *gdomain,
-					       struct dma_buf_attachment *attachment, u32 flags,
-					       enum dma_data_direction direction);
-
-/**
- * gxp_dma_unmap_dmabuf_attachment() - Unmap a dma-buf
- * @gxp: The GXP device the dma-buf was mapped for
- * @gdomain: The IOMMU domain the buffer was mapped on
- * @attachment: The attachment, representing the dma-buf, that was passed to
- *              `gxp_dma_map_dmabuf_attachment()` to create the mapping
- * @sgt: The scatter-gather table returned by `gxp_dma_map_dmabuf_attachment()`
- *       when mapping this dma-buf
- * @direction: DMA direction
- */
-void gxp_dma_unmap_dmabuf_attachment(struct gxp_dev *gxp,
-				     struct gcip_iommu_domain *gdomain,
-				     struct dma_buf_attachment *attachment,
-				     struct sg_table *sgt,
-				     enum dma_data_direction direction);
-/**
  * gxp_iommu_get_domain_for_dev() - Get default domain
  * @gxp: The GXP device to get the default domain for
  *
@@ -358,5 +326,14 @@ struct gcip_iommu_domain *gxp_iommu_get_domain_for_dev(struct gxp_dev *gxp);
  * @gxp: The GXP device to set shareability for
  */
 void gxp_iommu_setup_shareability(struct gxp_dev *gxp);
+
+/**
+ * gxp_dma_encode_gcip_map_flags() - Encodes the gcip_map_flags from gxp_dma_flags and dma_attr.
+ * @gxp_dma_flags: The flags containing direction and coherent info.
+ * @dma_attr: The dma attribute use for kernel's dma API.
+ *
+ * Return: The gcip_map_flags containing the dir, coherent, dma_attrs, and restrict_iova info.
+ */
+u64 gxp_dma_encode_gcip_map_flags(uint gxp_dma_flags, unsigned long dma_attrs);
 
 #endif /* __GXP_DMA_H__ */

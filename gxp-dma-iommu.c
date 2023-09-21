@@ -30,42 +30,6 @@ struct gxp_dma_iommu_manager {
 	struct gcip_iommu_domain *default_domain;
 };
 
-/**
- * dma_info_to_prot - Translate DMA API directions and attributes to IOMMU API
- *                    page flags.
- * @dir: Direction of DMA transfer
- * @coherent: Is the DMA master cache-coherent?
- * @attrs: DMA attributes for the mapping
- *
- * From drivers/iommu/dma-iommu.c
- *
- * Return: corresponding IOMMU API page protection flags
- */
-static int dma_info_to_prot(enum dma_data_direction dir, bool coherent,
-			    unsigned long attrs)
-{
-	int prot = 0;
-
-	if (coherent) {
-#ifdef GXP_IS_DMA_COHERENT
-		prot = IOMMU_CACHE;
-#endif
-	}
-
-	if (attrs & DMA_ATTR_PRIVILEGED)
-		prot |= IOMMU_PRIV;
-	switch (dir) {
-	case DMA_BIDIRECTIONAL:
-		return prot | IOMMU_READ | IOMMU_WRITE;
-	case DMA_TO_DEVICE:
-		return prot | IOMMU_READ;
-	case DMA_FROM_DEVICE:
-		return prot | IOMMU_WRITE;
-	default:
-		return 0;
-	}
-}
-
 /* Fault handler */
 
 static int sysmmu_fault_handler(struct iommu_fault *fault, void *token)
@@ -605,15 +569,13 @@ void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 	struct scatterlist *s;
 	int i;
 	size_t size = 0;
-	u64 gcip_map_flags = GCIP_MAP_FLAGS_DMA_DIRECTION_TO_FLAGS(direction) |
-			     GCIP_MAP_FLAGS_DMA_ATTR_TO_FLAGS(attrs);
 
 	trace_gxp_dma_unmap_sg_start(nents);
 
 	for_each_sg (sg, s, nents, i)
 		size += sg_dma_len(s);
 
-	gcip_iommu_domain_unmap_sg(gdomain, sg, nents, gcip_map_flags);
+	gcip_iommu_domain_unmap_sg(gdomain, sg, nents);
 
 	trace_gxp_dma_unmap_sg_end(size);
 }
@@ -679,71 +641,15 @@ void gxp_dma_sync_sg_for_device(struct gxp_dev *gxp, struct scatterlist *sg,
 	dma_sync_sg_for_device(gxp->dev, sg, nents, direction);
 }
 
-struct sg_table *gxp_dma_map_dmabuf_attachment(struct gxp_dev *gxp,
-					       struct gcip_iommu_domain *gdomain,
-					       struct dma_buf_attachment *attachment, u32 flags,
-					       enum dma_data_direction direction)
+u64 gxp_dma_encode_gcip_map_flags(uint gxp_dma_flags, unsigned long dma_attrs)
 {
-	struct sg_table *sgt;
-	bool coherent = flags & GXP_MAP_COHERENT ? true : false;
-	int prot = dma_info_to_prot(direction, coherent, /*attrs=*/0);
-	ssize_t size_mapped;
-	int ret;
+	enum dma_data_direction dir = gxp_dma_flags & GXP_MAP_DIR_MASK;
+	bool coherent = false;
+	bool restrict_iova = false;
 
-	/* Map the attachment into the default domain */
-	sgt = dma_buf_map_attachment(attachment, direction);
-	if (IS_ERR(sgt)) {
-		dev_err(gxp->dev, "DMA: dma_buf_map_attachment failed (ret=%ld)\n", PTR_ERR(sgt));
-		return sgt;
-	}
+#ifdef GXP_IS_DMA_COHERENT
+	coherent = gxp_dma_flags & GXP_MAP_COHERENT;
+#endif
 
-	if (gdomain == gxp_iommu_get_domain_for_dev(gxp))
-		return sgt;
-	/*
-	 * In Linux 5.15 and beyond, `iommu_map_sg()` returns a
-	 * `ssize_t` to encode errors that earlier versions throw out.
-	 * Explicitly cast here for backwards compatibility.
-	 */
-	size_mapped =
-		(ssize_t)iommu_map_sg(gdomain->domain, sg_dma_address(sgt->sgl),
-				      sgt->sgl, sgt->orig_nents, prot);
-	if (size_mapped <= 0) {
-		dev_err(gxp->dev, "Failed to map dma-buf: %ld\n", size_mapped);
-		/*
-		 * Prior to Linux 5.15, `iommu_map_sg()` returns 0 for
-		 * any failure. Return a generic IO error in this case.
-		 */
-		ret = size_mapped == 0 ? -EIO : (int)size_mapped;
-		goto err;
-	}
-
-	return sgt;
-
-err:
-	dma_buf_unmap_attachment(attachment, sgt, direction);
-
-	return ERR_PTR(ret);
-}
-
-void gxp_dma_unmap_dmabuf_attachment(struct gxp_dev *gxp,
-				     struct gcip_iommu_domain *gdomain,
-				     struct dma_buf_attachment *attachment,
-				     struct sg_table *sgt,
-				     enum dma_data_direction direction)
-{
-	struct scatterlist *s;
-	int i;
-	size_t size = 0;
-
-	if (gdomain == gxp_iommu_get_domain_for_dev(gxp))
-		return;
-	/* Find the size of the mapping in IOVA-space */
-	for_each_sg (sgt->sgl, s, sgt->nents, i)
-		size += sg_dma_len(s);
-
-	if (!iommu_unmap(gdomain->domain, sg_dma_address(sgt->sgl), size))
-		dev_warn(gxp->dev, "Failed to unmap dma-buf\n");
-
-	/* Unmap the attachment from the default domain */
-	dma_buf_unmap_attachment(attachment, sgt, direction);
+	return gcip_iommu_encode_gcip_map_flags(dir, coherent, dma_attrs, restrict_iova);
 }

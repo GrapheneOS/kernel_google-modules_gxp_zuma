@@ -85,10 +85,11 @@ struct gxp_pm_ops {
 	int (*after_blk_power_up)(struct gxp_dev *gxp);
 	/*
 	 * This callback is called before pm_runtime_put*().
+	 * A non-zero return value could fail the block power down process.
 	 *
 	 * This callback is optional.
 	 */
-	void (*before_blk_power_down)(struct gxp_dev *gxp);
+	int (*before_blk_power_down)(struct gxp_dev *gxp);
 };
 
 struct gxp_set_acpm_state_work {

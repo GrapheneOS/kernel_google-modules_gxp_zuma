@@ -1340,7 +1340,7 @@ int gxp_vd_mapping_store(struct gxp_virtual_device *vd, struct gxp_mapping *map)
 {
 	struct rb_node **link;
 	struct rb_node *parent = NULL;
-	dma_addr_t device_address = map->device_address;
+	dma_addr_t device_address = map->gcip_mapping->device_address;
 	struct gxp_mapping *mapping;
 
 	link = &vd->mappings_root.rb_node;
@@ -1352,9 +1352,9 @@ int gxp_vd_mapping_store(struct gxp_virtual_device *vd, struct gxp_mapping *map)
 		parent = *link;
 		mapping = rb_entry(parent, struct gxp_mapping, node);
 
-		if (mapping->device_address > device_address)
+		if (mapping->gcip_mapping->device_address > device_address)
 			link = &(*link)->rb_left;
-		else if (mapping->device_address < device_address)
+		else if (mapping->gcip_mapping->device_address < device_address)
 			link = &(*link)->rb_right;
 		else
 			goto out;
@@ -1373,8 +1373,7 @@ int gxp_vd_mapping_store(struct gxp_virtual_device *vd, struct gxp_mapping *map)
 
 out:
 	up_write(&vd->mappings_semaphore);
-	dev_err(vd->gxp->dev, "Duplicate mapping: %pad\n",
-		&map->device_address);
+	dev_err(vd->gxp->dev, "Duplicate mapping: %pad\n", &map->gcip_mapping->device_address);
 	return -EEXIST;
 }
 
@@ -1400,8 +1399,8 @@ void gxp_vd_mapping_remove_locked(struct gxp_virtual_device *vd, struct gxp_mapp
 static bool is_device_address_in_mapping(struct gxp_mapping *mapping,
 					 dma_addr_t device_address)
 {
-	return ((device_address >= mapping->device_address) &&
-		(device_address < (mapping->device_address + mapping->size)));
+	return ((device_address >= mapping->gcip_mapping->device_address) &&
+		(device_address < (mapping->gcip_mapping->device_address + mapping->size)));
 }
 
 static struct gxp_mapping *
@@ -1417,12 +1416,11 @@ gxp_vd_mapping_internal_search(struct gxp_virtual_device *vd,
 
 	while (node) {
 		mapping = rb_entry(node, struct gxp_mapping, node);
-		if ((mapping->device_address == device_address) ||
-		    (check_range &&
-		     is_device_address_in_mapping(mapping, device_address))) {
+		if ((mapping->gcip_mapping->device_address == device_address) ||
+		    (check_range && is_device_address_in_mapping(mapping, device_address))) {
 			gxp_mapping_get(mapping);
 			return mapping; /* Found it */
-		} else if (mapping->device_address > device_address) {
+		} else if (mapping->gcip_mapping->device_address > device_address) {
 			node = node->rb_left;
 		} else {
 			node = node->rb_right;

@@ -17,6 +17,10 @@
 #include "gxp-usage-stats.h"
 #include "gxp-vd.h"
 
+#if HAS_TPU_EXT
+#include <soc/google/tpu-ext.h>
+#endif
+
 #if IS_ENABLED(CONFIG_GXP_TEST)
 char *gxp_work_mode_name = "mcu";
 #else

@@ -575,7 +575,13 @@ int gxp_uci_init(struct gxp_mcu *mcu)
 
 int gxp_uci_reinit(struct gxp_uci *uci)
 {
+	struct gxp_mailbox *mailbox = uci->mbx;
+
+	gxp_mailbox_write_descriptor(mailbox, mailbox->descriptor_buf.dsp_addr);
 	gxp_mailbox_reset(uci->mbx);
+	gxp_mailbox_enable_interrupt(mailbox);
+	gxp_mailbox_write_status(mailbox, 1);
+
 	return 0;
 }
 

@@ -14,11 +14,6 @@
 #include "gxp-dma.h"
 #include "gxp-domain-pool.h"
 
-/* If true, enable GCIP custom IOVA allocator. */
-static bool gxp_gcip_dma_window_enable = true;
-module_param_named(gcip_dma_window_enable, gxp_gcip_dma_window_enable, bool,
-		   0660);
-
 /*
  * See enum gcip_iommu_domain_type.
  * Default(0) = utilizing iova_domain
@@ -49,9 +44,6 @@ int gxp_domain_pool_init(struct gxp_dev *gxp,
 	}
 	/* PASID 0 is reserved for the default domain */
 	gcip_iommu_domain_pool_set_pasid_range(gxp->domain_pool, 1, num_pasids - 1);
-
-	if (!gxp_gcip_dma_window_enable)
-		gcip_iommu_domain_pool_enable_legacy_mode(pool);
 	gcip_iommu_domain_pool_enable_best_fit_algo(pool);
 
 	return 0;

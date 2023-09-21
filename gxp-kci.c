@@ -368,7 +368,13 @@ int gxp_kci_init(struct gxp_mcu *mcu)
 
 int gxp_kci_reinit(struct gxp_kci *gkci)
 {
-	gxp_mailbox_reset(gkci->mbx);
+	struct gxp_mailbox *mailbox = gkci->mbx;
+
+	gxp_mailbox_write_descriptor(mailbox, mailbox->descriptor_buf.dsp_addr);
+	gxp_mailbox_reset(mailbox);
+	gxp_mailbox_enable_interrupt(mailbox);
+	gxp_mailbox_write_status(mailbox, 1);
+
 	return 0;
 }
 

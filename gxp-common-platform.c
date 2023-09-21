@@ -247,7 +247,7 @@ static int gxp_ioctl_map_buffer(struct gxp_client *client, struct gxp_map_ioctl 
 		goto error_destroy;
 	}
 
-	ibuf.device_address = map->device_address;
+	ibuf.device_address = map->gcip_mapping->device_address;
 
 	if (copy_to_user(argp, &ibuf, sizeof(ibuf))) {
 		ret = -EFAULT;
@@ -1248,9 +1248,7 @@ static int gxp_ioctl_map_dmabuf(struct gxp_client *client, struct gxp_map_dmabuf
 		goto out_unlock;
 	}
 
-	mapping = gxp_dmabuf_map(gxp, client->vd->domain, ibuf.dmabuf_fd,
-				 ibuf.flags,
-				 mapping_flags_to_dma_dir(ibuf.flags));
+	mapping = gxp_dmabuf_map(gxp, client->vd->domain, ibuf.dmabuf_fd, ibuf.flags);
 	if (IS_ERR(mapping)) {
 		ret = PTR_ERR(mapping);
 		dev_err(gxp->dev, "Failed to map dma-buf (ret=%d)\n", ret);
@@ -1264,7 +1262,7 @@ static int gxp_ioctl_map_dmabuf(struct gxp_client *client, struct gxp_map_dmabuf
 		goto out_put;
 	}
 
-	ibuf.device_address = mapping->device_address;
+	ibuf.device_address = mapping->gcip_mapping->device_address;
 
 	if (copy_to_user(argp, &ibuf, sizeof(ibuf))) {
 		/* If the IOCTL fails, the dma-buf must be unmapped */

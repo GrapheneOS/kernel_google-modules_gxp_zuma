@@ -83,15 +83,14 @@ static int gxp_pm_blkpwr_down(struct gxp_dev *gxp)
 {
 	int ret;
 
-	/* Need to put TOP LPM into active state before blk off. */
-	if (!gxp_lpm_wait_state_eq(gxp, LPM_PSM_TOP, LPM_ACTIVE_STATE)) {
-		dev_err(gxp->dev,
-			"failed to force TOP LPM to PS0 during blk down\n");
-		return -EAGAIN;
+	if (gxp->power_mgr->ops->before_blk_power_down) {
+		ret = gxp->power_mgr->ops->before_blk_power_down(gxp);
+		if (ret) {
+			dev_err(gxp->dev, "before blk power down failed: %d", ret);
+			return ret;
+		}
 	}
 
-	if (gxp->power_mgr->ops->before_blk_power_down)
-		gxp->power_mgr->ops->before_blk_power_down(gxp);
 	ret = pm_runtime_put_sync(gxp->dev);
 	if (ret)
 		/*
@@ -249,8 +248,7 @@ int gxp_pm_blk_on(struct gxp_dev *gxp)
 	gxp_pm_blk_set_state_acpm(gxp, AUR_INIT_DVFS_STATE);
 	gxp->power_mgr->curr_state = AUR_INIT_DVFS_STATE;
 	gxp_iommu_setup_shareability(gxp);
-	/* Startup TOP's PSM */
-	gxp_lpm_init(gxp);
+	gxp_soc_lpm_init(gxp);
 	gxp->power_mgr->blk_switch_count++;
 	gxp_pm_can_busy(gxp->power_mgr);
 out:
@@ -277,8 +275,7 @@ int gxp_pm_blk_off(struct gxp_dev *gxp)
 	/* Above has checked device is powered, it's safe to access the CMU regs. */
 	reset_cmu_mux_state(gxp);
 
-	/* Shutdown TOP's PSM */
-	gxp_lpm_destroy(gxp);
+	gxp_soc_lpm_destroy(gxp);
 
 	ret = gxp_pm_blkpwr_down(gxp);
 	if (!ret)

@@ -100,4 +100,16 @@ void gxp_soc_deactivate_context(struct gxp_dev *gxp, struct gcip_iommu_domain *g
  */
 void gxp_soc_set_iremap_context(struct gxp_dev *gxp);
 
+/**
+ * gxp_soc_lpm_init() - Initialize and prepare TOP PSM
+ * @gxp: The GXP device to set TOP PSM for.
+ */
+void gxp_soc_lpm_init(struct gxp_dev *gxp);
+
+/**
+ * gxp_soc_lpm_destroy() - Deinit TOP PSM
+ * @gxp: The GXP device to set TOP PSM for.
+ */
+void gxp_soc_lpm_destroy(struct gxp_dev *gxp);
+
 #endif /* __MOBILE_SOC_H__ */
