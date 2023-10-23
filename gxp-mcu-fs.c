@@ -110,14 +110,14 @@ static int gxp_ioctl_uci_command(struct gxp_client *client,
 
 	cmd.client_id = client->vd->client_id;
 
-	if (argp->flags & GXP_UCI_NULL_COMMAND_FLAG)
+	if (ibuf.flags & GXP_UCI_NULL_COMMAND_FLAG)
 		cmd.type = NULL_COMMAND;
 
 	/*
-	 * TODO(b/296162006): Get fence IDs of in/out-fence FDs in argp via IIF driver.
+	 * TODO(b/296162006): Get fence IDs of in/out-fence FDs in ibuf via IIF driver.
 	 *                    After that, pass them to this function.
 	 */
-	gxp_uci_fill_additional_info(&additional_info, NULL, 0, NULL, 0, argp->timeout_ms, NULL, 0);
+	gxp_uci_fill_additional_info(&additional_info, NULL, 0, NULL, 0, ibuf.timeout_ms, NULL, 0);
 
 	ret = gxp_uci_send_command(
 		&mcu->uci, client->vd, &cmd, &additional_info,

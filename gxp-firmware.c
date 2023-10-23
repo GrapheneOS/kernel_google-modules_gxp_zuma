@@ -124,8 +124,6 @@ static int elf_load_segments(struct gxp_dev *gxp, const u8 *elf_data,
 	int i, ret = 0;
 
 	ehdr = (struct elf32_hdr *)elf_data;
-	phdr = (struct elf32_phdr *)(elf_data + ehdr->e_phoff);
-
 	if ((ehdr->e_ident[EI_MAG0] != ELFMAG0) ||
 	    (ehdr->e_ident[EI_MAG1] != ELFMAG1) ||
 	    (ehdr->e_ident[EI_MAG2] != ELFMAG2) ||
@@ -134,6 +132,7 @@ static int elf_load_segments(struct gxp_dev *gxp, const u8 *elf_data,
 		return 0;
 	}
 
+	phdr = (struct elf32_phdr *)(elf_data + ehdr->e_phoff);
 	/* go through the available ELF segments */
 	for (i = 0; i < ehdr->e_phnum; i++, phdr++) {
 		const u64 da = phdr->p_paddr;

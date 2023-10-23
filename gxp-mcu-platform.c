@@ -141,14 +141,16 @@ static void gxp_mcu_pm_before_blk_off(struct gxp_dev *gxp)
 
 #if HAS_TPU_EXT
 
-static int get_tpu_client_id(struct gxp_client *client)
+static int get_tpu_client_id(struct gxp_client *client, bool is_secure)
 {
 	struct gxp_dev *gxp = client->gxp;
 	struct edgetpu_ext_offload_info offload_info;
-	struct edgetpu_ext_client_info tpu_info;
+	struct edgetpu_ext_client_info tpu_info = {
+		.tpu_file = client->tpu_file,
+		.flags = is_secure ? EDGETPU_EXT_SECURE_CLIENT : 0,
+	};
 	int ret;
 
-	tpu_info.tpu_file = client->tpu_file;
 	ret = edgetpu_ext_driver_cmd(gxp->tpu_dev.dev,
 				     EDGETPU_EXTERNAL_CLIENT_TYPE_DSP,
 				     START_OFFLOAD, &tpu_info, &offload_info);
@@ -167,7 +169,7 @@ static int gxp_mcu_after_map_tpu_mbx_queue(struct gxp_dev *gxp,
 	if (gxp_is_direct_mode(gxp))
 		return 0;
 
-	tpu_client_id = get_tpu_client_id(client);
+	tpu_client_id = get_tpu_client_id(client, vd->is_secure);
 	if (tpu_client_id < 0) {
 		dev_err(gxp->dev, "Failed to get a TPU client ID: %d",
 			tpu_client_id);

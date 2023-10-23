@@ -5,6 +5,7 @@
  * Copyright (C) 2022 Google LLC
  */
 
+#include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/version.h>
 
@@ -55,6 +56,4 @@ struct gxp_mapping *gxp_dmabuf_map(struct gxp_dev *gxp, struct gcip_iommu_domain
 	return mapping;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
 MODULE_IMPORT_NS(DMA_BUF);
-#endif
