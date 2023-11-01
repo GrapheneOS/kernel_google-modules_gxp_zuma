@@ -247,36 +247,48 @@ gxp_uci_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 	return ret;
 }
 
-static void
-gxp_uci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
-			       struct gcip_mailbox_resp_awaiter *awaiter)
+/*
+ * Sets @async_resp->status to @status, removes @async_resp from the wait list, and pushes it to the
+ * destination queue.
+ */
+static void gxp_uci_push_async_response(struct gcip_mailbox *mailbox,
+					struct gxp_uci_async_response *async_resp,
+					enum gxp_response_status status)
 {
-	struct gxp_uci_async_response *async_resp = awaiter->data;
 	unsigned long flags;
 
 	spin_lock_irqsave(async_resp->queue_lock, flags);
 
-	if (!async_resp->wait_queue)
-		goto out;
+	/*
+	 * This function has been called twice - it is possible since
+	 * gxp_uci_handle_async_resp_arrived() may race with gxp_uci_handle_awaiter_timedout().
+	 */
+	if (!async_resp->wait_queue) {
+		spin_unlock_irqrestore(async_resp->queue_lock, flags);
+		return;
+	}
 
-	async_resp->status = GXP_RESP_OK;
+	async_resp->status = status;
 	async_resp->wait_queue = NULL;
 	list_del(&async_resp->wait_list_entry);
 
-	if (!async_resp->dest_queue) {
-		/* If @dest_queue is NULL, vd will not consume it. We can release it right away. */
-		gcip_mailbox_release_awaiter(async_resp->awaiter);
-		goto out;
-	}
-
+	gxp_vd_release_credit(async_resp->vd);
 	list_add_tail(&async_resp->dest_list_entry, async_resp->dest_queue);
+	spin_unlock_irqrestore(async_resp->queue_lock, flags);
 
 	if (async_resp->eventfd)
 		gxp_eventfd_signal(async_resp->eventfd);
 
 	wake_up(async_resp->dest_queue_waitq);
-out:
-	spin_unlock_irqrestore(async_resp->queue_lock, flags);
+}
+
+static void
+gxp_uci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
+			       struct gcip_mailbox_resp_awaiter *awaiter)
+{
+	struct gxp_uci_async_response *async_resp = awaiter->data;
+
+	gxp_uci_push_async_response(mailbox, async_resp, GXP_RESP_OK);
 }
 
 static void
@@ -284,41 +296,8 @@ gxp_uci_handle_awaiter_timedout(struct gcip_mailbox *mailbox,
 				struct gcip_mailbox_resp_awaiter *awaiter)
 {
 	struct gxp_uci_async_response *async_resp = awaiter->data;
-	unsigned long flags;
 
-	/*
-	 * Check if this response still has a valid destination queue. While an in-progress call
-	 * the `gxp_uci_handle_async_resp_arrived()` callback to handle the response and remove
-	 * it from the wait_list with holding the wait_list_lock, the timeout can be expired and it
-	 * will try to remove the response from the wait_list waiting for acquiring the
-	 * wait_list_lock. If this happens, this callback will be called with the destination queue
-	 * of response as a NULL, otherwise as not NULL.
-	 */
-	spin_lock_irqsave(async_resp->queue_lock, flags);
-
-	if (!async_resp->wait_queue) {
-		spin_unlock_irqrestore(async_resp->queue_lock, flags);
-		return;
-	}
-
-	async_resp->status = GXP_RESP_CANCELLED;
-	async_resp->wait_queue = NULL;
-	list_del(&async_resp->wait_list_entry);
-
-	if (async_resp->dest_queue) {
-		list_add_tail(&async_resp->dest_list_entry,
-			      async_resp->dest_queue);
-		spin_unlock_irqrestore(async_resp->queue_lock, flags);
-
-		if (async_resp->eventfd)
-			gxp_eventfd_signal(async_resp->eventfd);
-
-		wake_up(async_resp->dest_queue_waitq);
-	} else {
-		/* If @dest_queue is NULL, vd will not consume it. We can release it right away. */
-		gcip_mailbox_release_awaiter(async_resp->awaiter);
-		spin_unlock_irqrestore(async_resp->queue_lock, flags);
-	}
+	gxp_uci_push_async_response(mailbox, async_resp, GXP_RESP_CANCELLED);
 }
 
 static void gxp_uci_release_awaiter_data(void *data)
@@ -331,8 +310,6 @@ static void gxp_uci_release_awaiter_data(void *data)
 	 */
 	if (async_resp->additional_info_buf.vaddr)
 		gxp_mcu_mem_free_data(async_resp->uci->mcu, &async_resp->additional_info_buf);
-	if (async_resp->vd->state != GXP_VD_RELEASED)
-		gxp_vd_release_credit(async_resp->vd);
 	if (async_resp->eventfd)
 		gxp_eventfd_put(async_resp->eventfd);
 	gxp_vd_put(async_resp->vd);
@@ -596,10 +573,9 @@ void gxp_uci_exit(struct gxp_uci *uci)
 int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 			 struct gxp_uci_command *cmd,
 			 struct gxp_uci_additional_info *additional_info,
-			 struct list_head *wait_queue,
-			 struct list_head *resp_queue, spinlock_t *queue_lock,
-			 wait_queue_head_t *queue_waitq,
-			 struct gxp_eventfd *eventfd)
+			 struct list_head *wait_queue, struct list_head *resp_queue,
+			 spinlock_t *queue_lock, wait_queue_head_t *queue_waitq,
+			 struct gxp_eventfd *eventfd, gcip_mailbox_cmd_flags_t flags)
 {
 	struct gxp_uci_async_response *async_resp;
 	struct gcip_mailbox_resp_awaiter *awaiter;
@@ -636,8 +612,7 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 	 * @async_resp->awaiter will be set from the `gxp_uci_before_enqueue_wait_list`
 	 * callback.
 	 */
-	awaiter = gxp_mailbox_put_cmd(uci->mbx, cmd, &async_resp->resp,
-				      async_resp);
+	awaiter = gxp_mailbox_put_cmd(uci->mbx, cmd, &async_resp->resp, async_resp, flags);
 	if (IS_ERR(awaiter)) {
 		ret = PTR_ERR(awaiter);
 		goto err_free_resp;

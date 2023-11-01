@@ -235,6 +235,9 @@ int gxp_client_acquire_vd_wakelock(struct gxp_client *client,
 	int ret = 0;
 	enum gxp_virtual_device_state orig_state;
 
+	if (!gxp_is_direct_mode(gxp))
+		return 0;
+
 	lockdep_assert_held(&client->semaphore);
 	if (!client->has_block_wakelock) {
 		dev_err(gxp->dev,
@@ -284,6 +287,9 @@ out:
 void gxp_client_release_vd_wakelock(struct gxp_client *client)
 {
 	struct gxp_dev *gxp = client->gxp;
+
+	if (!gxp_is_direct_mode(gxp))
+		return;
 
 	lockdep_assert_held(&client->semaphore);
 	if (!client->has_vd_wakelock)

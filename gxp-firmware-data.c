@@ -10,7 +10,6 @@
 #include "gxp-config.h"
 #include "gxp-debug-dump.h"
 #include "gxp-firmware-data.h"
-#include "gxp-firmware.h" /* gxp_core_boot */
 #include "gxp-host-device-structs.h"
 #include "gxp-internal.h"
 #include "gxp-vd.h"
@@ -94,7 +93,7 @@ static void _gxp_fw_data_populate_vd_cfg(struct gxp_dev *gxp,
 	struct gxp_vd_descriptor *vd_desc;
 	int i;
 
-	if (!gxp_core_boot(gxp))
+	if (!gxp_is_direct_mode(gxp))
 		return;
 	if (!vd->vd_cfg.vaddr || !vd->core_cfg.vaddr) {
 		dev_warn(
@@ -154,16 +153,17 @@ int gxp_fw_data_init(struct gxp_dev *gxp)
 	if (!mgr)
 		return -ENOMEM;
 
-	virt = memremap(gxp->fwdatabuf.paddr, gxp->fwdatabuf.size, MEMREMAP_WC);
+	if (gxp_is_direct_mode(gxp)) {
+		virt = memremap(gxp->fwdatabuf.paddr, gxp->fwdatabuf.size, MEMREMAP_WC);
+		if (IS_ERR_OR_NULL(virt)) {
+			dev_err(gxp->dev, "Failed to map fw data region\n");
+			return -ENODEV;
+		}
+		gxp->fwdatabuf.vaddr = virt;
 
-	if (IS_ERR_OR_NULL(virt)) {
-		dev_err(gxp->dev, "Failed to map fw data region\n");
-		return -ENODEV;
+		/* Populate the region with a pre-defined pattern. */
+		memset(virt, FW_DATA_DEBUG_PATTERN, gxp->fwdatabuf.size);
 	}
-	gxp->fwdatabuf.vaddr = virt;
-
-	/* Populate the region with a pre-defined pattern. */
-	memset(virt, FW_DATA_DEBUG_PATTERN, gxp->fwdatabuf.size);
 	gxp->data_mgr = mgr;
 
 	return 0;

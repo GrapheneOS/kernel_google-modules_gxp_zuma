@@ -270,9 +270,9 @@ int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp);
  *
  * Note: KCI doesn't support asynchronous requests.
  */
-struct gcip_mailbox_resp_awaiter *
-gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp,
-		    void *data);
+struct gcip_mailbox_resp_awaiter *gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd,
+						      void *resp, void *data,
+						      gcip_mailbox_cmd_flags_t flags);
 #endif /* !GXP_USE_LEGACY_MAILBOX */
 
 #endif /* __GXP_MAILBOX_H__ */

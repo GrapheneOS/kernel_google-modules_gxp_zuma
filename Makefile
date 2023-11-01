@@ -69,7 +69,7 @@ gxp-objs += $(GCIP_DIR)/gcip.o
 endif
 
 KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
-include $(KERNEL_SRC)/../private/google-modules/soc/gs/Makefile.include
+-include $(KERNEL_SRC)/../private/google-modules/soc/gs/Makefile.include
 M ?= $(shell pwd)
 
 # Obtain the current git commit hash for logging on probe
@@ -104,9 +104,11 @@ ccflags-y += -DCONFIG_GOOGLE_BCL
 KBUILD_OPTIONS += GXP_CHIP=$(GXP_CHIP) GXP_PLATFORM=$(GXP_PLATFORM)
 
 # Access TPU driver's exported symbols.
-EXTRA_SYMBOLS += \
-                 $(GMODULE_PATH)/edgetpu/$(EDGETPU_CHIP)/drivers/edgetpu/Module.symvers \
-                 $(GMODULE_PATH)/power/mitigation/Module.symvers
+EXTRA_SYMBOLS += $(GMODULE_PATH)/edgetpu/$(EDGETPU_CHIP)/drivers/edgetpu/Module.symvers
+
+ifneq ($(GXP_POWER_MITIGATION), false)
+EXTRA_SYMBOLS += $(GMODULE_PATH)/power/mitigation/Module.symvers
+endif
 
 modules modules_install:
 	$(MAKE) -C $(KERNEL_SRC) M=$(M)/$(GCIP_DIR) gcip.o

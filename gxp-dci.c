@@ -517,8 +517,7 @@ int gxp_dci_execute_cmd_async(struct gxp_mailbox *mbx,
 
 	gxp_pm_update_requested_power_states(mbx->gxp, off_states,
 					     requested_states);
-	async_resp->awaiter =
-		gxp_mailbox_put_cmd(mbx, cmd, &async_resp->resp, async_resp);
+	async_resp->awaiter = gxp_mailbox_put_cmd(mbx, cmd, &async_resp->resp, async_resp, 0);
 	if (IS_ERR(async_resp->awaiter)) {
 		ret = PTR_ERR(async_resp->awaiter);
 		goto err_free_resp;

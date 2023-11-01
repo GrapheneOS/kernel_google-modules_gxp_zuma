@@ -469,7 +469,8 @@ int gxp_mailbox_gcip_ops_after_enqueue_cmd(struct gcip_mailbox *mailbox,
 
 	/* triggers doorbell */
 	gxp_mailbox_generate_device_interrupt(gxp_mbx, BIT(0));
-	return 1;
+
+	return 0;
 }
 
 void gxp_mailbox_gcip_ops_after_fetch_resps(struct gcip_mailbox *mailbox,

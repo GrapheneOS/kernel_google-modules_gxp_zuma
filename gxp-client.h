@@ -110,6 +110,7 @@ bool gxp_client_release_block_wakelock(struct gxp_client *client);
  * @requested_states: The requested power states.
  *
  * The caller must have locked client->semaphore.
+ * This function is only meaningful in direct mode. On MCU mode it returns 0 directly.
  *
  * Return:
  * * 0          - Success
@@ -119,10 +120,11 @@ bool gxp_client_release_block_wakelock(struct gxp_client *client);
 int gxp_client_acquire_vd_wakelock(struct gxp_client *client,
 				   struct gxp_power_states requested_states);
 /**
- * gxp_client_release_vd_wakelock() - Releases the holded VD wakelock to suspend
- * the current virtual device.
+ * gxp_client_release_vd_wakelock() - Releases the held VD wakelock to suspend the current virtual
+ * device.
  *
  * The caller must have locked client->semaphore.
+ * This function is only meaningful in direct mode. On MCU mode it returns directly.
  */
 void gxp_client_release_vd_wakelock(struct gxp_client *client);
 

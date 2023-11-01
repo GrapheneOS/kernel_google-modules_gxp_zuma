@@ -207,6 +207,7 @@ void gxp_vd_release(struct gxp_virtual_device *vd);
  * GXP_VD_RUNNING. Otherwise, it would be GXP_VD_UNAVAILABLE.
  *
  * The caller must have locked gxp->vd_semaphore for writing.
+ * This function is only meaningful in direct mode. On MCU mode it returns 0 directly.
  *
  * Return:
  * * 0         - Success
@@ -222,6 +223,7 @@ int gxp_vd_run(struct gxp_virtual_device *vd);
  * The state of @vd will be GXP_VD_OFF.
  *
  * The caller must have locked gxp->vd_semaphore for writing.
+ * This function is only meaningful in direct mode. On MCU mode it returns directly.
  */
 void gxp_vd_stop(struct gxp_virtual_device *vd);
 
@@ -337,6 +339,7 @@ struct gxp_mapping *gxp_vd_mapping_search_host(struct gxp_virtual_device *vd,
  * GXP_VD_SUSPENDED. Otherwise, it would be GXP_VD_UNAVAILABLE.
  *
  * The caller must have locked gxp->vd_semaphore for writing.
+ * This function is only meaningful in direct mode. On MCU mode it returns directly.
  */
 void gxp_vd_suspend(struct gxp_virtual_device *vd);
 
@@ -349,6 +352,7 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd);
  * GXP_VD_RUNNING. Otherwise, it would be GXP_VD_UNAVAILABLE.
  *
  * The caller must have locked gxp->vd_semaphore for writing.
+ * This function is only meaningful in direct mode. On MCU mode it returns 0 directly.
  *
  * Return:
  * * 0          - Success

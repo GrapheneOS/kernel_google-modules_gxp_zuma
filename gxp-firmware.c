@@ -756,18 +756,19 @@ int gxp_fw_init(struct gxp_dev *gxp)
 		 */
 	}
 
-	ret = gxp_acquire_rmem_resource(gxp, &r, "gxp-scratchpad-region");
-	if (ret) {
-		dev_err(gxp->dev,
-			"Unable to acquire shared FW data reserved memory\n");
-		return ret;
+	if (gxp_is_direct_mode(gxp)) {
+		ret = gxp_acquire_rmem_resource(gxp, &r, "gxp-scratchpad-region");
+		if (ret) {
+			dev_err(gxp->dev, "Unable to acquire shared FW data reserved memory\n");
+			return ret;
+		}
+		gxp->fwdatabuf.size = resource_size(&r);
+		gxp->fwdatabuf.paddr = r.start;
+		/*
+		 * Scratchpad region is not mapped until the firmware data is
+		 * initialized.
+		 */
 	}
-	gxp->fwdatabuf.size = resource_size(&r);
-	gxp->fwdatabuf.paddr = r.start;
-	/*
-	 * Scratchpad region is not mapped until the firmware data is
-	 * initialized.
-	 */
 
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		/*
@@ -781,8 +782,7 @@ int gxp_fw_init(struct gxp_dev *gxp)
 		 * (used by the linker).
 		 */
 		gxp->fwbufs[core].vaddr =
-			memremap(gxp->fwbufs[core].paddr,
-				 gxp->fwbufs[core].size, MEMREMAP_WC);
+			memremap(gxp->fwbufs[core].paddr, gxp->fwbufs[core].size, MEMREMAP_WC);
 		if (!(gxp->fwbufs[core].vaddr)) {
 			dev_err(gxp->dev, "FW buf %d memremap failed\n", core);
 			ret = -EINVAL;
@@ -893,12 +893,10 @@ static int gxp_firmware_setup(struct gxp_dev *gxp,
 			      struct gxp_virtual_device *vd, uint core,
 			      uint phys_core)
 {
-	int ret = 0;
-	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
+	int ret;
 
-	if (gxp_core_boot(gxp) && mgr->firmware_running & BIT(phys_core)) {
-		dev_err(gxp->dev, "Firmware is already running on core %u\n",
-			phys_core);
+	if (gxp_is_fw_running(gxp, phys_core)) {
+		dev_err(gxp->dev, "Firmware is already running on core %u\n", phys_core);
 		return -EBUSY;
 	}
 
@@ -906,18 +904,14 @@ static int gxp_firmware_setup(struct gxp_dev *gxp,
 	gxp_bpm_configure(gxp, phys_core, INST_BPM_OFFSET, BPM_EVENT_READ_XFER);
 	gxp_bpm_configure(gxp, phys_core, DATA_BPM_OFFSET, BPM_EVENT_WRITE_XFER);
 
-	/* Mark this as a cold boot */
-	if (gxp_core_boot(gxp)) {
-		reset_core_config_region(gxp, vd, core);
-		ret = gxp_firmware_setup_hw_after_block_off(gxp, core,
-							    phys_core,
-							    /*verbose=*/true);
-		if (ret) {
-			dev_err(gxp->dev, "Failed to power up core %u\n", core);
-			return ret;
-		}
-		enable_core_interrupts(gxp, phys_core);
+	reset_core_config_region(gxp, vd, core);
+	ret = gxp_firmware_setup_hw_after_block_off(gxp, core, phys_core,
+						    /*verbose=*/true);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to power up core %u\n", core);
+		return ret;
 	}
+	enable_core_interrupts(gxp, phys_core);
 
 	return ret;
 }
@@ -947,34 +941,25 @@ static int gxp_firmware_finish_startup(struct gxp_dev *gxp,
 	int ret = 0;
 	uint core = select_core(vd, virt_core, phys_core);
 
-	if (gxp_core_boot(gxp)) {
-		ret = gxp_firmware_handshake(gxp, vd, core, phys_core);
-		if (ret) {
-			dev_err(gxp->dev,
-				"Firmware handshake failed on core %u\n",
-				phys_core);
+	ret = gxp_firmware_handshake(gxp, vd, core, phys_core);
+	if (ret) {
+		dev_err(gxp->dev, "Firmware handshake failed on core %u\n", phys_core);
+		goto err_firmware_off;
+	}
+
+	/* Initialize mailbox */
+	if (gxp->mailbox_mgr->allocate_mailbox) {
+		gxp->mailbox_mgr->mailboxes[phys_core] = gxp->mailbox_mgr->allocate_mailbox(
+			gxp->mailbox_mgr, vd, virt_core, phys_core);
+		if (IS_ERR(gxp->mailbox_mgr->mailboxes[phys_core])) {
+			dev_err(gxp->dev, "Unable to allocate mailbox (core=%u, ret=%ld)\n",
+				phys_core, PTR_ERR(gxp->mailbox_mgr->mailboxes[phys_core]));
+			ret = PTR_ERR(gxp->mailbox_mgr->mailboxes[phys_core]);
+			gxp->mailbox_mgr->mailboxes[phys_core] = NULL;
 			goto err_firmware_off;
 		}
-
-		/* Initialize mailbox */
-		if (gxp->mailbox_mgr->allocate_mailbox) {
-			gxp->mailbox_mgr->mailboxes[phys_core] =
-				gxp->mailbox_mgr->allocate_mailbox(
-					gxp->mailbox_mgr, vd, virt_core, phys_core);
-			if (IS_ERR(gxp->mailbox_mgr->mailboxes[phys_core])) {
-				dev_err(gxp->dev,
-					"Unable to allocate mailbox (core=%u, ret=%ld)\n",
-					phys_core,
-					PTR_ERR(gxp->mailbox_mgr
-							->mailboxes[phys_core]));
-				ret = PTR_ERR(
-					gxp->mailbox_mgr->mailboxes[phys_core]);
-				gxp->mailbox_mgr->mailboxes[phys_core] = NULL;
-				goto err_firmware_off;
-			}
-		}
-		mgr->firmware_running |= BIT(phys_core);
 	}
+	mgr->firmware_running |= BIT(phys_core);
 
 	work = gxp_debug_dump_get_notification_handler(gxp, phys_core);
 	if (work)
@@ -989,8 +974,7 @@ static int gxp_firmware_finish_startup(struct gxp_dev *gxp,
 	return ret;
 
 err_firmware_off:
-	if (gxp_core_boot(gxp))
-		gxp_pm_core_off(gxp, phys_core);
+	gxp_pm_core_off(gxp, phys_core);
 	return ret;
 }
 
@@ -1000,9 +984,8 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 {
 	struct gxp_firmware_manager *mgr = gxp->firmware_mgr;
 
-	if (gxp_core_boot(gxp) && !(mgr->firmware_running & BIT(phys_core)))
-		dev_err(gxp->dev, "Firmware is not running on core %u\n",
-			phys_core);
+	if (!gxp_is_fw_running(gxp, phys_core))
+		dev_err(gxp->dev, "Firmware is not running on core %u\n", phys_core);
 
 	mgr->firmware_running &= ~BIT(phys_core);
 
@@ -1011,23 +994,18 @@ static void gxp_firmware_stop_core(struct gxp_dev *gxp,
 	gxp_notification_unregister_handler(gxp, phys_core,
 					    HOST_NOTIF_CORE_TELEMETRY_STATUS);
 
-	if (gxp_core_boot(gxp)) {
-		if (gxp->mailbox_mgr->release_mailbox) {
-			gxp->mailbox_mgr->release_mailbox(
-				gxp->mailbox_mgr, vd, virt_core,
-				gxp->mailbox_mgr->mailboxes[phys_core]);
-			dev_notice(gxp->dev, "Mailbox %u released\n",
-				   phys_core);
-		}
+	if (gxp->mailbox_mgr->release_mailbox) {
+		gxp->mailbox_mgr->release_mailbox(gxp->mailbox_mgr, vd, virt_core,
+						  gxp->mailbox_mgr->mailboxes[phys_core]);
+		dev_notice(gxp->dev, "Mailbox %u released\n", phys_core);
+	}
 
-		if (vd->state == GXP_VD_RUNNING) {
-			/*
-			 * Disable interrupts to prevent cores from being woken up
-			 * unexpectedly.
-			 */
-			gxp_firmware_disable_ext_interrupts(gxp, phys_core);
-			gxp_pm_core_off(gxp, phys_core);
-		}
+	if (vd->state == GXP_VD_RUNNING) {
+		/*
+		 * Disable interrupts to prevent cores from being woken up unexpectedly.
+		 */
+		gxp_firmware_disable_ext_interrupts(gxp, phys_core);
+		gxp_pm_core_off(gxp, phys_core);
 	}
 }
 
@@ -1064,10 +1042,8 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 		for (phys_core = 0; phys_core < GXP_NUM_CORES; phys_core++) {
 			if (!(core_list & BIT(phys_core)))
 				continue;
-			if (!(failed_cores & BIT(phys_core))) {
-				if (gxp_core_boot(gxp))
-					gxp_pm_core_off(gxp, phys_core);
-			}
+			if (!(failed_cores & BIT(phys_core)))
+				gxp_pm_core_off(gxp, phys_core);
 			virt_core++;
 		}
 		return failed_ret;
@@ -1086,10 +1062,8 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 	}
 #endif
 	/* Switch clock mux to the normal state to guarantee LPM works */
-	if (gxp_core_boot(gxp)) {
-		gxp_pm_force_clkmux_normal(gxp);
-		gxp_firmware_wakeup_cores(gxp, core_list);
-	}
+	gxp_pm_force_clkmux_normal(gxp);
+	gxp_firmware_wakeup_cores(gxp, core_list);
 
 	virt_core = 0;
 	for (phys_core = 0; phys_core < GXP_NUM_CORES; phys_core++) {
@@ -1117,8 +1091,7 @@ int gxp_firmware_run(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 		}
 	}
 	/* Check if we need to set clock mux to low state as requested */
-	if (gxp_core_boot(gxp))
-		gxp_pm_resume_clkmux(gxp);
+	gxp_pm_resume_clkmux(gxp);
 
 	return ret;
 }
@@ -1170,9 +1143,4 @@ u32 gxp_firmware_get_boot_status(struct gxp_dev *gxp,
 
 	core_cfg = get_scratchpad_base(gxp, vd, core);
 	return core_cfg->boot_status;
-}
-
-bool gxp_core_boot(struct gxp_dev *gxp)
-{
-	return gxp_is_direct_mode(gxp);
 }

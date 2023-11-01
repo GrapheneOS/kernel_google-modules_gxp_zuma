@@ -258,10 +258,9 @@ void gxp_uci_exit(struct gxp_uci *uci);
 int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 			 struct gxp_uci_command *cmd,
 			 struct gxp_uci_additional_info *additional_info,
-			 struct list_head *wait_queue,
-			 struct list_head *resp_queue, spinlock_t *queue_lock,
-			 wait_queue_head_t *queue_waitq,
-			 struct gxp_eventfd *eventfd);
+			 struct list_head *wait_queue, struct list_head *resp_queue,
+			 spinlock_t *queue_lock, wait_queue_head_t *queue_waitq,
+			 struct gxp_eventfd *eventfd, gcip_mailbox_cmd_flags_t flags);
 
 /*
  * gxp_uci_wait_async_response() - API for waiting and fetching a response from

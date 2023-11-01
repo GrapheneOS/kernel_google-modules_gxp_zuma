@@ -122,7 +122,7 @@ static void gxp_kci_handle_rkci(struct gxp_kci *gkci,
 		 * synchronous call to gxp_kci_release_vmbox() would be made post which debug
 		 * dump if enabled would be checked and processed. Due to debug dump processing
 		 * being a time consuming task, rkci ack is sent first to unblock the mcu to send
-		 * furhter rkci's.
+		 * further rkci's.
 		 */
 		gxp_kci_resp_rkci_ack(gkci, resp);
 		gxp_vd_invalidate_with_client_id(gxp, client_id, true);

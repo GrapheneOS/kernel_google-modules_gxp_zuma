@@ -16,7 +16,6 @@
 
 #include "gxp-config.h"
 #include "gxp-dma.h"
-#include "gxp-firmware.h" /* gxp_core_boot */
 #include "gxp-mailbox.h"
 #include "gxp-mapping.h"
 #include "gxp-pm.h"

@@ -7,7 +7,6 @@
 
 #include <linux/device.h>
 #include <linux/firmware.h>
-#include <linux/gsa/gsa_dsp.h>
 #include <linux/io.h>
 #include <linux/lockdep.h>
 #include <linux/mutex.h>
@@ -29,6 +28,7 @@
 #include "gxp-dma.h"
 #include "gxp-doorbell.h"
 #include "gxp-firmware-loader.h"
+#include "gxp-gsa.h"
 #include "gxp-internal.h"
 #include "gxp-kci.h"
 #include "gxp-lpm.h"
@@ -568,7 +568,7 @@ static ssize_t load_firmware_show(struct device *dev,
 	ssize_t ret;
 	char *firmware_name = gxp_firmware_loader_get_mcu_fw_name(gxp);
 
-	ret = scnprintf(buf, PAGE_SIZE, "%s\n", firmware_name);
+	ret = sysfs_emit(buf, "%s\n", firmware_name);
 	kfree(firmware_name);
 	return ret;
 }
@@ -641,19 +641,19 @@ static ssize_t firmware_version_show(struct device *dev, struct device_attribute
 		priv = "error";
 	}
 
-	return scnprintf(buf, PAGE_SIZE, "cl=%d priv=%s\n", mcu_fw->fw_info.fw_changelist, priv);
+	return sysfs_emit(buf, "cl=%d priv=%s\n", mcu_fw->fw_info.fw_changelist, priv);
 }
 
 static DEVICE_ATTR_RO(firmware_version);
 
-/* Provide the count of firmwre crash. */
+/* Provide the count of firmware crash. */
 static ssize_t firmware_crash_counter_show(struct device *dev, struct device_attribute *attr,
 					   char *buf)
 {
 	struct gxp_dev *gxp = dev_get_drvdata(dev);
 	struct gxp_mcu_firmware *mcu_fw = gxp_mcu_firmware_of(gxp);
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", mcu_fw->crash_cnt);
+	return sysfs_emit(buf, "%d\n", mcu_fw->crash_cnt);
 }
 
 static DEVICE_ATTR_RO(firmware_crash_counter);

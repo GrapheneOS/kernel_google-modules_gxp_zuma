@@ -52,13 +52,12 @@ static int gxp_ioctl_uci_command_compat(struct gxp_client *client,
 
 	cmd.client_id = client->vd->client_id;
 
-	ret = gxp_uci_send_command(
-		&mcu->uci, client->vd, &cmd, NULL,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
-		client->mb_eventfds[UCI_RESOURCE_ID]);
+	ret = gxp_uci_send_command(&mcu->uci, client->vd, &cmd, NULL,
+				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
+				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
+				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
+				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
+				   client->mb_eventfds[UCI_RESOURCE_ID], 0);
 
 	up_read(&client->semaphore);
 
@@ -119,13 +118,12 @@ static int gxp_ioctl_uci_command(struct gxp_client *client,
 	 */
 	gxp_uci_fill_additional_info(&additional_info, NULL, 0, NULL, 0, ibuf.timeout_ms, NULL, 0);
 
-	ret = gxp_uci_send_command(
-		&mcu->uci, client->vd, &cmd, &additional_info,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
-		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
-		client->mb_eventfds[UCI_RESOURCE_ID]);
+	ret = gxp_uci_send_command(&mcu->uci, client->vd, &cmd, &additional_info,
+				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
+				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
+				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
+				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
+				   client->mb_eventfds[UCI_RESOURCE_ID], 0);
 
 	up_read(&client->semaphore);
 

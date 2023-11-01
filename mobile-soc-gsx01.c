@@ -147,7 +147,7 @@ void gxp_soc_activate_context(struct gxp_dev *gxp, struct gcip_iommu_domain *gdo
 	uint core;
 
 	/* Program VID only when cores are managed by us. */
-	if (gxp_is_direct_mode(gxp) || gxp_core_boot(gxp)) {
+	if (gxp_is_direct_mode(gxp)) {
 		for (core = 0; core < GXP_NUM_CORES; core++)
 			if (BIT(core) & core_list) {
 				dev_dbg(gxp->dev, "Assign core%u to PASID %d\n", core,
@@ -169,7 +169,7 @@ void gxp_soc_deactivate_context(struct gxp_dev *gxp, struct gcip_iommu_domain *g
 	uint core;
 
 	/* Program VID only when cores are managed by us. */
-	if (gxp_is_direct_mode(gxp) || gxp_core_boot(gxp)) {
+	if (gxp_is_direct_mode(gxp)) {
 		for (core = 0; core < GXP_NUM_CORES; core++) {
 			if (BIT(core) & core_list)
 				gxp_gsx01_ssmt_set_core_vid(ssmt, core, 0);

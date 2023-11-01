@@ -481,22 +481,21 @@ int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp)
 {
 	switch (mailbox->type) {
 	case GXP_MBOX_TYPE_GENERAL:
-		return gcip_mailbox_send_cmd(mailbox->mbx_impl.gcip_mbx, cmd,
-					     resp);
+		return gcip_mailbox_send_cmd(mailbox->mbx_impl.gcip_mbx, cmd, resp, 0);
 	case GXP_MBOX_TYPE_KCI:
 		return gcip_kci_send_cmd(mailbox->mbx_impl.gcip_kci, cmd);
 	}
 	return -EOPNOTSUPP;
 }
 
-struct gcip_mailbox_resp_awaiter *
-gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp,
-		    void *data)
+struct gcip_mailbox_resp_awaiter *gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd,
+						      void *resp, void *data,
+						      gcip_mailbox_cmd_flags_t flags)
 {
 	switch (mailbox->type) {
 	case GXP_MBOX_TYPE_GENERAL:
-		return gcip_mailbox_put_cmd(mailbox->mbx_impl.gcip_mbx, cmd,
-					    resp, data);
+		return gcip_mailbox_put_cmd_flags(mailbox->mbx_impl.gcip_mbx, cmd, resp, data,
+						  flags);
 	default:
 		break;
 	}

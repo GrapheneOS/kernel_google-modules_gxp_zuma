@@ -38,12 +38,6 @@ enum aurora_msg {
 	MSG_SCRATCHPAD_MAX,
 };
 
-/* The caller must have locked gxp->vd_semaphore for reading. */
-static inline bool gxp_is_fw_running(struct gxp_dev *gxp, uint core)
-{
-	return (gxp->firmware_mgr->firmware_running & BIT(core)) != 0;
-}
-
 /*
  * Initializes the core firmware loading/unloading subsystem. This includes
  * initializing the LPM and obtaining the memory regions needed to load the FW.
@@ -74,6 +68,17 @@ int gxp_firmware_load_core_firmware(
  */
 int gxp_firmware_rearrange_elf(struct gxp_dev *gxp,
 			       const struct firmware *firmwares[GXP_NUM_CORES]);
+
+/*
+ * All functions below, which manage the state of or communicate with the core firmware, should only
+ * be called in direct mode.
+ */
+
+/* The caller must have locked gxp->vd_semaphore for reading. */
+static inline bool gxp_is_fw_running(struct gxp_dev *gxp, uint core)
+{
+	return (gxp->firmware_mgr->firmware_running & BIT(core)) != 0;
+}
 
 /*
  * Re-program the reset vector and power on the core's LPM if the block had
@@ -119,9 +124,6 @@ void gxp_firmware_set_boot_status(struct gxp_dev *gxp,
  */
 u32 gxp_firmware_get_boot_status(struct gxp_dev *gxp,
 				 struct gxp_virtual_device *vd, uint core);
-
-/* Returns whether the core firmware running states are managed by us. */
-bool gxp_core_boot(struct gxp_dev *gxp);
 
 /*
  * Disable external interrupts to core.

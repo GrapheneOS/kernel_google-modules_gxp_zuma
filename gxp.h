@@ -249,11 +249,8 @@ struct gxp_virtual_device_ioctl {
 	 *   [31:1]  - RESERVED
 	 */
 	__u8 flags;
-	/*
-	 * Input:
-	 * The number of threads requested per core.
-	 */
-	__u16 threads_per_core;
+	/* Deprecated field that should be ignored. */
+	__u16 reserved;
 	/*
 	 * Input:
 	 * The amount of memory requested per core, in kB.

@@ -17,8 +17,7 @@
 #include "gxp-internal.h"
 
 #if GXP_HAS_MCU
-#include <linux/gsa/gsa_dsp.h>
-
+#include "gxp-gsa.h"
 #include "gxp-mcu-firmware.h"
 #endif
 

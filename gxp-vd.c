@@ -542,7 +542,7 @@ static int assign_cores(struct gxp_virtual_device *vd)
 	uint core;
 	uint available_cores = 0;
 
-	if (!gxp_core_boot(gxp)) {
+	if (!gxp_is_direct_mode(gxp)) {
 		/* We don't do core assignment when cores are managed by MCU. */
 		vd->core_list = BIT(GXP_NUM_CORES) - 1;
 		return 0;
@@ -572,7 +572,7 @@ static void unassign_cores(struct gxp_virtual_device *vd)
 	struct gxp_dev *gxp = vd->gxp;
 	uint core;
 
-	if (!gxp_core_boot(gxp))
+	if (!gxp_is_direct_mode(gxp))
 		return;
 	for (core = 0; core < GXP_NUM_CORES; core++) {
 		if (gxp->core_to_vd[core] == vd)
@@ -939,6 +939,9 @@ int gxp_vd_run(struct gxp_virtual_device *vd)
 	int ret;
 	enum gxp_virtual_device_state orig_state = vd->state;
 
+	if (!gxp_is_direct_mode(gxp))
+		return 0;
+
 	lockdep_assert_held_write(&gxp->vd_semaphore);
 	if (orig_state != GXP_VD_READY && orig_state != GXP_VD_OFF)
 		return -EINVAL;
@@ -1011,14 +1014,14 @@ void gxp_vd_stop(struct gxp_virtual_device *vd)
 	uint core_list = vd->core_list;
 	uint lpm_state;
 
+	if (!gxp_is_direct_mode(gxp))
+		return;
+
 	lockdep_assert_held_write(&gxp->vd_semaphore);
 	debug_dump_lock(gxp, vd);
 
-	if (gxp_core_boot(gxp) &&
-	    (vd->state == GXP_VD_OFF || vd->state == GXP_VD_READY ||
-	     vd->state == GXP_VD_RUNNING) &&
+	if ((vd->state == GXP_VD_OFF || vd->state == GXP_VD_READY || vd->state == GXP_VD_RUNNING) &&
 	    gxp_pm_get_blk_state(gxp) != AUR_OFF) {
-
 		for (phys_core = 0; phys_core < GXP_NUM_CORES; phys_core++) {
 			if (core_list & BIT(phys_core)) {
 
@@ -1088,8 +1091,9 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 	u32 boot_state;
 	uint failed_cores = 0;
 
-	if (!gxp_is_direct_mode(gxp) && gxp_core_boot(gxp))
-		return gxp_vd_stop(vd);
+	if (!gxp_is_direct_mode(gxp))
+		return;
+
 	lockdep_assert_held_write(&gxp->vd_semaphore);
 	debug_dump_lock(gxp, vd);
 
@@ -1098,10 +1102,6 @@ void gxp_vd_suspend(struct gxp_virtual_device *vd)
 	if (vd->state == GXP_VD_SUSPENDED) {
 		dev_err(gxp->dev,
 			"Attempt to suspend a virtual device twice\n");
-		goto out;
-	}
-	if (!gxp_core_boot(gxp)) {
-		vd->state = GXP_VD_SUSPENDED;
 		goto out;
 	}
 	gxp_pm_force_clkmux_normal(gxp);
@@ -1193,6 +1193,9 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 	u64 curr_blk_switch_count;
 	uint failed_cores = 0;
 
+	if (!gxp_is_direct_mode(gxp))
+		return 0;
+
 	lockdep_assert_held_write(&gxp->vd_semaphore);
 	debug_dump_lock(gxp, vd);
 	dev_info(gxp->dev, "Resuming VD vdid=%d client_id=%d...\n", vd->vdid,
@@ -1201,10 +1204,6 @@ int gxp_vd_resume(struct gxp_virtual_device *vd)
 		dev_err(gxp->dev,
 			"Attempt to resume a virtual device which was not suspended\n");
 		ret = -EBUSY;
-		goto out;
-	}
-	if (!gxp_core_boot(gxp)) {
-		vd->state = GXP_VD_RUNNING;
 		goto out;
 	}
 	gxp_pm_force_clkmux_normal(gxp);
