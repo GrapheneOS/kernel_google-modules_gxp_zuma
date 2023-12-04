@@ -16,56 +16,108 @@
 
 #define GXP_TRACE_SYSTEM __stringify(TRACE_SYSTEM)
 
-TRACE_EVENT(gxp_dma_map_sg_start,
+TRACE_EVENT(gxp_mapping_create_start,
 
-	    TP_PROTO(int nents),
+	    TP_PROTO(u64 user_address, size_t size),
 
-	    TP_ARGS(nents),
+	    TP_ARGS(user_address, size),
 
-	    TP_STRUCT__entry(__field(int, nents)),
+	    TP_STRUCT__entry(__field(u64, user_address) __field(size_t, size)),
 
-	    TP_fast_assign(__entry->nents = nents;),
+	    TP_fast_assign(__entry->user_address = user_address; __entry->size = size;),
 
-	    TP_printk("nents = %d", __entry->nents));
+	    TP_printk("user_address = %#llX, size = %ld", __entry->user_address, __entry->size));
 
-TRACE_EVENT(gxp_dma_map_sg_end,
+TRACE_EVENT(gxp_mapping_create_end,
 
-	    TP_PROTO(int nents_mapped, ssize_t size_mapped),
+	    TP_PROTO(u64 user_address, size_t size, int nents),
 
-	    TP_ARGS(nents_mapped, size_mapped),
+	    TP_ARGS(user_address, size, nents),
 
-	    TP_STRUCT__entry(__field(int, nents_mapped)
-				     __field(ssize_t, size_mapped)),
+	    TP_STRUCT__entry(__field(u64, user_address) __field(size_t, size) __field(int, nents)),
 
-	    TP_fast_assign(__entry->nents_mapped = nents_mapped;
-			   __entry->size_mapped = size_mapped;),
+	    TP_fast_assign(__entry->user_address = user_address; __entry->size = size;
+			   __entry->nents = nents;),
 
-	    TP_printk("nents_mapped = %d, size_mapped = %ld",
-		      __entry->nents_mapped, __entry->size_mapped));
+	    TP_printk("user_address = %#llX, size = %ld, nents = %d", __entry->user_address,
+		      __entry->size, __entry->nents));
 
-TRACE_EVENT(gxp_dma_unmap_sg_start,
+TRACE_EVENT(gxp_mapping_destroy_start,
 
-	    TP_PROTO(int nents),
+	    TP_PROTO(dma_addr_t device_address, size_t size),
 
-	    TP_ARGS(nents),
+	    TP_ARGS(device_address, size),
 
-	    TP_STRUCT__entry(__field(int, nents)),
+	    TP_STRUCT__entry(__field(dma_addr_t, device_address) __field(size_t, size)),
 
-	    TP_fast_assign(__entry->nents = nents;),
+	    TP_fast_assign(__entry->device_address = device_address; __entry->size = size;),
 
-	    TP_printk("nents = %d", __entry->nents));
+	    TP_printk("device_address = %#llX, size = %ld", __entry->device_address,
+		      __entry->size));
 
-TRACE_EVENT(gxp_dma_unmap_sg_end,
+TRACE_EVENT(gxp_mapping_destroy_end,
 
-	    TP_PROTO(size_t size),
+	    TP_PROTO(dma_addr_t device_address, size_t size),
 
-	    TP_ARGS(size),
+	    TP_ARGS(device_address, size),
 
-	    TP_STRUCT__entry(__field(size_t, size)),
+	    TP_STRUCT__entry(__field(dma_addr_t, device_address) __field(size_t, size)),
 
-	    TP_fast_assign(__entry->size = size;),
+	    TP_fast_assign(__entry->device_address = device_address; __entry->size = size;),
 
-	    TP_printk("size = %ld", __entry->size));
+	    TP_printk("device_address = %#llX, size = %ld", __entry->device_address,
+		      __entry->size));
+
+TRACE_EVENT(gxp_dmabuf_mapping_create_start,
+
+	    TP_PROTO(int fd),
+
+	    TP_ARGS(fd),
+
+	    TP_STRUCT__entry(__field(int, fd)),
+
+	    TP_fast_assign(__entry->fd = fd;),
+
+	    TP_printk("fd = %d", __entry->fd));
+
+TRACE_EVENT(gxp_dmabuf_mapping_create_end,
+
+	    TP_PROTO(dma_addr_t device_address, size_t size),
+
+	    TP_ARGS(device_address, size),
+
+	    TP_STRUCT__entry(__field(dma_addr_t, device_address) __field(size_t, size)),
+
+	    TP_fast_assign(__entry->device_address = device_address; __entry->size = size;),
+
+	    TP_printk("device_address = %#llX, size = %ld", __entry->device_address,
+		      __entry->size));
+
+TRACE_EVENT(gxp_dmabuf_mapping_destroy_start,
+
+	    TP_PROTO(dma_addr_t device_address, size_t size),
+
+	    TP_ARGS(device_address, size),
+
+	    TP_STRUCT__entry(__field(dma_addr_t, device_address) __field(size_t, size)),
+
+	    TP_fast_assign(__entry->device_address = device_address; __entry->size = size;),
+
+	    TP_printk("device_address = %#llX, size = %ld", __entry->device_address,
+		      __entry->size));
+
+TRACE_EVENT(gxp_dmabuf_mapping_destroy_end,
+
+	    TP_PROTO(dma_addr_t device_address, size_t size),
+
+	    TP_ARGS(device_address, size),
+
+	    TP_STRUCT__entry(__field(dma_addr_t, device_address) __field(size_t, size)),
+
+	    TP_fast_assign(__entry->device_address = device_address; __entry->size = size;),
+
+	    TP_printk("device_address = %#llX, size = %ld", __entry->device_address,
+		      __entry->size));
 
 TRACE_EVENT(gxp_vd_block_ready_start,
 

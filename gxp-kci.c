@@ -328,9 +328,6 @@ static int gxp_kci_send_cmd_with_data(struct gxp_kci *gkci, u16 code, const void
 	struct gxp_mapped_resource buf;
 	int ret;
 
-	if (!gkci || !gkci->mbx)
-		return -ENODEV;
-
 	if (gxp_mcu_mem_alloc_data(gkci->mcu, &buf, size))
 		return -ENOSPC;
 
@@ -585,10 +582,10 @@ int gxp_kci_shutdown(struct gxp_kci *gkci)
 int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u32 client_id, u8 num_cores,
 			   u8 slice_index, bool first_open)
 {
-	struct gxp_kci_allocate_vmbox_detail detail = { .client_id = client_id,
-							.num_cores = num_cores,
-							.slice_index = slice_index,
-							.first_open = first_open };
+	const struct gxp_kci_allocate_vmbox_detail detail = { .client_id = client_id,
+							      .num_cores = num_cores,
+							      .slice_index = slice_index,
+							      .first_open = first_open };
 
 	return gxp_kci_send_cmd_with_data(gkci, GCIP_KCI_CODE_ALLOCATE_VMBOX, &detail,
 					  sizeof(detail));
@@ -596,7 +593,7 @@ int gxp_kci_allocate_vmbox(struct gxp_kci *gkci, u32 client_id, u8 num_cores,
 
 int gxp_kci_release_vmbox(struct gxp_kci *gkci, u32 client_id)
 {
-	struct gxp_kci_release_vmbox_detail detail = { .client_id = client_id };
+	const struct gxp_kci_release_vmbox_detail detail = { .client_id = client_id };
 
 	return gxp_kci_send_cmd_with_data(gkci, GCIP_KCI_CODE_RELEASE_VMBOX, &detail,
 					  sizeof(detail));
@@ -607,7 +604,7 @@ int gxp_kci_link_unlink_offload_vmbox(
 	enum gcip_kci_offload_chip_type offload_chip_type, bool link)
 {
 	u16 code = link ? GCIP_KCI_CODE_LINK_OFFLOAD_VMBOX : GCIP_KCI_CODE_UNLINK_OFFLOAD_VMBOX;
-	struct gxp_kci_link_unlink_offload_vmbox_detail detail = {
+	const struct gxp_kci_link_unlink_offload_vmbox_detail detail = {
 		.client_id = client_id,
 		.offload_client_id = offload_client_id,
 		.offload_chip_type = offload_chip_type

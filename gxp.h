@@ -13,26 +13,15 @@
 
 /* Interface Version */
 #define GXP_INTERFACE_VERSION_MAJOR 1
-#define GXP_INTERFACE_VERSION_MINOR 20
+#define GXP_INTERFACE_VERSION_MINOR 21
 #define GXP_INTERFACE_VERSION_BUILD 0
-
-/*
- * Legacy mmap offsets for core logging and tracing buffers
- * Requested size will be divided evenly among all cores. The whole buffer
- * must be page-aligned, and the size of each core's buffer must be a multiple
- * of PAGE_SIZE.
- * These macros have become obsolete now.
- */
-#define GXP_MMAP_CORE_LOG_BUFFER_OFFSET_LEGACY 0x10000
-#define GXP_MMAP_CORE_TRACE_BUFFER_OFFSET_LEGACY 0x20000
 
 /* mmap offsets for MCU logging and tracing buffers */
 #define GXP_MMAP_MCU_LOG_BUFFER_OFFSET 0x30000
 #define GXP_MMAP_MCU_TRACE_BUFFER_OFFSET 0x40000
 
-/* mmap offsets for core logging and tracing buffers */
+/* mmap offsets for core telemetry buffers */
 #define GXP_MMAP_CORE_LOG_BUFFER_OFFSET 0x50000
-#define GXP_MMAP_CORE_TRACE_BUFFER_OFFSET 0x60000
 
 /* mmap offset for secure core logging and tracing */
 #define GXP_MMAP_SECURE_CORE_LOG_BUFFER_OFFSET 0x70000
@@ -250,12 +239,7 @@ struct gxp_virtual_device_ioctl {
 	 */
 	__u8 flags;
 	/* Deprecated field that should be ignored. */
-	__u16 reserved;
-	/*
-	 * Input:
-	 * The amount of memory requested per core, in kB.
-	 */
-	__u32 memory_per_core;
+	__u8 reserved[6];
 	/*
 	 * Output:
 	 * The ID assigned to the virtual device and shared with its cores.
@@ -846,6 +830,8 @@ struct gxp_interface_version_ioctl {
 #define GXP_UNREGISTER_MCU_TELEMETRY_EVENTFD                                   \
 	_IOW(GXP_IOCTL_BASE, 29, struct gxp_register_telemetry_eventfd_ioctl)
 
+#define GXP_UCI_CMD_OPAQUE_SIZE 48
+
 struct gxp_mailbox_uci_command_compat_ioctl {
 	/*
 	 * Output:
@@ -860,7 +846,7 @@ struct gxp_mailbox_uci_command_compat_ioctl {
 	 * Input:
 	 * Will be copied to the UCI command without modification.
 	 */
-	__u8 opaque[48];
+	__u8 opaque[GXP_UCI_CMD_OPAQUE_SIZE];
 };
 
 /*
@@ -1028,6 +1014,12 @@ struct gxp_set_device_properties_ioctl {
 
 #define GXP_MAX_FENCES_PER_UCI_COMMAND 4
 
+/*
+ * Indicates the end of the fence FD array. This macro will be used by the
+ * ioctls which receive multiple fence FDs as an array.
+ */
+#define GXP_FENCE_ARRAY_TERMINATION (~0u)
+
 struct gxp_mailbox_uci_command_ioctl {
 	/*
 	 * Output:
@@ -1039,15 +1031,20 @@ struct gxp_mailbox_uci_command_ioctl {
 	/*
 	 * Input:
 	 * The FDs of in-fences that this command will waits for. The kernel
-	 * driver will read FDs from this array until it meets 0 or
-	 * end-of-array. (i.e., reads at most 4 fences) The fences can be
-	 * either IIF or in-kernel fence.
+	 * driver will read FDs from this array until it meets
+	 * `GXP_FENCE_ARRAY_TERMINATION` or end-of-array. (i.e., reads at most
+	 * GXP_MAX_FENCES_PER_UCI_COMMAND fences) The fences can be either IIF
+	 * or in-kernel fence.
+	 *
+	 * Note that the type of fences must be the same.
 	 */
 	__u32 in_fences[GXP_MAX_FENCES_PER_UCI_COMMAND];
 	/*
 	 * Input:
 	 * The concept is the same with `in_fences`, but these are out-fences
-	 * that this command will signal once its job is finisehd.
+	 * that this command will signal once its job is finished.
+	 *
+	 * Note that the type of fences can be mixed.
 	 */
 	__u32 out_fences[GXP_MAX_FENCES_PER_UCI_COMMAND];
 	/*
@@ -1076,7 +1073,7 @@ struct gxp_mailbox_uci_command_ioctl {
 	 * RuntimeCommand which will be copied to the UCI command without
 	 * modification by the kernel driver.
 	 */
-	__u8 opaque[48];
+	__u8 opaque[GXP_UCI_CMD_OPAQUE_SIZE];
 	/* Reserved fields. */
 	__u8 reserved[32];
 };
@@ -1088,5 +1085,82 @@ struct gxp_mailbox_uci_command_ioctl {
  */
 #define GXP_MAILBOX_UCI_COMMAND                                                \
 	_IOWR(GXP_IOCTL_BASE, 39, struct gxp_mailbox_uci_command_ioctl)
+
+/* The type of IP for IIF. Must be synced with IIF driver. */
+enum gxp_iif_ip_type {
+	GXP_IIF_IP_DSP,
+	GXP_IIF_IP_TPU,
+	GXP_IIF_IP_GPU,
+};
+
+struct gxp_create_iif_fence_ioctl {
+	/*
+	 * Input:
+	 * The type of the fence signaler IP. (See enum gxp_iif_ip_type)
+	 */
+	__u8 signaler_ip;
+	/*
+	 * Input:
+	 * The number of the signalers.
+	 */
+	__u16 total_signalers;
+	/*
+	 * Output:
+	 * The file descriptor of the created fence.
+	 */
+	__s32 fence;
+};
+
+/* Create an IIF fence. */
+#define GXP_CREATE_IIF_FENCE                                                   \
+	_IOWR(GXP_IOCTL_BASE, 40, struct gxp_create_iif_fence_ioctl)
+
+/*
+ * The ioctl won't register @eventfd and will simply return the number of remaining signalers of
+ * each fence. Must be synced with IIF driver.
+ */
+#define GXP_FENCE_REMAINING_SIGNALERS_NO_REGISTER_EVENTFD (~0u)
+
+struct gxp_fence_remaining_signalers_ioctl {
+	/*
+	 * Input:
+	 * Array of fence file descriptors to check whether there are remaining
+	 * signalers to be submitted or not. The fences must be IIF. The
+	 * kernel driver will read FDs from this array until it meets
+	 * `GXP_FENCE_ARRAY_TERMINATION` or end-of-array. (i.e., reads at most
+	 * GXP_MAX_FENCES_PER_UCI_COMMAND fences)
+	 */
+	__u32 fences[GXP_MAX_FENCES_PER_UCI_COMMAND];
+	/*
+	 * Input:
+	 * The eventfd which will be triggered if there were fence(s) which
+	 * haven't finished the signaler submission yet when the ioctl is called
+	 * and when they eventually have finished the submission. Note that if
+	 * all fences already finished the submission (i.e., all values in the
+	 * returned @remaining_signalers are 0), this eventfd will be ignored.
+	 *
+	 * Note that if `GXP_FENCE_REMAINING_SIGNALERS_NO_REGISTER_EVENTFD` is
+	 * passed, this ioctl will simply return the number of remaining
+	 * signalers of each fence to @remaining_signalers.
+	 */
+	__u32 eventfd;
+	/*
+	 * Output:
+	 * The number of remaining signalers to be submiited per fence. The
+	 * order should be same with @fences.
+	 */
+	__u32 remaining_signalers[GXP_MAX_FENCES_PER_UCI_COMMAND];
+};
+
+/*
+ * Check whether there are remaining signalers to be submitted to fences.
+ * If all signalers have been submitted, the runtime is expected to send UCI
+ * commands right away. Otherwise, it will listen the eventfd to wait signaler
+ * submission to be finished.
+ *
+ * The client must have allocated a virtual device.
+ */
+#define GXP_FENCE_REMAINING_SIGNALERS                                          \
+	_IOWR(GXP_IOCTL_BASE, 41, struct gxp_fence_remaining_signalers_ioctl)
 
 #endif /* __GXP_H__ */

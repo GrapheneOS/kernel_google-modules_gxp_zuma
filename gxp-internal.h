@@ -23,6 +23,8 @@
 #include <linux/rwsem.h>
 #include <linux/spinlock.h>
 
+#include <gcip/iif/iif-manager.h>
+#include <gcip/gcip-resource-accessor.h>
 #include <gcip/gcip-thermal.h>
 
 #include "gxp-config.h"
@@ -125,6 +127,8 @@ struct gxp_dev {
 	struct gxp_core_telemetry_manager *core_telemetry_mgr;
 	struct gcip_iommu_domain *default_domain;
 	struct gcip_thermal *thermal;
+	/* The accessor to register resources to the debugfs interface. */
+	struct gcip_resource_accessor *resource_accessor;
 	/*
 	 * Pointer to GSA device for firmware authentication.
 	 * May be NULL if the chip does not support firmware authentication
@@ -158,6 +162,9 @@ struct gxp_dev {
 
 	/* To save device properties */
 	struct gxp_dev_prop device_prop;
+
+	/* To manage IIF fences. */
+	struct iif_manager *iif_mgr;
 
 	/* callbacks for chip-dependent implementations */
 
@@ -304,6 +311,9 @@ static inline int gxp_acquire_rmem_resource(struct gxp_dev *gxp,
 
 	ret = of_address_to_resource(np, 0, r);
 	of_node_put(np);
+
+	if (!ret && !IS_ERR_OR_NULL(gxp->resource_accessor))
+		gcip_register_accessible_resource(gxp->resource_accessor, r);
 
 	return ret;
 }

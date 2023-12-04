@@ -20,6 +20,7 @@ gxp-objs += \
 		gxp-domain-pool.o \
 		gxp-doorbell.o \
 		gxp-eventfd.o \
+		gxp-fence.o \
 		gxp-firmware-data.o \
 		gxp-firmware-loader.o \
 		gxp-firmware.o \
@@ -54,6 +55,7 @@ ifeq ($(GXP_CHIP),CALLISTO)
 gxp-objs += \
 		$(gsx01-objs) \
 		$(gxp-mcu-objs) \
+		callisto-mcu.o \
 		callisto-platform.o \
 		callisto-pm.o
 
@@ -103,11 +105,13 @@ ccflags-y += -DCONFIG_GOOGLE_BCL
 
 KBUILD_OPTIONS += GXP_CHIP=$(GXP_CHIP) GXP_PLATFORM=$(GXP_PLATFORM)
 
+ifneq ($(OUT_DIR),)
 # Access TPU driver's exported symbols.
 EXTRA_SYMBOLS += $(GMODULE_PATH)/edgetpu/$(EDGETPU_CHIP)/drivers/edgetpu/Module.symvers
 
 ifneq ($(GXP_POWER_MITIGATION), false)
 EXTRA_SYMBOLS += $(GMODULE_PATH)/power/mitigation/Module.symvers
+endif
 endif
 
 modules modules_install:

@@ -25,6 +25,7 @@
 
 #include <gcip/gcip-dma-fence.h>
 #include <gcip/gcip-pm.h>
+#include <gcip/gcip-resource-accessor.h>
 
 #include "gxp-client.h"
 #include "gxp-config.h"
@@ -34,6 +35,7 @@
 #include "gxp-dma.h"
 #include "gxp-dmabuf.h"
 #include "gxp-domain-pool.h"
+#include "gxp-fence.h"
 #include "gxp-firmware.h"
 #include "gxp-firmware-data.h"
 #include "gxp-firmware-loader.h"
@@ -526,7 +528,7 @@ out:
 
 static int gxp_ioctl_get_specs(struct gxp_client *client, struct gxp_specs_ioctl __user *argp)
 {
-	struct buffer_data *logging_buff_data;
+	struct buffer_data *buff_data;
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_specs_ioctl ibuf = {
 		.core_count = GXP_NUM_CORES,
@@ -539,11 +541,10 @@ static int gxp_ioctl_get_specs(struct gxp_client *client, struct gxp_specs_ioctl
 	};
 
 	if (!IS_ERR_OR_NULL(gxp->core_telemetry_mgr)) {
-		logging_buff_data = gxp->core_telemetry_mgr->logging_buff_data;
-		if (!IS_ERR_OR_NULL(logging_buff_data)) {
+		buff_data = gxp->core_telemetry_mgr->buff_data;
+		if (!IS_ERR_OR_NULL(buff_data)) {
 			ibuf.telemetry_buffer_size =
-				(u8)(logging_buff_data->size /
-				     GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE);
+				(u8)(buff_data->size / GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE);
 		}
 	}
 
@@ -565,12 +566,6 @@ static int gxp_ioctl_allocate_vd(struct gxp_client *client,
 
 	if (ibuf.core_count == 0 || ibuf.core_count > GXP_NUM_CORES) {
 		dev_err(gxp->dev, "Invalid core count (%u)\n", ibuf.core_count);
-		return -EINVAL;
-	}
-
-	if (ibuf.memory_per_core > gxp->memory_per_core) {
-		dev_err(gxp->dev, "Invalid memory-per-core (%u)\n",
-			ibuf.memory_per_core);
 		return -EINVAL;
 	}
 
@@ -1015,20 +1010,14 @@ gxp_ioctl_register_core_telemetry_eventfd(struct gxp_client *client,
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
 
-	return gxp_core_telemetry_register_eventfd(gxp, ibuf.type,
-						   ibuf.eventfd);
+	return gxp_core_telemetry_register_eventfd(gxp, ibuf.eventfd);
 }
 
-static int gxp_ioctl_unregister_core_telemetry_eventfd(
-	struct gxp_client *client, struct gxp_register_telemetry_eventfd_ioctl __user *argp)
+static int gxp_ioctl_unregister_core_telemetry_eventfd(struct gxp_client *client)
 {
-	struct gxp_dev *gxp = client->gxp;
-	struct gxp_register_telemetry_eventfd_ioctl ibuf;
+	gxp_core_telemetry_unregister_eventfd(client->gxp);
 
-	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
-		return -EFAULT;
-
-	return gxp_core_telemetry_unregister_eventfd(gxp, ibuf.type);
+	return 0;
 }
 
 static int gxp_ioctl_read_global_counter(struct gxp_client *client, __u64 __user *argp)
@@ -1548,13 +1537,19 @@ static int gxp_ioctl_signal_sync_fence(struct gxp_signal_sync_fence_data __user 
 static int gxp_ioctl_sync_fence_status(struct gxp_sync_fence_status __user *datap)
 {
 	struct gxp_sync_fence_status data;
-	int ret;
+	struct gxp_fence *fence;
+	int ret = 0;
 
 	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
 		return -EFAULT;
-	ret = gcip_dma_fence_status(data.fence, &data.status);
-	if (ret)
-		return ret;
+
+	fence = gxp_fence_fdget(data.fence);
+	if (IS_ERR(fence))
+		return PTR_ERR(fence);
+
+	data.status = gxp_fence_get_status(fence);
+	gxp_fence_put(fence);
+
 	if (copy_to_user((void __user *)datap, &data, sizeof(data)))
 		ret = -EFAULT;
 	return ret;
@@ -1694,7 +1689,7 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 		ret = gxp_ioctl_register_core_telemetry_eventfd(client, argp);
 		break;
 	case GXP_UNREGISTER_CORE_TELEMETRY_EVENTFD:
-		ret = gxp_ioctl_unregister_core_telemetry_eventfd(client, argp);
+		ret = gxp_ioctl_unregister_core_telemetry_eventfd(client);
 		break;
 	case GXP_READ_GLOBAL_COUNTER:
 		ret = gxp_ioctl_read_global_counter(client, argp);
@@ -1767,11 +1762,7 @@ static int gxp_mmap(struct file *file, struct vm_area_struct *vma)
 
 	switch (vma->vm_pgoff << PAGE_SHIFT) {
 	case GXP_MMAP_CORE_LOG_BUFFER_OFFSET:
-		return gxp_core_telemetry_mmap_buffers(
-			client->gxp, GXP_TELEMETRY_TYPE_LOGGING, vma);
-	case GXP_MMAP_CORE_TRACE_BUFFER_OFFSET:
-		return gxp_core_telemetry_mmap_buffers(
-			client->gxp, GXP_TELEMETRY_TYPE_TRACING, vma);
+		return gxp_core_telemetry_mmap_buffers(client->gxp, vma);
 	case GXP_MMAP_SECURE_CORE_LOG_BUFFER_OFFSET:
 		return gxp_secure_core_telemetry_mmap_buffers(client->gxp, vma);
 	default:
@@ -1873,6 +1864,9 @@ static int gxp_set_reg_resources(struct platform_device *pdev, struct gxp_dev *g
 		dev_err(dev, "Failed to map registers\n");
 		return -ENODEV;
 	}
+
+	if (!IS_ERR_OR_NULL(gxp->resource_accessor))
+		gcip_register_accessible_resource(gxp->resource_accessor, r);
 
 	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "cmu");
 	if (!IS_ERR_OR_NULL(r)) {
@@ -2094,6 +2088,8 @@ static void gxp_remove_debugdir(struct gxp_dev *gxp)
 	if (!gxp->d_entry)
 		return;
 
+	if (!IS_ERR_OR_NULL(gxp->resource_accessor))
+		gcip_resource_accessor_destroy(gxp->resource_accessor);
 	debugfs_remove_recursive(gxp->d_entry);
 }
 
@@ -2112,6 +2108,7 @@ static void gxp_create_debugdir(struct gxp_dev *gxp)
 
 	mutex_init(&gxp->debugfs_client_lock);
 	gxp->debugfs_wakelock_held = false;
+	gxp->resource_accessor = gcip_resource_accessor_create(gxp->dev, gxp->d_entry);
 }
 
 static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_dev *gxp)
@@ -2122,10 +2119,10 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 
 	dev_notice(dev, "Probing gxp driver with commit %s\n", get_driver_commit());
 
+	gxp->dev = dev;
 	gxp_create_debugdir(gxp);
 
 	platform_set_drvdata(pdev, gxp);
-	gxp->dev = dev;
 	if (gxp->parse_dt) {
 		ret = gxp->parse_dt(pdev, gxp);
 		if (ret)
@@ -2363,7 +2360,7 @@ static int gxp_platform_suspend(struct device *dev)
 	int count;
 
 	if (!gcip_pm_trylock(pm)) {
-		dev_warn_ratelimited(gxp->dev, "cannot suspend during power state transition\n");
+		dev_dbg(gxp->dev, "cannot suspend during power state transition\n");
 		return -EAGAIN;
 	}
 	count = gcip_pm_get_count(pm);

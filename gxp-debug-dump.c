@@ -42,8 +42,7 @@
 
 #define SSCD_MSG_LENGTH 64
 
-#define SYNC_BARRIER_BLOCK 0x00100000
-#define SYNC_BARRIER_BASE(_x_) ((_x_) << 12)
+#define GXP_SYNC_BARRIER_STRIDE (GXP_REG_SYNC_BARRIER_1 - GXP_REG_SYNC_BARRIER_0)
 
 #define DEBUG_DUMP_MEMORY_SIZE 0x400000 /* size in bytes */
 
@@ -73,23 +72,19 @@ enum gxp_common_segments_idx {
 	GXP_LPM_REGISTERS_IDX
 };
 
-/* Whether or not the debug dump subsystem should be enabled. */
 #if IS_ENABLED(CONFIG_GXP_TEST)
 #include <gcip-unit/helper/test-sleep.h>
 #define TEST_SLEEP() test_sleep_may_sleep(1000)
-static int gxp_debug_dump_enable = 1;
 #else
 #define TEST_SLEEP()
-#if IS_ENABLED(CONFIG_CALLISTO)
-/*
- * TODO(b/277094681): Revert setting gxp_debug_dump_enable to 1
- * around device beta milestone.
- */
-static int gxp_debug_dump_enable = 1;
-#else
+#endif /* IS_ENABLED(CONFIG_GXP_TEST) */
+
+/* Whether or not the debug dump subsystem should be enabled. */
+#if !IS_ENABLED(CONFIG_GXP_TEST) && !GXP_ENABLE_DEBUG_DUMP
 static int gxp_debug_dump_enable;
-#endif
-#endif
+#else
+static int gxp_debug_dump_enable = 1;
+#endif /* !IS_ENABLED(CONFIG_GXP_TEST) && !GXP_ENABLE_DEBUG_DUMP */
 module_param_named(debug_dump_enable, gxp_debug_dump_enable, int, 0660);
 
 static void gxp_debug_dump_cache_invalidate(struct gxp_dev *gxp)
@@ -115,8 +110,7 @@ static u32 gxp_read_sync_barrier_shadow(struct gxp_dev *gxp, uint index)
 		return 0;
 	}
 
-	barrier_reg_offset = SYNC_BARRIER_BLOCK + SYNC_BARRIER_BASE(index) +
-			     SYNC_BARRIER_SHADOW_OFFSET;
+	barrier_reg_offset = GXP_REG_SYNC_BARRIER_0_SHADOW + (GXP_SYNC_BARRIER_STRIDE * index);
 
 	return gxp_read_32(gxp, barrier_reg_offset);
 }
@@ -137,12 +131,14 @@ static void gxp_get_common_registers(struct gxp_dev *gxp,
 	/* Get Aurora Top registers */
 	common_regs->aurora_revision =
 		gxp_read_32(gxp, GXP_REG_AURORA_REVISION);
+#if GXP_DUMP_INTERRUPT_POLARITY_REGISTER
 	common_regs->common_int_pol_0 =
 		gxp_read_32(gxp, GXP_REG_COMMON_INT_POL_0);
 	common_regs->common_int_pol_1 =
 		gxp_read_32(gxp, GXP_REG_COMMON_INT_POL_1);
 	common_regs->dedicated_int_pol =
 		gxp_read_32(gxp, GXP_REG_DEDICATED_INT_POL);
+#endif /* GXP_DUMP_INTERRUPT_POLARITY_REGISTER */
 	common_regs->raw_ext_int = gxp_read_32(gxp, GXP_REG_RAW_EXT_INT);
 
 	for (i = 0; i < CORE_PD_COUNT; i++) {
@@ -246,12 +242,15 @@ static void gxp_get_lpm_psm_registers(struct gxp_dev *gxp,
 		lpm_read_32(gxp, lpm_psm_offset + PSM_DEBUG_STATUS_OFFSET);
 }
 
-static void gxp_get_lpm_registers(struct gxp_dev *gxp,
-				  struct gxp_seg_header *seg_header,
+static void gxp_get_lpm_registers(struct gxp_dev *gxp, struct gxp_seg_header *seg_header,
 				  struct gxp_lpm_registers *lpm_regs)
 {
 	int i;
 	uint offset;
+
+#ifdef GXP_SKIP_LPM_REGISTER_DUMP
+	return;
+#endif /* GXP_SKIP_LPM_REGISTER_DUMP */
 
 	dev_dbg(gxp->dev, "Getting LPM registers\n");
 
@@ -325,8 +324,7 @@ static int gxp_get_common_dump(struct gxp_dev *gxp)
 	}
 	gxp_pm_update_requested_power_states(gxp, off_states, uud_states);
 
-	gxp_get_common_registers(gxp,
-				 &common_seg_header[GXP_COMMON_REGISTERS_IDX],
+	gxp_get_common_registers(gxp, &common_seg_header[GXP_COMMON_REGISTERS_IDX],
 				 &common_dump_data->common_regs);
 	gxp_get_lpm_registers(gxp, &common_seg_header[GXP_LPM_REGISTERS_IDX],
 			      &common_dump_data->lpm_regs);
@@ -480,7 +478,7 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 		daddr = (dma_addr_t)user_buf->device_addr;
 		mapping = gxp_vd_mapping_search_in_range(vd, daddr);
 		if (!mapping) {
-			dev_err(gxp->dev, "Mappings for %#llx user buffer not found.", daddr);
+			dev_err(gxp->dev, "Mappings for %pad user buffer not found.", &daddr);
 			user_buf->size = 0;
 			continue;
 		}
@@ -498,8 +496,8 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 
 		if (IS_ERR(vaddr)) {
 			dev_err(gxp->dev,
-				"Kernel mapping for %#llx user buffer failed with error %ld.\n",
-				daddr, PTR_ERR(vaddr));
+				"Kernel mapping for %pad user buffer failed with error %ld.\n",
+				&daddr, PTR_ERR(vaddr));
 			user_buf->size = 0;
 			continue;
 		}
@@ -512,8 +510,8 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 		if ((user_buf_vaddrs[i] + user_buf->size) >
 		    (vaddr + mapping->size +
 		     (mapping->gcip_mapping->device_address & ~PAGE_MASK))) {
-			dev_err(gxp->dev, "%#llx user buffer requested with invalid size(%#x).\n",
-				daddr, user_buf->size);
+			dev_err(gxp->dev, "%pad user buffer requested with invalid size(%#x).\n",
+				&daddr, user_buf->size);
 			user_buf->size = 0;
 			continue;
 		}
@@ -570,8 +568,8 @@ static int gxp_map_fw_rw_section(struct gxp_dev *gxp,
 		return 0;
 	}
 	dev_err(gxp->dev,
-		"fw_rw_section mapping for core %u at iova 0x%llx does not exist",
-		core_id, fw_rw_section_daddr);
+		"fw_rw_section mapping for core %u at iova %pad does not exist",
+		core_id, &fw_rw_section_daddr);
 	return -ENXIO;
 }
 
@@ -945,7 +943,7 @@ int gxp_debug_dump_init(struct gxp_dev *gxp, void *sscd_dev, void *sscd_pdata)
 		dev_err(gxp->dev, "Failed to allocate memory for debug dump\n");
 		return ret;
 	}
-	mgr->buf.size = DEBUG_DUMP_MEMORY_SIZE;
+	mgr->buf.dsp_addr = GXP_DEBUG_DUMP_IOVA_BASE;
 
 	mgr->core_dump = (struct gxp_core_dump *)mgr->buf.vaddr;
 

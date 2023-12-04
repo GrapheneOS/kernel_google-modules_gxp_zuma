@@ -30,6 +30,8 @@ struct gxp_client {
 	struct rw_semaphore semaphore;
 	struct lock_class_key key;
 
+	struct kref ref;
+
 	bool has_block_wakelock;
 	bool has_vd_wakelock;
 
@@ -57,6 +59,21 @@ struct gxp_client *gxp_client_create(struct gxp_dev *gxp);
  * TPU mailboxes it holds.
  */
 void gxp_client_destroy(struct gxp_client *client);
+
+/**
+ * gxp_client_get() - Increases the reference count for the target client.
+ * @client: The client to increase the reference count.
+ *
+ * Return: The target client.
+ */
+struct gxp_client *gxp_client_get(struct gxp_client *client);
+
+/**
+ * gxp_client_put() - Decreases the reference count for the target client.
+ * @client: The client to decrease the reference count.
+ */
+void gxp_client_put(struct gxp_client *client);
+
 /**
  * gxp_client_allocate_virtual_device() - Allocates a virtual device for the
  * client.

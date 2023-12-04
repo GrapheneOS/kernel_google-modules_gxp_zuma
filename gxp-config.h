@@ -52,6 +52,17 @@
 #define GXP_HAS_GSA 1
 #endif
 
+#ifndef GXP_DUMP_INTERRUPT_POLARITY_REGISTER
+#define GXP_DUMP_INTERRUPT_POLARITY_REGISTER 1
+#endif
+
+#ifndef GXP_ENABLE_DEBUG_DUMP
+#define GXP_ENABLE_DEBUG_DUMP 1
+#endif
+
+#define GXP_DEBUG_DUMP_IOVA_BASE (0xF5000000)
+#define GXP_TELEMETRY_IOVA_BASE (0xF6000000)
+
 /*
  * Only supports interop with TPU when
  * 1. Unit testing, or

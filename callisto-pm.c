@@ -59,3 +59,7 @@ void gxp_pm_chip_init(struct gxp_dev *gxp)
 {
 	gxp->power_mgr->bcl_dev = google_retrieve_bcl_handle();
 }
+
+void gxp_pm_chip_exit(struct gxp_dev *gxp)
+{
+}

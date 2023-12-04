@@ -312,40 +312,43 @@ err_alloc_sgt:
 	return ERR_PTR(ret);
 }
 
-/**
- * gcip_iommu_mapping_map_sgt(): Maps the scatter-gather table to the target IOMMU domain.
- * @mapping: The gcip mapping struct that contains the required information to map the sgt.
- *           The domain, sgt, gcip_map_flags should be set before calling this function.
- *
- * This function will map the scatter-gather table to the target IOMMU domain.
- * sgt->nents will be updated to the number of mapped chunks.
- * The mapping information will be stored in the mapping instance.
- *
- * Return: The number of the entries that are mapped successfully.
- */
-static unsigned int gcip_iommu_mapping_map_sgt(struct gcip_iommu_mapping *mapping)
+static inline void sync_sg_if_needed(struct device *dev, struct sg_table *sgt, u64 gcip_map_flags,
+				     bool for_device)
 {
-	struct gcip_iommu_domain *domain = mapping->domain;
-	struct scatterlist *sgl = mapping->sgt->sgl;
-	uint orig_nents = mapping->sgt->orig_nents;
+	enum dma_data_direction dir = GCIP_MAP_FLAGS_GET_DMA_DIRECTION(gcip_map_flags);
+
+	if (GCIP_MAP_FLAGS_GET_DMA_ATTR(gcip_map_flags) & DMA_ATTR_SKIP_CPU_SYNC)
+		return;
+
+	if (for_device)
+		dma_sync_sg_for_device(dev, sgt->sgl, sgt->orig_nents, dir);
+	else
+		dma_sync_sg_for_cpu(dev, sgt->sgl, sgt->orig_nents, dir);
+}
+
+unsigned int gcip_iommu_mapping_map_sgt(struct gcip_iommu_domain *domain, struct sg_table *sgt,
+					u64 *gcip_map_flags)
+{
+	struct scatterlist *sgl = sgt->sgl;
+	uint orig_nents = sgt->orig_nents;
 	uint nents_mapped;
 
-	gcip_map_flags_adjust_dir(&mapping->gcip_map_flags);
+	gcip_map_flags_adjust_dir(gcip_map_flags);
 
-	nents_mapped = gcip_iommu_domain_map_sg(domain, sgl, orig_nents, mapping->gcip_map_flags);
+	nents_mapped = gcip_iommu_domain_map_sg(domain, sgl, orig_nents, *gcip_map_flags);
 
-	mapping->sgt->nents = nents_mapped;
+	sgt->nents = nents_mapped;
+
+	sync_sg_if_needed(domain->dev, sgt, *gcip_map_flags, true);
 
 	return nents_mapped;
 }
 
-/**
- * gcip_iommu_mapping_unmap_sgt() - Unmaps the sgt in the mapping.
- * @mapping: The container of domain and the sgt to be unmapped.
- */
-static void gcip_iommu_mapping_unmap_sgt(struct gcip_iommu_mapping *mapping)
+void gcip_iommu_mapping_unmap_sgt(struct gcip_iommu_domain *domain, struct sg_table *sgt,
+				  u64 gcip_map_flags)
 {
-	gcip_iommu_domain_unmap_sg(mapping->domain, mapping->sgt->sgl, mapping->sgt->orig_nents);
+	sync_sg_if_needed(domain->dev, sgt, gcip_map_flags, false);
+	gcip_iommu_domain_unmap_sg(domain, sgt->sgl, sgt->orig_nents);
 }
 
 /**
@@ -360,9 +363,13 @@ static void gcip_iommu_mapping_unmap_dma_buf(struct gcip_iommu_mapping *mapping)
 		container_of(mapping, struct gcip_iommu_dma_buf_mapping, mapping);
 
 	if (!mapping->domain->default_domain) {
-		gcip_iommu_mapping_unmap_sgt(mapping);
+		gcip_iommu_mapping_unmap_sgt(mapping->domain, mapping->sgt,
+					     mapping->gcip_map_flags);
 		sg_free_table(mapping->sgt);
 		kfree(mapping->sgt);
+	} else {
+		sync_sg_if_needed(mapping->domain->dev, dmabuf_mapping->sgt_default,
+				  mapping->gcip_map_flags, false);
 	}
 
 	dma_buf_unmap_attachment(dmabuf_mapping->dma_buf_attachment, dmabuf_mapping->sgt_default,
@@ -372,20 +379,35 @@ static void gcip_iommu_mapping_unmap_dma_buf(struct gcip_iommu_mapping *mapping)
 	kfree(dmabuf_mapping);
 }
 
-static inline void sync_sg_if_needed(struct gcip_iommu_mapping *mapping, bool for_device)
+/**
+ * gcip_iommu_mapping_unmap_buffer() - Revert gcip_iommu_domain_map_buffer
+ * @mapping: The target mapping that should be unmapped.
+ */
+static void gcip_iommu_mapping_unmap_buffer(struct gcip_iommu_mapping *mapping)
 {
-	u64 gcip_map_flags = mapping->gcip_map_flags;
-	struct device *dev = mapping->domain->dev;
+	struct sg_page_iter sg_iter;
+	struct page *page;
+	unsigned long num_pages = 0;
 	struct sg_table *sgt = mapping->sgt;
-	enum dma_data_direction dir = GCIP_MAP_FLAGS_GET_DMA_DIRECTION(gcip_map_flags);
+	struct mm_struct *owning_mm = mapping->owning_mm;
+	enum dma_data_direction dir = GCIP_MAP_FLAGS_GET_DMA_DIRECTION(mapping->gcip_map_flags);
 
-	if (GCIP_MAP_FLAGS_GET_DMA_ATTR(gcip_map_flags) & DMA_ATTR_SKIP_CPU_SYNC)
-		return;
+	gcip_iommu_mapping_unmap_sgt(mapping->domain, mapping->sgt, mapping->gcip_map_flags);
 
-	if (for_device)
-		dma_sync_sg_for_device(dev, sgt->sgl, sgt->orig_nents, dir);
-	else
-		dma_sync_sg_for_cpu(dev, sgt->sgl, sgt->orig_nents, dir);
+	for_each_sg_page(sgt->sgl, &sg_iter, sgt->orig_nents, 0) {
+		page = sg_page_iter_page(&sg_iter);
+		if (dir == DMA_FROM_DEVICE || dir == DMA_BIDIRECTIONAL)
+			set_page_dirty(page);
+
+		unpin_user_page(page);
+		num_pages++;
+	}
+
+	atomic64_sub(num_pages, &owning_mm->pinned_vm);
+	mmdrop(owning_mm);
+	sg_free_table(sgt);
+	kfree(sgt);
+	kfree(mapping);
 }
 
 /**
@@ -534,9 +556,9 @@ int gcip_iommu_domain_pool_init(struct gcip_iommu_domain_pool *pool, struct devi
 
 	pool->min_pasid = 0;
 	pool->max_pasid = 0;
-#if HAS_IOMMU_PASID
+#if GCIP_HAS_IOMMU_PASID
 	ida_init(&pool->pasid_pool);
-#elif HAS_AUX_DOMAINS
+#elif GCIP_HAS_AUX_DOMAINS
 	iommu_dev_enable_feature(dev, IOMMU_DEV_FEAT_AUX);
 	if (!iommu_dev_feature_enabled(dev, IOMMU_DEV_FEAT_AUX))
 		dev_warn(dev, "AUX domains not supported\n");
@@ -555,7 +577,7 @@ int gcip_iommu_domain_pool_init(struct gcip_iommu_domain_pool *pool, struct devi
 void gcip_iommu_domain_pool_destroy(struct gcip_iommu_domain_pool *pool)
 {
 	gcip_domain_pool_destroy(&pool->domain_pool);
-#if HAS_IOMMU_PASID
+#if GCIP_HAS_IOMMU_PASID
 	ida_destroy(&pool->pasid_pool);
 #endif
 }
@@ -636,7 +658,7 @@ static int _gcip_iommu_domain_pool_attach_domain(struct gcip_iommu_domain_pool *
 {
 	int ret = -EOPNOTSUPP, pasid = INVALID_IOASID;
 
-#if HAS_IOMMU_PASID
+#if GCIP_HAS_IOMMU_PASID
 	pasid = ida_alloc_range(&pool->pasid_pool, pool->min_pasid, pool->max_pasid, GFP_KERNEL);
 	if (pasid < 0)
 		return pasid;
@@ -647,7 +669,7 @@ static int _gcip_iommu_domain_pool_attach_domain(struct gcip_iommu_domain_pool *
 		return ret;
 	}
 
-#elif HAS_AUX_DOMAINS
+#elif GCIP_HAS_AUX_DOMAINS
 	if (!pool->aux_enabled)
 		return -ENODEV;
 
@@ -683,10 +705,10 @@ void gcip_iommu_domain_pool_detach_domain(struct gcip_iommu_domain_pool *pool,
 {
 	if (domain->pasid == INVALID_IOASID)
 		return;
-#if HAS_IOMMU_PASID
+#if GCIP_HAS_IOMMU_PASID
 	iommu_detach_device_pasid(domain->domain, pool->dev, domain->pasid);
 	ida_free(&pool->pasid_pool, domain->pasid);
-#elif HAS_AUX_DOMAINS
+#elif GCIP_HAS_AUX_DOMAINS
 	if (pool->aux_enabled)
 		iommu_aux_detach_device(domain->domain, pool->dev);
 #endif
@@ -699,7 +721,6 @@ unsigned int gcip_iommu_domain_map_sg(struct gcip_iommu_domain *domain, struct s
 	enum dma_data_direction dir = GCIP_MAP_FLAGS_GET_DMA_DIRECTION(gcip_map_flags);
 	bool coherent = GCIP_MAP_FLAGS_GET_DMA_COHERENT(gcip_map_flags);
 	unsigned long attrs = GCIP_MAP_FLAGS_GET_DMA_ATTR(gcip_map_flags);
-	bool restrict_iova = GCIP_MAP_FLAGS_GET_RESTRICT_IOVA(gcip_map_flags);
 	int i, prot = dma_info_to_prot(dir, coherent, attrs);
 	struct scatterlist *sg;
 	dma_addr_t iova;
@@ -712,8 +733,7 @@ unsigned int gcip_iommu_domain_map_sg(struct gcip_iommu_domain *domain, struct s
 		iova_len += sg->length;
 
 	/* Allocates one continuous IOVA. */
-	iova = domain->ops->alloc_iova_space(domain, gcip_iommu_domain_align(domain, iova_len),
-					     restrict_iova);
+	iova = gcip_iommu_alloc_iova(domain, iova_len, gcip_map_flags);
 	if (!iova) {
 		dev_err(domain->dev, "iova alloc size %zu failed", iova_len);
 		return 0;
@@ -755,7 +775,7 @@ unsigned int gcip_iommu_domain_map_sg(struct gcip_iommu_domain *domain, struct s
 	return ret;
 
 err_free_iova:
-	domain->ops->free_iova_space(domain, iova, gcip_iommu_domain_align(domain, iova_len));
+	gcip_iommu_free_iova(domain, iova, iova_len);
 	return 0;
 }
 
@@ -776,7 +796,7 @@ void gcip_iommu_domain_unmap_sg(struct gcip_iommu_domain *domain, struct scatter
 	}
 
 	iommu_unmap(domain->domain, iova, iova_len);
-	domain->ops->free_iova_space(domain, iova, gcip_iommu_domain_align(domain, iova_len));
+	gcip_iommu_free_iova(domain, iova, iova_len);
 }
 
 struct gcip_iommu_domain *gcip_iommu_get_domain_for_dev(struct device *dev)
@@ -842,8 +862,19 @@ void gcip_iommu_dmabuf_map_show(struct gcip_iommu_mapping *mapping, struct seq_f
 	entry_show_dma_addrs(mapping, s);
 }
 
-int gcip_iommu_get_offset_npages(struct device *dev, u64 host_address, size_t size, ulong *off_ptr,
-				 uint *n_pg_ptr)
+/**
+ * gcip_iommu_get_offset_npages() - Calculates the offset and the number of pages from given
+ *                                  host_addr and size.
+ * @dev: The device pointer for printing debug message.
+ * @host_address: The host address passed by user.
+ * @size: The size passed by user.
+ * @off_ptr: The pointer used to output the offset of the first page that the buffer starts at.
+ * @n_pg_ptr: The pointer used to output the number of pages.
+ *
+ * Return: Error code or 0 on success.
+ */
+static int gcip_iommu_get_offset_npages(struct device *dev, u64 host_address, size_t size,
+					ulong *off_ptr, uint *n_pg_ptr)
 {
 	ulong offset;
 	uint num_pages;
@@ -868,7 +899,17 @@ int gcip_iommu_get_offset_npages(struct device *dev, u64 host_address, size_t si
 	return 0;
 }
 
-unsigned int gcip_iommu_get_gup_flags(u64 host_addr, struct device *dev)
+/**
+ * gcip_iommu_get_gup_flags() - Checks the access mode of the given address with VMA.
+ * @host_addr: The target host_addr for checking the access.
+ * @dev: The device struct used to print messages.
+ *
+ * Checks and returns the read/write permission of address @host_addr.
+ * If the target address can not be found in current->mm, assuming it is RW.
+ *
+ * Return: The encoded gup_flags of target host_addr.
+ */
+static unsigned int gcip_iommu_get_gup_flags(u64 host_addr, struct device *dev)
 {
 	struct vm_area_struct *vma;
 	unsigned int gup_flags;
@@ -894,9 +935,26 @@ unsigned int gcip_iommu_get_gup_flags(u64 host_addr, struct device *dev)
 }
 
 /* TODO(302510715): Put atomic64_add here after the buffer mapping process is moved to GCIP. */
-struct page **gcip_iommu_alloc_and_pin_user_pages(struct device *dev, u64 host_address,
-						  uint num_pages, unsigned int *gup_flags,
-						  struct mutex *pin_user_pages_lock)
+/**
+ * gcip_iommu_alloc_and_pin_user_pages() - Pins the user pages and returns an array of struct page
+ *                                         pointers for the pinned pages.
+ * @dev: The device pointer used to print messages.
+ * @host_address: The requested host address.
+ * @num_pages: The requested number of pages.
+ * @gup_flags: The pointer gup_flags for pinning user pages.
+ *             The flag FOLL_WRITE in gup_flags may be reomved if the user pages cannot be pinned
+ *             with write access.
+ * @pin_user_pages_lock: The lock to protect pin_user_page
+ *
+ * This function tries to pin the user pages with `pin_user_page_fast` first and will try
+ * `pin_user_page` on failure.
+ * If both of above functions failed, it will retry with read-only mode.
+ *
+ * Return: Pinned user pages or error pointer on failure.
+ */
+static struct page **gcip_iommu_alloc_and_pin_user_pages(struct device *dev, u64 host_address,
+							 uint num_pages, unsigned int *gup_flags,
+							 struct mutex *pin_user_pages_lock)
 {
 	unsigned long start_addr = host_address & PAGE_MASK;
 	struct page **pages;
@@ -906,7 +964,7 @@ struct page **gcip_iommu_alloc_and_pin_user_pages(struct device *dev, u64 host_a
 	 * "num_pages" is decided from user-space arguments, don't show warnings
 	 * when facing malicious input.
 	 */
-	pages = kvmalloc((num_pages * sizeof(*pages)), GFP_KERNEL | __GFP_NOWARN);
+	pages = kvmalloc_array(num_pages, sizeof(*pages), GFP_KERNEL | __GFP_NOWARN);
 	if (!pages)
 		return ERR_PTR(-ENOMEM);
 
@@ -935,8 +993,23 @@ err_pin_read_only:
 	return ERR_PTR(ret >= 0 ? -EFAULT : ret);
 }
 
-struct gcip_iommu_mapping *gcip_iommu_domain_map_sgt(struct gcip_iommu_domain *domain,
-						     struct sg_table *sgt, u64 gcip_map_flags)
+/**
+ * gcip_iommu_domain_map_sgt() - Maps the scatter-gather table to the target IOMMU domain
+ * @domain: The desired IOMMU domain where the sgt should be mapped.
+ * @sgt: The sg_table to mapped to the target IOMMU domain.
+ * @gcip_map_flags: The flags used to create the mapping, which can be encoded with
+ *                  gcip_iommu_encode_gcip_map_flags() or `GCIP_MAP_FLAGS_DMA_*_TO_FLAGS` macros.
+ *
+ * This function will map the scatter-gather table to the target IOMMU domain.
+ * sgt->nents will be updated to the number of mapped chunks.
+ * The caller must not release sgt until gcip_iommu_mapping_unmap is called.
+ *
+ * Return: The mapping of the desired DMA buffer with type GCIP_IOMMU_MAPPING_BUFFER
+ *         or an error pointer on failure.
+ */
+static struct gcip_iommu_mapping *gcip_iommu_domain_map_sgt(struct gcip_iommu_domain *domain,
+							    struct sg_table *sgt,
+							    u64 gcip_map_flags)
 {
 	struct gcip_iommu_mapping *mapping;
 	int ret;
@@ -951,7 +1024,7 @@ struct gcip_iommu_mapping *gcip_iommu_domain_map_sgt(struct gcip_iommu_domain *d
 	mapping->sgt = sgt;
 	mapping->gcip_map_flags = gcip_map_flags;
 	mapping->type = GCIP_IOMMU_MAPPING_BUFFER;
-	ret = gcip_iommu_mapping_map_sgt(mapping);
+	ret = gcip_iommu_mapping_map_sgt(domain, sgt, &mapping->gcip_map_flags);
 	if (!ret) {
 		ret = -ENOSPC;
 		dev_err(domain->dev, "Failed to map sgt to domain (ret=%d)\n", ret);
@@ -968,12 +1041,100 @@ struct gcip_iommu_mapping *gcip_iommu_domain_map_sgt(struct gcip_iommu_domain *d
 	 *                    introducing `gcip_iommu_domain_map_buffer` for buffer mapping.
 	 */
 
-	sync_sg_if_needed(mapping, true);
-
 	return mapping;
 
 err_map_sgt:
 	kfree(mapping);
+	return ERR_PTR(ret);
+}
+
+struct gcip_iommu_mapping *gcip_iommu_domain_map_buffer(struct gcip_iommu_domain *domain,
+							u64 host_address, size_t size,
+							u64 gcip_map_flags,
+							struct mutex *pin_user_pages_lock)
+{
+	struct gcip_iommu_mapping *mapping;
+	enum dma_data_direction dir = GCIP_MAP_FLAGS_GET_DMA_DIRECTION(gcip_map_flags);
+	uint num_pages = 0;
+	struct page **pages;
+	ulong offset;
+	int ret, i;
+	struct sg_table *sgt;
+	uint gup_flags = gcip_iommu_get_gup_flags(host_address, domain->dev);
+
+	if (!valid_dma_direction(dir))
+		return ERR_PTR(-EINVAL);
+
+	if (size == 0)
+		return ERR_PTR(-EINVAL);
+
+	if (!access_ok((const void *)host_address, size)) {
+		dev_err(domain->dev, "invalid address range in buffer map request");
+		return ERR_PTR(-EFAULT);
+	}
+
+	ret = gcip_iommu_get_offset_npages(domain->dev, host_address, size, &offset, &num_pages);
+	if (ret) {
+		dev_err(domain->dev, "Buffer size overflow: size=%#zx", size);
+		return ERR_PTR(ret);
+	}
+
+	pages = gcip_iommu_alloc_and_pin_user_pages(domain->dev, host_address, num_pages,
+						    &gup_flags, pin_user_pages_lock);
+	if (IS_ERR(pages)) {
+		dev_err(domain->dev, "Failed to pin user pages (ret=%ld)\n", PTR_ERR(pages));
+		return ERR_CAST(pages);
+	}
+
+	if (!(gup_flags & FOLL_WRITE)) {
+		dir = DMA_TO_DEVICE;
+		gcip_map_flags &= ~(((BIT(GCIP_MAP_FLAGS_DMA_DIRECTION_BIT_SIZE) - 1)
+				     << GCIP_MAP_FLAGS_DMA_DIRECTION_OFFSET));
+		gcip_map_flags |= GCIP_MAP_FLAGS_DMA_DIRECTION_TO_FLAGS(DMA_TO_DEVICE);
+	}
+
+	sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
+	if (!sgt) {
+		ret = -ENOMEM;
+		goto err_unpin_page;
+	}
+
+	ret = sg_alloc_table_from_pages(sgt, pages, num_pages, 0, num_pages * PAGE_SIZE,
+					GFP_KERNEL);
+	if (ret) {
+		dev_err(domain->dev, "Failed to alloc sgt for mapping (ret=%d)\n", ret);
+		goto err_free_table;
+	}
+
+	mapping = gcip_iommu_domain_map_sgt(domain, sgt, gcip_map_flags);
+	if (IS_ERR(mapping)) {
+		ret = PTR_ERR(mapping);
+		goto err_free_table;
+	}
+
+	atomic64_add(num_pages, &current->mm->pinned_vm);
+	mmgrab(current->mm);
+	mapping->owning_mm = current->mm;
+	mapping->size = size;
+	mapping->dir = dir;
+	mapping->device_address = sg_dma_address(mapping->sgt->sgl) + offset;
+
+	kvfree(pages);
+
+	return mapping;
+
+err_free_table:
+	/*
+	 * The caller must call sg_free_table to clean up any leftover allocations if
+	 * sg_alloc_table_from_pages returns non-zero values.
+	 */
+	sg_free_table(sgt);
+	kfree(sgt);
+err_unpin_page:
+	for (i = 0; i < num_pages; i++)
+		unpin_user_page(pages[i]);
+	kvfree(pages);
+
 	return ERR_PTR(ret);
 }
 
@@ -1036,6 +1197,7 @@ struct gcip_iommu_mapping *gcip_iommu_domain_map_dma_buf(struct gcip_iommu_domai
 	if (domain->default_domain) {
 		mapping->sgt = dmabuf_mapping->sgt_default;
 		mapping->device_address = sg_dma_address(dmabuf_mapping->sgt_default->sgl);
+		sync_sg_if_needed(domain->dev, dmabuf_mapping->sgt_default, gcip_map_flags, true);
 		goto out_default_domain;
 	}
 
@@ -1046,7 +1208,7 @@ struct gcip_iommu_mapping *gcip_iommu_domain_map_dma_buf(struct gcip_iommu_domai
 		goto err_copy_sgt;
 	}
 
-	nents_mapped = gcip_iommu_mapping_map_sgt(mapping);
+	nents_mapped = gcip_iommu_mapping_map_sgt(domain, mapping->sgt, &mapping->gcip_map_flags);
 	if (!nents_mapped) {
 		ret = ERR_PTR(-ENOSPC);
 		dev_err(dev, "Failed to map dmabuf to IOMMU domain (ret=%ld)\n", PTR_ERR(ret));
@@ -1055,8 +1217,6 @@ struct gcip_iommu_mapping *gcip_iommu_domain_map_dma_buf(struct gcip_iommu_domai
 	mapping->device_address = sg_dma_address(mapping->sgt->sgl);
 
 out_default_domain:
-	sync_sg_if_needed(mapping, true);
-
 	/*
 	 * No need to increase the reference to dmabuf here because it's already increased by
 	 * dma_buf_get() above.
@@ -1081,16 +1241,22 @@ err_dma_buf_get:
 
 void gcip_iommu_mapping_unmap(struct gcip_iommu_mapping *mapping)
 {
-	sync_sg_if_needed(mapping, false);
-
 	if (mapping->type == GCIP_IOMMU_MAPPING_BUFFER) {
-		gcip_iommu_mapping_unmap_sgt(mapping);
-		/*
-		 * TODO(b/302127145): Refactor the function to make buffer and dmabuf interface
-		 *                    symmetric.
-		 */
-		kfree(mapping);
+		gcip_iommu_mapping_unmap_buffer(mapping);
 	} else if (mapping->type == GCIP_IOMMU_MAPPING_DMA_BUF) {
 		gcip_iommu_mapping_unmap_dma_buf(mapping);
 	}
+}
+
+dma_addr_t gcip_iommu_alloc_iova(struct gcip_iommu_domain *domain, size_t size, u64 gcip_map_flags)
+{
+	bool restrict_iova = GCIP_MAP_FLAGS_GET_RESTRICT_IOVA(gcip_map_flags);
+
+	return domain->ops->alloc_iova_space(domain, gcip_iommu_domain_align(domain, size),
+					     restrict_iova);
+}
+
+void gcip_iommu_free_iova(struct gcip_iommu_domain *domain, dma_addr_t iova, size_t size)
+{
+	domain->ops->free_iova_space(domain, iova, gcip_iommu_domain_align(domain, size));
 }

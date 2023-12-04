@@ -40,8 +40,6 @@ struct gxp_mapping {
 	 * should not be used if a regular buffer mapping was expected.
 	 */
 	u64 host_address;
-	/* For holding a reference to MM. */
-	struct mm_struct *owning_mm;
 	struct gxp_dev *gxp;
 	size_t size;
 	uint gxp_dma_flags;

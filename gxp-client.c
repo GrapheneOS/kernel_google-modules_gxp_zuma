@@ -30,6 +30,7 @@ struct gxp_client *gxp_client_create(struct gxp_dev *gxp)
 	client->gxp = gxp;
 	lockdep_register_key(&client->key);
 	__init_rwsem(&client->semaphore, "&client->semaphore", &client->key);
+	kref_init(&client->ref);
 	client->has_block_wakelock = false;
 	client->has_vd_wakelock = false;
 	client->requested_states = off_states;
@@ -42,6 +43,8 @@ void gxp_client_destroy(struct gxp_client *client)
 {
 	struct gxp_dev *gxp = client->gxp;
 	int core;
+
+	down_read(&client->semaphore);
 
 	if (client->vd && client->vd->state != GXP_VD_OFF) {
 		down_write(&gxp->vd_semaphore);
@@ -87,8 +90,9 @@ void gxp_client_destroy(struct gxp_client *client)
 		up_write(&gxp->vd_semaphore);
 	}
 
-	lockdep_unregister_key(&client->key);
-	kfree(client);
+	up_read(&client->semaphore);
+
+	gxp_client_put(client);
 }
 
 static int gxp_set_secure_vd(struct gxp_virtual_device *vd)
@@ -108,6 +112,25 @@ static int gxp_set_secure_vd(struct gxp_virtual_device *vd)
 	mutex_unlock(&gxp->secure_vd_lock);
 
 	return 0;
+}
+
+static void gxp_client_release(struct kref *ref)
+{
+	struct gxp_client *client = container_of(ref, struct gxp_client, ref);
+
+	lockdep_unregister_key(&client->key);
+	kfree(client);
+}
+
+struct gxp_client *gxp_client_get(struct gxp_client *client)
+{
+	kref_get(&client->ref);
+	return client;
+}
+
+void gxp_client_put(struct gxp_client *client)
+{
+	kref_put(&client->ref, gxp_client_release);
 }
 
 int gxp_client_allocate_virtual_device(struct gxp_client *client,

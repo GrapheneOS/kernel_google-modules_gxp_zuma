@@ -456,14 +456,8 @@ int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp,
 		return PTR_ERR(sgt);
 	}
 
-	/*
-	 * In Linux 5.15 and beyond, `iommu_map_sg()` returns a
-	 * `ssize_t` to encode errors that earlier versions throw out.
-	 * Explicitly cast here for backwards compatibility.
-	 */
-	size_mapped = (ssize_t)iommu_map_sg(domain, buf->dma_addr, sgt->sgl,
-					    sgt->orig_nents,
-					    IOMMU_READ | IOMMU_WRITE);
+	size_mapped = iommu_map_sg(domain, buf->dsp_addr, sgt->sgl, sgt->orig_nents,
+				   IOMMU_READ | IOMMU_WRITE);
 	if (size_mapped != size)
 		ret = size_mapped < 0 ? -EINVAL : (int)size_mapped;
 
@@ -494,20 +488,27 @@ int gxp_dma_alloc_coherent_buf(struct gxp_dev *gxp,
 	buffer->size = size;
 	buffer->dma_addr = daddr;
 
-	if (gdomain != NULL) {
-		ret = gxp_dma_map_allocated_coherent_buffer(
-			gxp, buffer, gdomain, gxp_dma_flags);
-		if (ret) {
-			buffer->vaddr = NULL;
-			buffer->size = 0;
-			dma_free_coherent(gxp->dev, size, buf, daddr);
-			return ret;
-		}
-	}
+	if (!gdomain)
+		return 0;
 
-	buffer->dsp_addr = daddr;
+	buffer->dsp_addr = gcip_iommu_alloc_iova(gdomain, size, 0);
+	if (!buffer->dsp_addr) {
+		ret = -ENOSPC;
+		goto err_free_coherent;
+	}
+	ret = gxp_dma_map_allocated_coherent_buffer(gxp, buffer, gdomain, gxp_dma_flags);
+	if (ret)
+		goto err_free_iova;
 
 	return 0;
+
+err_free_iova:
+	gcip_iommu_free_iova(gdomain, buffer->dsp_addr, size);
+err_free_coherent:
+	buffer->vaddr = NULL;
+	buffer->size = 0;
+	dma_free_coherent(gxp->dev, size, buf, daddr);
+	return ret;
 }
 
 void gxp_dma_unmap_allocated_coherent_buffer(struct gxp_dev *gxp,
@@ -517,7 +518,7 @@ void gxp_dma_unmap_allocated_coherent_buffer(struct gxp_dev *gxp,
 	if (gdomain == gxp_iommu_get_domain_for_dev(gxp))
 		return;
 
-	if (buf->size != iommu_unmap(gdomain->domain, buf->dma_addr, buf->size))
+	if (buf->size != iommu_unmap(gdomain->domain, buf->dsp_addr, buf->size))
 		dev_warn(gxp->dev, "Failed to unmap coherent buffer\n");
 }
 
@@ -525,58 +526,11 @@ void gxp_dma_free_coherent_buf(struct gxp_dev *gxp,
 			       struct gcip_iommu_domain *gdomain,
 			       struct gxp_coherent_buf *buf)
 {
-	if (gdomain != NULL)
+	if (gdomain) {
 		gxp_dma_unmap_allocated_coherent_buffer(gxp, gdomain, buf);
+		gcip_iommu_free_iova(gdomain, buf->dsp_addr, buf->size);
+	}
 	dma_free_coherent(gxp->dev, buf->size, buf->vaddr, buf->dma_addr);
-}
-
-int gxp_dma_map_sg(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
-		   struct scatterlist *sg, int nents,
-		   enum dma_data_direction direction, unsigned long attrs,
-		   uint gxp_dma_flags)
-{
-	int i, nents_mapped;
-	ssize_t size_mapped = 0;
-	struct scatterlist *s;
-	u64 gcip_map_flags = GCIP_MAP_FLAGS_DMA_DIRECTION_TO_FLAGS(direction) |
-			     GCIP_MAP_FLAGS_DMA_ATTR_TO_FLAGS(attrs);
-#ifdef GXP_IS_DMA_COHERENT
-	bool coherent = gxp_dma_flags & GXP_MAP_COHERENT ? true : false;
-
-	gcip_map_flags |= GCIP_MAP_FLAGS_DMA_COHERENT_TO_FLAGS(coherent);
-#endif
-
-	trace_gxp_dma_map_sg_start(nents);
-
-	nents_mapped =
-		gcip_iommu_domain_map_sg(gdomain, sg, nents, gcip_map_flags);
-	if (!nents_mapped)
-		goto out;
-
-	for_each_sg (sg, s, nents_mapped, i)
-		size_mapped += sg_dma_len(s);
-out:
-	trace_gxp_dma_map_sg_end(nents_mapped, size_mapped);
-
-	return nents_mapped;
-}
-
-void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
-		      struct scatterlist *sg, int nents,
-		      enum dma_data_direction direction, unsigned long attrs)
-{
-	struct scatterlist *s;
-	int i;
-	size_t size = 0;
-
-	trace_gxp_dma_unmap_sg_start(nents);
-
-	for_each_sg (sg, s, nents, i)
-		size += sg_dma_len(s);
-
-	gcip_iommu_domain_unmap_sg(gdomain, sg, nents);
-
-	trace_gxp_dma_unmap_sg_end(size);
 }
 
 int gxp_dma_map_iova_sgt(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,

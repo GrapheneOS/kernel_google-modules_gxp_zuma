@@ -36,11 +36,8 @@ void gxp_core_telemetry_status_notify(struct gxp_dev *gxp, uint core)
 	/* Signal the appropriate eventfd for any active core telemetry types */
 	mutex_lock(&mgr->lock);
 
-	if (mgr->logging_efd)
-		eventfd_signal(mgr->logging_efd, 1);
-
-	if (mgr->tracing_efd)
-		eventfd_signal(mgr->tracing_efd, 1);
+	if (mgr->efd)
+		eventfd_signal(mgr->efd, 1);
 
 	mutex_unlock(&mgr->lock);
 }
@@ -64,14 +61,12 @@ static void free_telemetry_buffers(struct gxp_dev *gxp, struct buffer_data *data
  *
  * @gxp: The GXP device the buffers were allocated for.
  * @data: The data describing a set of core telemetry buffers to be enabled.
- * @type: Either `GXP_TELEMETRY_TYPE_LOGGING` or `GXP_TELEMETRY_TYPE_TRACING`.
  *
  * Return:
  * * 0         - Success
  * * otherwise - Error returned by `gxp_fw_data_set_core_telemetry_descriptors()`
  */
-static int enable_telemetry_buffers(struct gxp_dev *gxp,
-				    struct buffer_data *data, u8 type)
+static int enable_telemetry_buffers(struct gxp_dev *gxp, struct buffer_data *data)
 {
 	int i, ret;
 
@@ -89,8 +84,8 @@ static int enable_telemetry_buffers(struct gxp_dev *gxp,
 	}
 
 	data->host_status |= GXP_CORE_TELEMETRY_HOST_STATUS_ENABLED;
-	ret = gxp_fw_data_set_core_telemetry_descriptors(
-		gxp, type, data->host_status, data->buffers, data->size);
+	ret = gxp_fw_data_set_core_telemetry_descriptors(gxp, data->host_status, data->buffers,
+							 data->size);
 
 	if (ret) {
 		dev_err(gxp->dev,
@@ -144,7 +139,7 @@ static int debugfs_log_buff_set(void *data, u64 val)
 
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
-	buffers = gxp->core_telemetry_mgr->logging_buff_data->buffers;
+	buffers = gxp->core_telemetry_mgr->buff_data->buffers;
 	for (i = 0; i < GXP_NUM_CORES; i++) {
 		ptr = buffers[i].vaddr;
 		*ptr = val;
@@ -162,7 +157,7 @@ static int debugfs_log_buff_get(void *data, u64 *val)
 
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
-	buffers = gxp->core_telemetry_mgr->logging_buff_data->buffers;
+	buffers = gxp->core_telemetry_mgr->buff_data->buffers;
 	*val = *(u64 *)(buffers[0].vaddr);
 
 	mutex_unlock(&gxp->core_telemetry_mgr->lock);
@@ -180,12 +175,12 @@ static int debugfs_log_eventfd_signal_set(void *data, u64 val)
 
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
-	if (!gxp->core_telemetry_mgr->logging_efd) {
+	if (!gxp->core_telemetry_mgr->efd) {
 		ret = -ENODEV;
 		goto out;
 	}
 
-	ret = eventfd_signal(gxp->core_telemetry_mgr->logging_efd, 1);
+	ret = eventfd_signal(gxp->core_telemetry_mgr->efd, 1);
 
 out:
 	mutex_unlock(&gxp->core_telemetry_mgr->lock);
@@ -199,7 +194,7 @@ DEFINE_DEBUGFS_ATTRIBUTE(debugfs_log_eventfd_signal_fops, NULL,
 int gxp_core_telemetry_init(struct gxp_dev *gxp)
 {
 	struct gxp_core_telemetry_manager *mgr;
-	struct buffer_data *log_buff_data, *trace_buff_data;
+	struct buffer_data *buff_data;
 	int i, ret;
 
 	mgr = devm_kzalloc(gxp->dev, sizeof(*mgr), GFP_KERNEL);
@@ -227,42 +222,21 @@ int gxp_core_telemetry_init(struct gxp_dev *gxp)
 		gxp_core_telemetry_buffer_size = CORE_TELEMETRY_DEFAULT_BUFFER_SIZE;
 	}
 
-	log_buff_data = allocate_telemetry_buffers(gxp, gxp_core_telemetry_buffer_size);
-	if (IS_ERR_OR_NULL(log_buff_data)) {
-		dev_warn(gxp->dev,
-			 "Failed to allocate per core log buffer of %u bytes\n",
+	buff_data = allocate_telemetry_buffers(gxp, gxp_core_telemetry_buffer_size);
+	if (IS_ERR_OR_NULL(buff_data)) {
+		dev_warn(gxp->dev, "Failed to allocate per core telemetry buffer of %u bytes\n",
 			 gxp_core_telemetry_buffer_size);
 		ret = -ENOMEM;
 		goto err_free_buffers;
 	}
 
-	trace_buff_data = allocate_telemetry_buffers(gxp, gxp_core_telemetry_buffer_size);
-	if (IS_ERR_OR_NULL(trace_buff_data)) {
-		dev_warn(gxp->dev,
-			 "Failed to allocate per core trace buffer of %u bytes\n",
-			 gxp_core_telemetry_buffer_size);
-		free_telemetry_buffers(gxp, log_buff_data);
-		ret = -ENOMEM;
-		goto err_free_buffers;
-	}
-
-	ret = enable_telemetry_buffers(gxp, log_buff_data,
-				       GXP_TELEMETRY_TYPE_LOGGING);
+	ret = enable_telemetry_buffers(gxp, buff_data);
 	if (ret) {
-		dev_warn(gxp->dev, "enable telemetry buffer failed (ret=%d)",
-			 ret);
-		goto err_free;
-	}
-	ret = enable_telemetry_buffers(gxp, trace_buff_data,
-				       GXP_TELEMETRY_TYPE_TRACING);
-	if (ret) {
-		dev_warn(gxp->dev, "enable telemetry buffer failed (ret=%d)",
-			 ret);
+		dev_warn(gxp->dev, "enable telemetry buffer failed (ret=%d)", ret);
 		goto err_free;
 	}
 
-	gxp->core_telemetry_mgr->logging_buff_data = log_buff_data;
-	gxp->core_telemetry_mgr->tracing_buff_data = trace_buff_data;
+	gxp->core_telemetry_mgr->buff_data = buff_data;
 
 	debugfs_create_file(DEBUGFS_LOG_BUFF, 0600, gxp->d_entry, gxp,
 			    &debugfs_log_buff_fops);
@@ -272,8 +246,7 @@ int gxp_core_telemetry_init(struct gxp_dev *gxp)
 	return 0;
 
 err_free:
-	free_telemetry_buffers(gxp, log_buff_data);
-	free_telemetry_buffers(gxp, trace_buff_data);
+	free_telemetry_buffers(gxp, buff_data);
 err_free_buffers:
 	mutex_destroy(&mgr->lock);
 	devm_kfree(gxp->dev, mgr);
@@ -313,6 +286,7 @@ static struct buffer_data *allocate_telemetry_buffers(struct gxp_dev *gxp,
 					"Failed to allocate coherent buffer\n");
 			goto err_alloc;
 		}
+		data->buffers[i].dsp_addr = GXP_TELEMETRY_IOVA_BASE + i * size;
 	}
 	data->size = size;
 	data->is_enabled = false;
@@ -456,8 +430,7 @@ err:
 	return ret;
 }
 
-int gxp_core_telemetry_mmap_buffers(struct gxp_dev *gxp, u8 type,
-				    struct vm_area_struct *vma)
+int gxp_core_telemetry_mmap_buffers(struct gxp_dev *gxp, struct vm_area_struct *vma)
 {
 	int ret = 0;
 	struct buffer_data *buff_data;
@@ -467,12 +440,7 @@ int gxp_core_telemetry_mmap_buffers(struct gxp_dev *gxp, u8 type,
 	if (!gxp->core_telemetry_mgr)
 		return -ENODEV;
 
-	if (type == GXP_TELEMETRY_TYPE_LOGGING)
-		buff_data = gxp->core_telemetry_mgr->logging_buff_data;
-	else if (type == GXP_TELEMETRY_TYPE_TRACING)
-		buff_data = gxp->core_telemetry_mgr->tracing_buff_data;
-	else
-		return -EINVAL;
+	buff_data = gxp->core_telemetry_mgr->buff_data;
 	/*
 	 * Total size must divide evenly into a GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE
 	 * aligned buffer per core.
@@ -508,11 +476,10 @@ err:
 	return ret;
 }
 
-int gxp_core_telemetry_register_eventfd(struct gxp_dev *gxp, u8 type, int fd)
+int gxp_core_telemetry_register_eventfd(struct gxp_dev *gxp, int fd)
 {
 	struct eventfd_ctx *new_ctx;
 	struct eventfd_ctx **ctx_to_set = NULL;
-	int ret = 0;
 
 	new_ctx = eventfd_ctx_fdget(fd);
 	if (IS_ERR(new_ctx))
@@ -520,58 +487,28 @@ int gxp_core_telemetry_register_eventfd(struct gxp_dev *gxp, u8 type, int fd)
 
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
-	switch (type) {
-	case GXP_TELEMETRY_TYPE_LOGGING:
-		ctx_to_set = &gxp->core_telemetry_mgr->logging_efd;
-		break;
-	case GXP_TELEMETRY_TYPE_TRACING:
-		ctx_to_set = &gxp->core_telemetry_mgr->tracing_efd;
-		break;
-	default:
-		ret = -EINVAL;
-		eventfd_ctx_put(new_ctx);
-		goto out;
-	}
+	ctx_to_set = &gxp->core_telemetry_mgr->efd;
 
 	if (*ctx_to_set) {
-		dev_warn(
-			gxp->dev,
-			"Replacing existing core telemetry eventfd (type=%u)\n",
-			type);
+		dev_warn(gxp->dev, "Replacing existing core telemetry eventfd\n");
 		eventfd_ctx_put(*ctx_to_set);
 	}
 
 	*ctx_to_set = new_ctx;
 
-out:
 	mutex_unlock(&gxp->core_telemetry_mgr->lock);
-	return ret;
+	return 0;
 }
 
-int gxp_core_telemetry_unregister_eventfd(struct gxp_dev *gxp, u8 type)
+void gxp_core_telemetry_unregister_eventfd(struct gxp_dev *gxp)
 {
-	int ret = 0;
-
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
 
-	switch (type) {
-	case GXP_TELEMETRY_TYPE_LOGGING:
-		if (gxp->core_telemetry_mgr->logging_efd)
-			eventfd_ctx_put(gxp->core_telemetry_mgr->logging_efd);
-		gxp->core_telemetry_mgr->logging_efd = NULL;
-		break;
-	case GXP_TELEMETRY_TYPE_TRACING:
-		if (gxp->core_telemetry_mgr->tracing_efd)
-			eventfd_ctx_put(gxp->core_telemetry_mgr->tracing_efd);
-		gxp->core_telemetry_mgr->tracing_efd = NULL;
-		break;
-	default:
-		ret = -EINVAL;
-	}
+	if (gxp->core_telemetry_mgr->efd)
+		eventfd_ctx_put(gxp->core_telemetry_mgr->efd);
+	gxp->core_telemetry_mgr->efd = NULL;
 
 	mutex_unlock(&gxp->core_telemetry_mgr->lock);
-
-	return ret;
 }
 
 struct work_struct *
@@ -587,7 +524,7 @@ gxp_core_telemetry_get_notification_handler(struct gxp_dev *gxp, uint core)
 
 void gxp_core_telemetry_exit(struct gxp_dev *gxp)
 {
-	struct buffer_data *log_buff_data, *trace_buff_data;
+	struct buffer_data *buff_data;
 	struct gxp_core_telemetry_manager *mgr = gxp->core_telemetry_mgr;
 
 	if (!mgr) {
@@ -598,25 +535,15 @@ void gxp_core_telemetry_exit(struct gxp_dev *gxp)
 	debugfs_remove(debugfs_lookup(DEBUGFS_LOG_BUFF, gxp->d_entry));
 	debugfs_remove(debugfs_lookup(DEBUGFS_LOG_EVENTFD, gxp->d_entry));
 
-	log_buff_data = mgr->logging_buff_data;
-	trace_buff_data = mgr->tracing_buff_data;
+	buff_data = mgr->buff_data;
 
-	if (!IS_ERR_OR_NULL(log_buff_data))
-		free_telemetry_buffers(gxp, log_buff_data);
+	if (!IS_ERR_OR_NULL(buff_data))
+		free_telemetry_buffers(gxp, buff_data);
 
-	if (!IS_ERR_OR_NULL(trace_buff_data))
-		free_telemetry_buffers(gxp, trace_buff_data);
-
-	if (!IS_ERR_OR_NULL(gxp->core_telemetry_mgr->logging_efd)) {
-		dev_warn(gxp->dev, "logging_efd was not released\n");
-		eventfd_ctx_put(gxp->core_telemetry_mgr->logging_efd);
-		gxp->core_telemetry_mgr->logging_efd = NULL;
-	}
-
-	if (!IS_ERR_OR_NULL(gxp->core_telemetry_mgr->tracing_efd)) {
-		dev_warn(gxp->dev, "tracing_efd was not released\n");
-		eventfd_ctx_put(gxp->core_telemetry_mgr->tracing_efd);
-		gxp->core_telemetry_mgr->tracing_efd = NULL;
+	if (!IS_ERR_OR_NULL(gxp->core_telemetry_mgr->efd)) {
+		dev_warn(gxp->dev, "efd was not released\n");
+		eventfd_ctx_put(gxp->core_telemetry_mgr->efd);
+		gxp->core_telemetry_mgr->efd = NULL;
 	}
 
 	mutex_destroy(&mgr->lock);

@@ -51,46 +51,26 @@ void gxp_mapping_iova_log(struct gxp_client *client, struct gxp_mapping *map,
 		is_first_log = false;
 	}
 
-	dev_info(dev, "iova_log: %s, %s, %d, %d, %#llx, %#llx, %zu", op, buf_type, client->pid,
-		 client->tgid, map->host_address, map->gcip_mapping->device_address, map->size);
+	dev_info(dev, "iova_log: %s, %s, %d, %d, %#llx, %pad, %zu", op, buf_type, client->pid,
+		 client->tgid, map->host_address, &map->gcip_mapping->device_address, map->size);
 }
 
 /* Destructor for a mapping created with `gxp_mapping_create()` */
 static void destroy_mapping(struct gxp_mapping *mapping)
 {
-	struct sg_page_iter sg_iter;
-	struct page *page;
-	unsigned long num_pages = 0;
-	struct sg_table *sgt = mapping->gcip_mapping->sgt;
-	struct mm_struct *owning_mm = mapping->owning_mm;
+	dma_addr_t device_address = mapping->gcip_mapping->device_address;
 	size_t size = mapping->gcip_mapping->size;
-	enum dma_data_direction dir = mapping->gcip_mapping->gcip_map_flags &
-				      ((BIT(GCIP_MAP_FLAGS_DMA_DIRECTION_BIT_SIZE) - 1)
-				       << GCIP_MAP_FLAGS_DMA_DIRECTION_OFFSET);
+
+	trace_gxp_mapping_destroy_start(device_address, size);
 
 	mutex_destroy(&mapping->vlock);
 	mutex_destroy(&mapping->sync_lock);
 
-	trace_gxp_dma_unmap_sg_start(sgt->nents);
 	gcip_iommu_mapping_unmap(mapping->gcip_mapping);
-	trace_gxp_dma_unmap_sg_end(size);
 
-	/* Unpin the user pages */
-	for_each_sg_page(sgt->sgl, &sg_iter, sgt->orig_nents, 0) {
-		page = sg_page_iter_page(&sg_iter);
-		if (dir == DMA_FROM_DEVICE || dir == DMA_BIDIRECTIONAL)
-			set_page_dirty(page);
-
-		unpin_user_page(page);
-		num_pages++;
-	}
-
-	atomic64_sub(num_pages, &owning_mm->pinned_vm);
-	mmdrop(owning_mm);
-	/* Free the mapping book-keeping */
-	sg_free_table(sgt);
-	kfree(sgt);
 	kfree(mapping);
+
+	trace_gxp_mapping_destroy_end(device_address, size);
 }
 
 struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
@@ -98,106 +78,44 @@ struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
 				       u64 user_address, size_t size, u32 flags,
 				       enum dma_data_direction dir)
 {
-	struct gxp_mapping *mapping = NULL;
-	uint num_pages = 0;
-	struct page **pages;
-	ulong offset;
-	int ret, i;
-	uint gup_flags = gcip_iommu_get_gup_flags(user_address, gxp->dev);
-	struct sg_table *sgt;
+	struct gxp_mapping *mapping;
+	int ret;
 	u64 gcip_map_flags = gxp_dma_encode_gcip_map_flags(flags, DMA_ATTR_SKIP_CPU_SYNC);
 
-	/* Check whether dir is valid or not */
-	if (!valid_dma_direction(dir))
-		return ERR_PTR(-EINVAL);
-
-	if (size == 0)
-		return ERR_PTR(-EINVAL);
-
-	if (!access_ok((const void *)user_address, size)) {
-		dev_err(gxp->dev, "invalid address range in buffer map request");
-		return ERR_PTR(-EFAULT);
-	}
-
-	ret = gcip_iommu_get_offset_npages(gxp->dev, user_address, size, &offset, &num_pages);
-	if (ret) {
-		dev_err(gxp->dev, "Buffer size overflow: size=%#zx", size);
-		return ERR_PTR(ret);
-	}
-
-	pages = gcip_iommu_alloc_and_pin_user_pages(domain->dev, user_address, num_pages,
-						    &gup_flags, &gxp->pin_user_pages_lock);
-	if (IS_ERR(pages)) {
-		dev_err(gxp->dev, "Failed to pin user pages (ret=%ld)\n", PTR_ERR(pages));
-		return ERR_CAST(pages);
-	}
-
-	if (!(gup_flags & FOLL_WRITE)) {
-		dir = DMA_TO_DEVICE;
-		gcip_map_flags &= ~(((BIT(GCIP_MAP_FLAGS_DMA_DIRECTION_BIT_SIZE) - 1)
-				     << GCIP_MAP_FLAGS_DMA_DIRECTION_OFFSET));
-		gcip_map_flags |= GCIP_MAP_FLAGS_DMA_DIRECTION_TO_FLAGS(DMA_TO_DEVICE);
-	}
+	trace_gxp_mapping_create_start(user_address, size);
 
 	/* Initialize mapping book-keeping */
 	mapping = kzalloc(sizeof(*mapping), GFP_KERNEL);
 	if (!mapping) {
 		ret = -ENOMEM;
-		goto error_unpin_pages;
+		goto error_end_trace;
 	}
-	refcount_set(&mapping->refcount, 1);
+
 	mapping->destructor = destroy_mapping;
 	mapping->host_address = user_address;
 	mapping->gxp = gxp;
 	mapping->size = size;
 	mapping->gxp_dma_flags = flags;
-
-	sgt = kzalloc(sizeof(*sgt), GFP_KERNEL);
-	if (!sgt) {
-		ret = -ENOMEM;
+	mapping->gcip_mapping = gcip_iommu_domain_map_buffer(
+		domain, user_address, size, gcip_map_flags, &gxp->pin_user_pages_lock);
+	if (IS_ERR(mapping->gcip_mapping)) {
+		ret = PTR_ERR(mapping->gcip_mapping);
+		dev_err(gxp->dev, "Failed to map user buffer (ret=%d)\n", ret);
 		goto error_free_mapping;
 	}
 
-	ret = sg_alloc_table_from_pages(sgt, pages, num_pages, 0, num_pages * PAGE_SIZE,
-					GFP_KERNEL);
-	if (ret) {
-		dev_err(gxp->dev, "Failed to alloc sgt for mapping (ret=%d)\n",
-			ret);
-		goto error_free_sgt;
-	}
-
-	trace_gxp_dma_map_sg_start(sgt->orig_nents);
-	mapping->gcip_mapping = gcip_iommu_domain_map_sgt(domain, sgt, gcip_map_flags);
-	trace_gxp_dma_map_sg_end(sgt->orig_nents, size);
-	if (IS_ERR(mapping->gcip_mapping)) {
-		ret = PTR_ERR(mapping->gcip_mapping);
-		dev_err(gxp->dev, "Failed to map sgt (ret=%d)\n", ret);
-		goto error_free_sgt_table;
-	}
-
-	/* TODO(b/302510715): Set these values in the GCIP side. */
-	mapping->gcip_mapping->dir = dir;
-	mapping->gcip_mapping->device_address = sg_dma_address(sgt->sgl) + offset;
-
+	refcount_set(&mapping->refcount, 1);
 	mutex_init(&mapping->sync_lock);
 	mutex_init(&mapping->vlock);
-	mmgrab(current->mm);
-	mapping->owning_mm = current->mm;
-	atomic64_add(num_pages, &mapping->owning_mm->pinned_vm);
 
-	kvfree(pages);
+	trace_gxp_mapping_create_end(user_address, size, mapping->gcip_mapping->sgt->nents);
+
 	return mapping;
 
-error_free_sgt_table:
-	sg_free_table(sgt);
-error_free_sgt:
-	kfree(sgt);
 error_free_mapping:
 	kfree(mapping);
-error_unpin_pages:
-	for (i = 0; i < num_pages; i++)
-		unpin_user_page(pages[i]);
-	kvfree(pages);
+error_end_trace:
+	trace_gxp_mapping_create_end(user_address, size, 0);
 
 	return ERR_PTR(ret);
 }

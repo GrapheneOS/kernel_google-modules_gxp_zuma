@@ -9,6 +9,8 @@
 #include <linux/moduleparam.h>
 #include <linux/of_irq.h>
 
+#include <gcip/iif/iif-manager.h>
+
 #include "gxp-config.h"
 #include "gxp-internal.h"
 #include "gxp-mcu-fs.h"
@@ -280,6 +282,12 @@ int gxp_mcu_platform_after_probe(struct gxp_dev *gxp)
 	if (ret)
 		return ret;
 
+	gxp->iif_mgr = iif_manager_init(gxp->dev->of_node);
+	if (IS_ERR(gxp->iif_mgr)) {
+		dev_err(gxp->dev, "Failed to init IIF manager: %ld", PTR_ERR(gxp->iif_mgr));
+		gxp->iif_mgr = NULL;
+	}
+
 	gxp_usage_stats_init(gxp);
 	return gxp_mcu_init(gxp, gxp_mcu_of(gxp));
 }
@@ -291,6 +299,9 @@ void gxp_mcu_platform_before_remove(struct gxp_dev *gxp)
 
 	gxp_mcu_exit(gxp_mcu_of(gxp));
 	gxp_usage_stats_exit(gxp);
+
+	if (gxp->iif_mgr)
+		iif_manager_put(gxp->iif_mgr);
 }
 
 void gxp_mcu_dev_init(struct gxp_mcu_dev *mcu_dev)

@@ -441,50 +441,37 @@ static int map_core_telemetry_buffers(struct gxp_dev *gxp,
 				      struct gxp_virtual_device *vd,
 				      uint core_list)
 {
-	struct buffer_data *data[2];
-	int i, core, ret;
+	struct buffer_data *data;
+	int core, ret;
 
 	if (!gxp->core_telemetry_mgr)
 		return 0;
 
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
-	data[0] = gxp->core_telemetry_mgr->logging_buff_data;
-	data[1] = gxp->core_telemetry_mgr->tracing_buff_data;
+	data = gxp->core_telemetry_mgr->buff_data;
 
-	for (i = 0; i < ARRAY_SIZE(data); i++) {
-		if (!data[i] || !data[i]->is_enabled)
+	if (!data || !data->is_enabled)
+		goto out_unlock;
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		if (!(BIT(core) & core_list))
 			continue;
-		for (core = 0; core < GXP_NUM_CORES; core++) {
-			if (!(BIT(core) & core_list))
-				continue;
-			ret = gxp_dma_map_allocated_coherent_buffer(
-				gxp, &data[i]->buffers[core], vd->domain, 0);
-			if (ret) {
-				dev_err(gxp->dev,
-					"Mapping core telemetry buffer to core %d failed",
-					core);
-				goto error;
-			}
+		ret = gxp_dma_map_allocated_coherent_buffer(gxp, &data->buffers[core], vd->domain,
+							    0);
+		if (ret) {
+			dev_err(gxp->dev, "Mapping core telemetry buffer to core %d failed", core);
+			goto error;
 		}
 	}
+
+out_unlock:
 	mutex_unlock(&gxp->core_telemetry_mgr->lock);
 	return 0;
+
 error:
 	while (core--) {
 		if (!(BIT(core) & core_list))
 			continue;
-		gxp_dma_unmap_allocated_coherent_buffer(
-			gxp, vd->domain, &data[i]->buffers[core]);
-	}
-	while (i--) {
-		if (!data[i] || !data[i]->is_enabled)
-			continue;
-		for (core = 0; core < GXP_NUM_CORES; core++) {
-			if (!(BIT(core) & core_list))
-				continue;
-			gxp_dma_unmap_allocated_coherent_buffer(
-				gxp, vd->domain, &data[i]->buffers[core]);
-		}
+		gxp_dma_unmap_allocated_coherent_buffer(gxp, vd->domain, &data->buffers[core]);
 	}
 	mutex_unlock(&gxp->core_telemetry_mgr->lock);
 	return ret;
@@ -494,25 +481,23 @@ static void unmap_core_telemetry_buffers(struct gxp_dev *gxp,
 					 struct gxp_virtual_device *vd,
 					 uint core_list)
 {
-	struct buffer_data *data[2];
-	int i, core;
+	struct buffer_data *data;
+	int core;
 
 	if (!gxp->core_telemetry_mgr)
 		return;
 	mutex_lock(&gxp->core_telemetry_mgr->lock);
-	data[0] = gxp->core_telemetry_mgr->logging_buff_data;
-	data[1] = gxp->core_telemetry_mgr->tracing_buff_data;
+	data = gxp->core_telemetry_mgr->buff_data;
 
-	for (i = 0; i < ARRAY_SIZE(data); i++) {
-		if (!data[i] || !data[i]->is_enabled)
+	if (!data || !data->is_enabled)
+		goto out_unlock;
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		if (!(BIT(core) & core_list))
 			continue;
-		for (core = 0; core < GXP_NUM_CORES; core++) {
-			if (!(BIT(core) & core_list))
-				continue;
-			gxp_dma_unmap_allocated_coherent_buffer(
-				gxp, vd->domain, &data[i]->buffers[core]);
-		}
+		gxp_dma_unmap_allocated_coherent_buffer(gxp, vd->domain, &data->buffers[core]);
 	}
+
+out_unlock:
 	mutex_unlock(&gxp->core_telemetry_mgr->lock);
 }
 

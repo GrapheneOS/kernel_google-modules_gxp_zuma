@@ -8,14 +8,17 @@
 #ifndef __GXP_UCI_H__
 #define __GXP_UCI_H__
 
+#include <linux/kref.h>
 #include <linux/kthread.h>
 
 #include <gcip/gcip-mailbox.h>
 
 #include "gxp-client.h"
+#include "gxp-fence.h"
 #include "gxp-internal.h"
 #include "gxp-mailbox.h"
 #include "gxp-vd.h"
+#include "gxp.h"
 
 #define UCI_RESOURCE_ID 0
 
@@ -75,6 +78,30 @@ struct gxp_uci_command {
 		struct gxp_uci_wakelock_command_params wakelock_command_params;
 		uint8_t opaque[48];
 	};
+};
+
+/**
+ * struct gxp_uci_command_work - The callback and work object to carry data for a UCI command.
+ * @work: The embedded work object.
+ * @cb: The embedded DMA callback.
+ * @client: The client which request the UCI command.
+ * @cmd_seq: The specified sequence number used for the uci command.
+ * @flags: Same as gxp_mailbox_uci_command_ioctl.
+ * @opaque: Same as gxp_mailbox_uci_command_ioctl.
+ * @timeout_ms: Same as gxp_mailbox_uci_command_ioctl.
+ * @in_fences: Same as gxp_mailbox_uci_command_ioctl.
+ * @out_fences: Same as gxp_mailbox_uci_command_ioctl.
+ */
+struct gxp_uci_cmd_work {
+	struct work_struct work;
+	struct dma_fence_cb cb;
+	struct gxp_client *client;
+	u64 cmd_seq;
+	u32 flags;
+	u8 opaque[GXP_UCI_CMD_OPAQUE_SIZE];
+	u32 timeout_ms;
+	struct gxp_uci_fences *in_fences;
+	struct gxp_uci_fences *out_fences;
 };
 
 /*
@@ -148,6 +175,15 @@ struct gxp_uci_additional_info {
 	uint8_t *runtime_additional_info;
 };
 
+struct gxp_uci_fences {
+	/* Fences. */
+	struct gxp_fence *fences[GXP_MAX_FENCES_PER_UCI_COMMAND];
+	/* The number of fences. */
+	int size;
+	/* Refcount. */
+	struct kref kref;
+};
+
 struct gxp_uci_response {
 	/* sequence number, should match the corresponding command */
 	uint64_t seq;
@@ -203,6 +239,10 @@ struct gxp_uci_async_response {
 	enum gxp_response_status status;
 	/* Additional info buffer. */
 	struct gxp_mapped_resource additional_info_buf;
+	/* In-fences. */
+	struct gxp_uci_fences *in_fences;
+	/* Out-fences. */
+	struct gxp_uci_fences *out_fences;
 };
 
 struct gxp_uci_wait_list {
@@ -258,6 +298,7 @@ void gxp_uci_exit(struct gxp_uci *uci);
 int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 			 struct gxp_uci_command *cmd,
 			 struct gxp_uci_additional_info *additional_info,
+			 struct gxp_uci_fences *in_fences, struct gxp_uci_fences *out_fences,
 			 struct list_head *wait_queue, struct list_head *resp_queue,
 			 spinlock_t *queue_lock, wait_queue_head_t *queue_waitq,
 			 struct gxp_eventfd *eventfd, gcip_mailbox_cmd_flags_t flags);
@@ -280,5 +321,49 @@ void gxp_uci_fill_additional_info(struct gxp_uci_additional_info *info, uint16_t
 				  uint32_t out_fences_size, uint32_t timeout_ms,
 				  uint8_t *runtime_additional_info,
 				  uint32_t runtime_additional_info_size);
+
+/**
+ * gxp_uci_cmd_work_create_and_schedule() - Creates a UCI command work and registers it to the given
+ *                                          DMA fence.
+ * @fence: The DMA fence to add the callback for the UCI work.
+ * @client: The attribute of gxp_uci_cmd_work.
+ * @ibuf: The gxp_mailbox_uci_command_ioctl passed from user.
+ * @cmd_seq: The attribute of gxp_uci_cmd_work.
+ * @in_fences: The fences which will signal @fence.
+ * @out_fences: The fences which will be signaled by @fence.
+ * @work_func: The attribute of gxp_uci_cmd_work.
+ */
+int gxp_uci_cmd_work_create_and_schedule(struct dma_fence *fence, struct gxp_client *client,
+					 const struct gxp_mailbox_uci_command_ioctl *ibuf,
+					 u64 cmd_seq, struct gxp_uci_fences *in_fences,
+					 struct gxp_uci_fences *out_fences, work_func_t work_func);
+
+/**
+ * gxp_uci_cmd_work_destroy() - Destroys the UCI command work object.
+ * @cb: The target work to be destroyed.
+ *
+ * The reference count of the client has to be decreased by one.
+ */
+void gxp_uci_cmd_work_destroy(struct gxp_uci_cmd_work *work);
+
+/*
+ * Gets the fence objects from fence FD array, @fences. If @same_type is true, the type of fences
+ * must be the same.
+ *
+ * Returns `struct gxp_uci_fences` instance which contains the fence objects. Otherwise, returns an
+ * errno pointer.
+ *
+ * Note that the returned instance will be released when its refcount becomes 0.
+ */
+struct gxp_uci_fences *gxp_uci_fences_create(struct gxp_dev *gxp, int *fences, bool same_type);
+
+/* Increments the refcount of @uci_fences. */
+struct gxp_uci_fences *gxp_uci_fences_get(struct gxp_uci_fences *uci_fences);
+
+/*
+ * Decrements the refcount of @uci_fences. If it becomes 0, it will release the refcount of the
+ * fences which it is referring to.
+ */
+void gxp_uci_fences_put(struct gxp_uci_fences *uci_fences);
 
 #endif /* __GXP_UCI_H__ */

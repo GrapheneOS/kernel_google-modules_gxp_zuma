@@ -225,7 +225,7 @@ gxp_uci_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 {
 	struct gxp_uci_async_response *async_resp;
 	struct mailbox_resp_queue *mailbox_resp_queue;
-	int ret = 0;
+	int i;
 
 	if (!awaiter)
 		return 0;
@@ -236,7 +236,8 @@ gxp_uci_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 
 	spin_lock(async_resp->queue_lock);
 	if (mailbox_resp_queue->wait_queue_closed) {
-		ret = -EIO;
+		spin_unlock(async_resp->queue_lock);
+		return -EIO;
 	} else {
 		async_resp->awaiter = awaiter;
 		list_add_tail(&async_resp->wait_list_entry,
@@ -244,7 +245,43 @@ gxp_uci_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 	}
 	spin_unlock(async_resp->queue_lock);
 
-	return ret;
+	if (async_resp->out_fences) {
+		for (i = 0; i < async_resp->out_fences->size; i++)
+			gxp_fence_submit_signaler(async_resp->out_fences->fences[i]);
+	}
+
+	if (async_resp->in_fences) {
+		for (i = 0; i < async_resp->in_fences->size; i++)
+			gxp_fence_submit_waiter(async_resp->in_fences->fences[i]);
+	}
+
+	return 0;
+}
+
+static void gxp_uci_signal_fences(struct gxp_uci_async_response *async_resp,
+				  enum gxp_response_status status)
+{
+	int i, errno = 0;
+
+	if (!async_resp->out_fences)
+		return;
+
+	if (status != GXP_RESP_OK)
+		errno = -ETIMEDOUT;
+
+	for (i = 0; i < async_resp->out_fences->size; i++)
+		gxp_fence_signal(async_resp->out_fences->fences[i], errno);
+}
+
+static void gxp_uci_waited_fences(struct gxp_uci_async_response *async_resp)
+{
+	int i;
+
+	if (!async_resp->in_fences)
+		return;
+
+	for (i = 0; i < async_resp->in_fences->size; i++)
+		gxp_fence_waited(async_resp->in_fences->fences[i]);
 }
 
 /*
@@ -276,6 +313,8 @@ static void gxp_uci_push_async_response(struct gcip_mailbox *mailbox,
 	list_add_tail(&async_resp->dest_list_entry, async_resp->dest_queue);
 	spin_unlock_irqrestore(async_resp->queue_lock, flags);
 
+	gxp_uci_signal_fences(async_resp, status);
+	gxp_uci_waited_fences(async_resp);
 	if (async_resp->eventfd)
 		gxp_eventfd_signal(async_resp->eventfd);
 
@@ -308,6 +347,8 @@ static void gxp_uci_release_awaiter_data(void *data)
 	 * This function might be called when the VD is already released, don't do VD operations in
 	 * this case.
 	 */
+	gxp_uci_fences_put(async_resp->out_fences);
+	gxp_uci_fences_put(async_resp->in_fences);
 	if (async_resp->additional_info_buf.vaddr)
 		gxp_mcu_mem_free_data(async_resp->uci->mcu, &async_resp->additional_info_buf);
 	if (async_resp->eventfd)
@@ -573,6 +614,7 @@ void gxp_uci_exit(struct gxp_uci *uci)
 int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 			 struct gxp_uci_command *cmd,
 			 struct gxp_uci_additional_info *additional_info,
+			 struct gxp_uci_fences *in_fences, struct gxp_uci_fences *out_fences,
 			 struct list_head *wait_queue, struct list_head *resp_queue,
 			 spinlock_t *queue_lock, wait_queue_head_t *queue_waitq,
 			 struct gxp_eventfd *eventfd, gcip_mailbox_cmd_flags_t flags)
@@ -608,6 +650,9 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 		cmd->additional_info_size = async_resp->additional_info_buf.size;
 	}
 
+	async_resp->in_fences = gxp_uci_fences_get(in_fences);
+	async_resp->out_fences = gxp_uci_fences_get(out_fences);
+
 	/*
 	 * @async_resp->awaiter will be set from the `gxp_uci_before_enqueue_wait_list`
 	 * callback.
@@ -615,12 +660,14 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 	awaiter = gxp_mailbox_put_cmd(uci->mbx, cmd, &async_resp->resp, async_resp, flags);
 	if (IS_ERR(awaiter)) {
 		ret = PTR_ERR(awaiter);
-		goto err_free_resp;
+		goto err_put_fences;
 	}
 
 	return 0;
 
-err_free_resp:
+err_put_fences:
+	gxp_uci_fences_put(async_resp->out_fences);
+	gxp_uci_fences_put(async_resp->in_fences);
 	if (additional_info)
 		gxp_mcu_mem_free_data(uci->mcu, &async_resp->additional_info_buf);
 	if (async_resp->eventfd)
@@ -714,4 +761,185 @@ void gxp_uci_fill_additional_info(struct gxp_uci_additional_info *info, uint16_t
 	info->in_fences = in_fences;
 	info->out_fences = out_fences;
 	info->runtime_additional_info = runtime_additional_info;
+}
+
+/**
+ * in_fence_cb_func() - A dma_fence_func_t wrapper function to schedule the UCI command work.
+ * @fence: The fence that is signaled.
+ * @cb: The callback object that is registered to the signaled fence.
+ *
+ * If the fence is signaled without error, the UCI command work will be scheduled.
+ * The container of this callback has to be released on error because in this case the work
+ * function, where the destroy function located, will never be triggered.
+ *
+ * Context: This function will be called in IRQ context.
+ */
+static void in_fence_cb_func(struct dma_fence *fence, struct dma_fence_cb *cb)
+{
+	struct gxp_uci_cmd_work *uci_work = container_of(cb, struct gxp_uci_cmd_work, cb);
+
+	if (dma_fence_get_status_locked(fence) != 1)
+		goto err_destroy_work;
+
+	if (schedule_work(&uci_work->work))
+		return;
+
+err_destroy_work:
+	gxp_uci_cmd_work_destroy(uci_work);
+}
+
+/**
+ * gxp_uci_cmd_work_create() - Allocates and initializes the UCI command work object.
+ * @work_func: The function to be scheduled.
+ * @client: Same as gxp_uci_cmd_work_create_and_schedule.
+ * @ibuf: Same as gxp_uci_cmd_work_create_and_schedule.
+ * @cmd_seq: Same as gxp_uci_cmd_work_create_and_schedule.
+ * @in_fences: Same as gxp_uci_cmd_work_create_and_schedule.
+ * @out_fences: Same as gxp_uci_cmd_work_create_and_schedule.
+ */
+static struct gxp_uci_cmd_work *
+gxp_uci_cmd_work_create(work_func_t work_func, struct gxp_client *client,
+			const struct gxp_mailbox_uci_command_ioctl *ibuf, u64 cmd_seq,
+			struct gxp_uci_fences *in_fences, struct gxp_uci_fences *out_fences)
+{
+	struct gxp_uci_cmd_work *uci_work;
+
+	uci_work = kzalloc(sizeof(*uci_work), GFP_KERNEL);
+	if (!uci_work)
+		return ERR_PTR(-ENOMEM);
+
+	INIT_WORK(&uci_work->work, work_func);
+	INIT_LIST_HEAD(&uci_work->cb.node);
+	uci_work->client = gxp_client_get(client);
+	uci_work->cmd_seq = cmd_seq;
+	uci_work->flags = ibuf->flags;
+	uci_work->timeout_ms = ibuf->timeout_ms;
+	uci_work->in_fences = gxp_uci_fences_get(in_fences);
+	uci_work->out_fences = gxp_uci_fences_get(out_fences);
+	memcpy(uci_work->opaque, ibuf->opaque, sizeof(ibuf->opaque));
+
+	return uci_work;
+}
+
+int gxp_uci_cmd_work_create_and_schedule(struct dma_fence *fence, struct gxp_client *client,
+					 const struct gxp_mailbox_uci_command_ioctl *ibuf,
+					 u64 cmd_seq, struct gxp_uci_fences *in_fences,
+					 struct gxp_uci_fences *out_fences, work_func_t work_func)
+{
+	struct gxp_uci_cmd_work *uci_work;
+	int ret;
+
+	/* TODO(264015258): Remove the check when the polled_dma_fence is passed down. */
+	if (!fence)
+		return -EINVAL;
+
+	uci_work = gxp_uci_cmd_work_create(work_func, client, ibuf, cmd_seq, in_fences, out_fences);
+	if (IS_ERR(uci_work))
+		return PTR_ERR(uci_work);
+
+	ret = dma_fence_add_callback(fence, &uci_work->cb, in_fence_cb_func);
+	if (ret)
+		goto err_free_cb;
+
+	return 0;
+
+err_free_cb:
+	gxp_uci_cmd_work_destroy(uci_work);
+
+	return ret;
+}
+
+void gxp_uci_cmd_work_destroy(struct gxp_uci_cmd_work *work)
+{
+	struct gxp_client *client = work->client;
+
+	gxp_uci_fences_put(work->in_fences);
+	gxp_uci_fences_put(work->out_fences);
+	kfree(work);
+	gxp_client_put(client);
+}
+
+struct gxp_uci_fences *gxp_uci_fences_create(struct gxp_dev *gxp, int *fences, bool same_type)
+{
+	int i, ret;
+	struct gxp_uci_fences *uci_fences;
+	struct gxp_fence *fence;
+	bool ignore_fences = false;
+
+	uci_fences = kzalloc(sizeof(*uci_fences), GFP_KERNEL);
+	if (!uci_fences)
+		return ERR_PTR(-ENOMEM);
+
+	kref_init(&uci_fences->kref);
+
+	if (!fences)
+		return uci_fences;
+
+	for (i = 0; i < GXP_MAX_FENCES_PER_UCI_COMMAND && fences[i] != GXP_FENCE_ARRAY_TERMINATION;
+	     i++) {
+		fence = gxp_fence_fdget(fences[i]);
+		if (IS_ERR(fence)) {
+			/*
+			 * TODO(b/312819593): once the runtime adopts `GXP_FENCE_ARRAY_TERMINATION`
+			 * to represent the end of array, remove this block and @ignore_fences flag.
+			 */
+			if (!fences[i]) {
+				ignore_fences = true;
+				goto err_put_fences;
+			}
+
+			ret = PTR_ERR(fence);
+			dev_err(gxp->dev, "User passed wrong fence_fd %d, ret=%d", fences[i], ret);
+			goto err_put_fences;
+		}
+
+		/* Check whether all fences are the same type. */
+		if (same_type && i && fence->type != uci_fences->fences[0]->type) {
+			ret = -EINVAL;
+			dev_err(gxp->dev, "User passed inconsistent type of fences");
+			gxp_fence_put(fence);
+			goto err_put_fences;
+		}
+
+		uci_fences->fences[i] = fence;
+	}
+
+	uci_fences->size = i;
+
+	return uci_fences;
+
+err_put_fences:
+	while (i--)
+		gxp_fence_put(uci_fences->fences[i]);
+
+	if (ignore_fences)
+		return uci_fences;
+
+	kfree(uci_fences);
+
+	return ERR_PTR(ret);
+}
+
+static void gxp_uci_fences_release(struct kref *kref)
+{
+	struct gxp_uci_fences *uci_fences = container_of(kref, struct gxp_uci_fences, kref);
+	int i;
+
+	for (i = 0; i < uci_fences->size; i++)
+		gxp_fence_put(uci_fences->fences[i]);
+	kfree(uci_fences);
+}
+
+struct gxp_uci_fences *gxp_uci_fences_get(struct gxp_uci_fences *uci_fences)
+{
+	if (!uci_fences)
+		return NULL;
+	kref_get(&uci_fences->kref);
+	return uci_fences;
+}
+
+void gxp_uci_fences_put(struct gxp_uci_fences *uci_fences)
+{
+	if (uci_fences)
+		kref_put(&uci_fences->kref, gxp_uci_fences_release);
 }

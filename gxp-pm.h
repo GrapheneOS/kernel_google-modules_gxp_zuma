@@ -355,6 +355,16 @@ void gxp_pm_chip_set_ops(struct gxp_power_manager *mgr);
 void gxp_pm_chip_init(struct gxp_dev *gxp);
 
 /**
+ * gxp_pm_chip_exit() - Do chip-dependent power management cleanup.
+ * @gxp: The GXP device
+ *
+ * This function is called as the first step of gxp_pm_destroy().
+ * This function is expected to be implemented by chip-dependent power
+ * management files but not by gxp-pm.c.
+ */
+void gxp_pm_chip_exit(struct gxp_dev *gxp);
+
+/**
  * gxp_pm_is_blk_down() - Check weather the blk is turned off or not via @gxp->aur_status.
  * @gxp: The GXP device to check
  *

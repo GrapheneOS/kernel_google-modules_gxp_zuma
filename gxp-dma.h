@@ -20,12 +20,8 @@
 
 struct gxp_coherent_buf {
 	void *vaddr; /* kernel VA, no allocation if NULL */
-	/* TODO(b/249030390): Use standard DMA-IOMMU APIs returned address */
 	dma_addr_t dma_addr; /* DMA handle obtained from DMA-IOMMU APIs. */
-	/*
-	 * IOVA to be accessed by the device. Equal to @dma_addr when there is
-	 * no self-managed IOMMU.
-	 */
+	/* IOVA to be accessed by the device. */
 	dma_addr_t dsp_addr;
 	u64 phys_addr; /* physical address, if available */
 	size_t size;
@@ -216,7 +212,8 @@ void gxp_dma_unmap_allocated_coherent_buffer(struct gxp_dev *gxp,
  * Return: 0 on success else error code
  *
  * If the passed @domain is a null pointer, this function will only allocate a
- * buffer but not map it to the domain.
+ * buffer but not map it to the domain. In this case, the caller needs to set
+ * @buffer->dsp_addr before calling gxp_dma_map_allocated_coherent_buffer().
  * Note: Allocated buffers size may be larger than the requested size.
  */
 int gxp_dma_alloc_coherent_buf(struct gxp_dev *gxp,
@@ -239,36 +236,6 @@ int gxp_dma_alloc_coherent_buf(struct gxp_dev *gxp,
 void gxp_dma_free_coherent_buf(struct gxp_dev *gxp,
 			       struct gcip_iommu_domain *gdomain,
 			       struct gxp_coherent_buf *buf);
-
-/**
- * gxp_dma_map_sg() - Create a mapping for a scatter-gather list
- * @gxp: The GXP device to map the scatter-gather list for
- * @gdomain: The IOMMU domain to be mapped
- * @sg: The scatter-gather list of the buffer to be mapped
- * @nents: The number of entries in @sg
- * @direction: DMA direction
- * @attrs: The same set of flags used by the base DMA API
- * @gxp_dma_flags: The type of mapping to create
- *
- * Return: The number of scatter-gather entries mapped to
- */
-int gxp_dma_map_sg(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
-		   struct scatterlist *sg, int nents,
-		   enum dma_data_direction direction, unsigned long attrs,
-		   uint gxp_dma_flags);
-/**
- * gxp_dma_unmap_sg() - Unmap a scatter-gather list
- * @gxp: The GXP device the scatter-gather list was mapped for
- * @gdomain: The IOMMU domain mapping was mapped on
- * @sg: The scatter-gather list to unmap; The same one passed to
- *      `gxp_dma_map_sg()`
- * @nents: The number of entries in @sg; Same value passed to `gxp_dma_map_sg()`
- * @direction: DMA direction; Same as passed to `gxp_dma_map_sg()`
- * @attrs: The same set of flags used by the base DMA API
- */
-void gxp_dma_unmap_sg(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
-		      struct scatterlist *sg, int nents,
-		      enum dma_data_direction direction, unsigned long attrs);
 
 /**
  * gxp_dma_map_iova_sgt() - Create a mapping for a scatter-gather list, with specific IOVA.

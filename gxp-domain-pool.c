@@ -5,6 +5,7 @@
  * Copyright (C) 2022 Google LLC
  */
 
+#include <linux/bits.h>
 #include <linux/iommu.h>
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
@@ -40,7 +41,7 @@ int gxp_domain_pool_init(struct gxp_dev *gxp,
 			 ret);
 		num_pasids = 8;
 	} else {
-		num_pasids = 1 << num_bits;
+		num_pasids = BIT(num_bits);
 	}
 	/* PASID 0 is reserved for the default domain */
 	gcip_iommu_domain_pool_set_pasid_range(gxp->domain_pool, 1, num_pasids - 1);

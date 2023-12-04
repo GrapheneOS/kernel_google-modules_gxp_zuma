@@ -855,18 +855,51 @@ static void gxp_pm_on_idle(struct gxp_dev *gxp)
 	}
 }
 
+static void gxp_pm_parse_pmu_base(struct gxp_dev *gxp)
+{
+	u32 reg;
+	struct resource *r;
+	struct platform_device *pdev =
+		container_of(gxp->dev, struct platform_device, dev);
+	struct device *dev = gxp->dev;
+
+	/* TODO(b/309801480): Remove after DT updated */
+	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "pmu_aur_status");
+	if (r) {
+		gxp->power_mgr->aur_status = devm_ioremap_resource(gxp->dev, r);
+		if (IS_ERR(gxp->power_mgr->aur_status)) {
+			dev_err(gxp->dev,
+				"Failed to map PMU register base, ret=%ld\n",
+				PTR_ERR(gxp->power_mgr->aur_status));
+			gxp->power_mgr->aur_status = NULL;
+		}
+	}
+
+	/* "pmu-aur-status" DT property takes precedence over reg entry */
+	if (of_find_property(dev->of_node, "pmu-aur-status", NULL) &&
+			!of_property_read_u32_index(dev->of_node, "pmu-aur-status", 0, &reg)) {
+		gxp->power_mgr->aur_status = devm_ioremap(dev, reg, 0x4);
+		if (IS_ERR(gxp->power_mgr->aur_status)) {
+			dev_err(gxp->dev,
+					"Failed to map PMU register base, ret=%ld\n",
+					PTR_ERR(gxp->power_mgr->aur_status));
+			gxp->power_mgr->aur_status = NULL;
+		}
+	} else {
+		if (!r)
+			dev_warn(gxp->dev, "Failed to find PMU register base\n");
+	}
+}
+
 int gxp_pm_init(struct gxp_dev *gxp)
 {
 	struct gxp_power_manager *mgr;
-	struct platform_device *pdev =
-		container_of(gxp->dev, struct platform_device, dev);
 	const struct gcip_pm_args args = {
 		.dev = gxp->dev,
 		.data = gxp,
 		.power_up = gxp_pm_power_up,
 		.power_down = gxp_pm_power_down,
 	};
-	struct resource *r;
 	uint i;
 
 	mgr = devm_kzalloc(gxp->dev, sizeof(*mgr), GFP_KERNEL);
@@ -906,19 +939,7 @@ int gxp_pm_init(struct gxp_dev *gxp)
 	spin_lock_init(&gxp->power_mgr->busy_lock);
 	gxp->power_mgr->busy_count = BUSY_COUNT_OFF;
 
-	r = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-					 "pmu_aur_status");
-	if (!r) {
-		dev_warn(gxp->dev, "Failed to find PMU register base\n");
-	} else {
-		gxp->power_mgr->aur_status = devm_ioremap_resource(gxp->dev, r);
-		if (IS_ERR(gxp->power_mgr->aur_status)) {
-			dev_err(gxp->dev,
-				"Failed to map PMU register base, ret=%ld\n",
-				PTR_ERR(gxp->power_mgr->aur_status));
-			gxp->power_mgr->aur_status = NULL;
-		}
-	}
+	gxp_pm_parse_pmu_base(gxp);
 
 	pm_runtime_enable(gxp->dev);
 	gxp_soc_pm_init(gxp);
@@ -943,6 +964,7 @@ int gxp_pm_destroy(struct gxp_dev *gxp)
 	debugfs_remove(debugfs_lookup(DEBUGFS_BLK_POWERSTATE, gxp->d_entry));
 	debugfs_remove(debugfs_lookup(DEBUGFS_WAKELOCK, gxp->d_entry));
 
+	gxp_pm_chip_exit(gxp);
 	gcip_pm_destroy(mgr->pm);
 
 	gxp_soc_pm_exit(gxp);

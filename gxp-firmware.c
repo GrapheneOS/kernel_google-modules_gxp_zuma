@@ -309,9 +309,8 @@ static void gxp_program_reset_vector(struct gxp_dev *gxp, uint core,
 	gxp_write_32(gxp, GXP_CORE_REG_ALT_RESET_VECTOR(phys_core),
 		     gxp->fwbufs[core].daddr);
 	if (verbose)
-		dev_notice(gxp->dev,
-			   "New Aurora reset vector for core %u: %#llx\n",
-			   phys_core, gxp->fwbufs[core].daddr);
+		dev_notice(gxp->dev, "New Aurora reset vector for core %u: %pad\n", phys_core,
+			   &gxp->fwbufs[core].daddr);
 }
 
 static void *get_scratchpad_base(struct gxp_dev *gxp,
@@ -737,6 +736,16 @@ int gxp_fw_init(struct gxp_dev *gxp)
 
 	/* Shut BLK_AUR down again to avoid interfering with power management */
 	gxp_pm_blk_off(gxp);
+
+	/*
+	 * Acquire secure data region to make this region accessible by the
+	 * resource accessor debugfs interface.
+	 * It would be used for the test to ensure the region is properly
+	 * protected.
+	 */
+	ret = gxp_acquire_rmem_resource(gxp, &r, "gxp-secure-data-region");
+	if (ret)
+		dev_warn(gxp->dev, "Unable to acquire firmware secure data reserved memory\n");
 
 	ret = gxp_acquire_rmem_resource(gxp, &r, "gxp-fw-region");
 	if (ret) {
