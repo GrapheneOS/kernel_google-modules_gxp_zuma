@@ -455,7 +455,6 @@ struct gxp_mailbox *gxp_dci_alloc(struct gxp_mailbox_manager *mgr,
 		.queue_wrap_bit = CIRCULAR_QUEUE_WRAP_BIT,
 		.cmd_elem_size = sizeof(struct gxp_dci_command),
 		.resp_elem_size = sizeof(struct gxp_dci_response),
-		.ignore_seq_order = false,
 	};
 
 	dci = kzalloc(sizeof(*dci), GFP_KERNEL);

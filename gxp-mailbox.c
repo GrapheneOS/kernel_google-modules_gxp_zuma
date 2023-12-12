@@ -57,7 +57,6 @@ static void gxp_mailbox_consume_responses_work(struct kthread_work *work)
 		gcip_mailbox_consume_responses_work(mailbox->mbx_impl.gcip_mbx);
 		break;
 	case GXP_MBOX_TYPE_KCI:
-		gcip_kci_handle_irq(mailbox->mbx_impl.gcip_kci);
 		gxp_mcu_telemetry_irq_handler(
 			((struct gxp_kci *)mailbox->data)->mcu);
 		break;
@@ -70,8 +69,12 @@ static void gxp_mailbox_consume_responses_work(struct kthread_work *work)
  *
  * Puts the gxp_mailbox_consume_responses_work() into the system work queue.
  */
-static inline void gxp_mailbox_handle_irq(struct gxp_mailbox *mailbox)
+static void gxp_mailbox_handle_irq(struct gxp_mailbox *mailbox)
 {
+#if !GXP_USE_LEGACY_MAILBOX
+	if (mailbox->type == GXP_MBOX_TYPE_KCI)
+		gcip_kci_handle_irq(mailbox->mbx_impl.gcip_kci);
+#endif
 	kthread_queue_work(&mailbox->response_worker, &mailbox->response_work);
 }
 
@@ -145,7 +148,6 @@ static struct gxp_mailbox *create_mailbox(struct gxp_mailbox_manager *mgr,
 	mailbox->queue_wrap_bit = args->queue_wrap_bit;
 	mailbox->cmd_elem_size = args->cmd_elem_size;
 	mailbox->resp_elem_size = args->resp_elem_size;
-	mailbox->ignore_seq_order = args->ignore_seq_order;
 	gxp_mailbox_set_data(mailbox, args->data);
 
 	ret = gxp_mailbox_set_ops(mailbox, args->ops);
@@ -206,7 +208,6 @@ static int init_gcip_mailbox(struct gxp_mailbox *mailbox)
 		.timeout = MAILBOX_TIMEOUT,
 		.ops = mailbox->ops->gcip_ops.mbx,
 		.data = mailbox,
-		.ignore_seq_order = mailbox->ignore_seq_order,
 	};
 	struct gcip_mailbox *gcip_mbx;
 	int ret;

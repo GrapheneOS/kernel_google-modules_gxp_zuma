@@ -896,6 +896,9 @@ void gxp_mcu_firmware_crash_handler(struct gxp_dev *gxp,
 		}
 	}
 
+	/* Dump diagnostic information for MCU crash before resetting it. */
+	gxp_debug_dump_report_mcu_crash(gxp);
+
 	/* Waits for the MCU transiting to PG state and restart the MCU firmware. */
 	if (!wait_for_pg_state_locked(gxp, crash_type == GCIP_FW_CRASH_HW_WDG_TIMEOUT)) {
 		dev_err(gxp->dev, "Failed to transit MCU LPM state to PG");
@@ -915,6 +918,4 @@ out:
 	mutex_unlock(&mcu_fw->lock);
 out_unlock_pm:
 	gcip_pm_unlock(pm);
-	/* Report MCU crash.*/
-	gxp_debug_dump_report_mcu_crash(gxp);
 }

@@ -303,6 +303,28 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 			 spinlock_t *queue_lock, wait_queue_head_t *queue_waitq,
 			 struct gxp_eventfd *eventfd, gcip_mailbox_cmd_flags_t flags);
 
+/**
+ * gxp_uci_create_and_send_cmd() - Create and put the UCI command into the queue.
+ * @client: The client which request the UCI command.
+ * @cmd_seq: The specified sequence number used for this uci command.
+ * @flags: Same as gxp_mailbox_uci_command_ioctl.
+ * @opaque: Same as gxp_mailbox_uci_command_ioctl.
+ * @timeout_ms: Same as gxp_mailbox_uci_command_ioctl.
+ * @in_fences: Same as gxp_mailbox_uci_command_ioctl.
+ * @out_fences: Same as gxp_mailbox_uci_command_ioctl.
+ *
+ * Following tasks will be done in this function:
+ * 1. Check the client and its virtual device to see if they are still available.
+ * 2. Prepare UCI command object.
+ * 3. Prepare UCI additional info.
+ * 4. Put the UCI command into the queue.
+ *
+ * Return: 0 on success or errno on failure.
+ */
+int gxp_uci_create_and_send_cmd(struct gxp_client *client, u64 cmd_seq, u32 flags, const u8 *opaque,
+				u32 timeout_ms, struct gxp_uci_fences *in_fences,
+				struct gxp_uci_fences *out_fences);
+
 /*
  * gxp_uci_wait_async_response() - API for waiting and fetching a response from
  * MCU firmware.
@@ -331,12 +353,18 @@ void gxp_uci_fill_additional_info(struct gxp_uci_additional_info *info, uint16_t
  * @cmd_seq: The attribute of gxp_uci_cmd_work.
  * @in_fences: The fences which will signal @fence.
  * @out_fences: The fences which will be signaled by @fence.
- * @work_func: The attribute of gxp_uci_cmd_work.
+ *
+ * This function creates a deferred work which will be scheduled when @fence is signaled and will
+ * call the gxp_uci_create_and_send_cmd function.
+ * If the given fence is NULL or the fence has already been signaled, skips the register process and
+ * run gxp_uci_create_and_send_cmd() directly.
+ *
+ * Return: 0 on success or errno on failure.
  */
 int gxp_uci_cmd_work_create_and_schedule(struct dma_fence *fence, struct gxp_client *client,
 					 const struct gxp_mailbox_uci_command_ioctl *ibuf,
 					 u64 cmd_seq, struct gxp_uci_fences *in_fences,
-					 struct gxp_uci_fences *out_fences, work_func_t work_func);
+					 struct gxp_uci_fences *out_fences);
 
 /**
  * gxp_uci_cmd_work_destroy() - Destroys the UCI command work object.

@@ -153,7 +153,6 @@ struct gxp_mailbox_args {
 	u64 queue_wrap_bit;
 	u32 cmd_elem_size;
 	u32 resp_elem_size;
-	bool ignore_seq_order;
 	void *data;
 };
 
@@ -201,8 +200,6 @@ struct gxp_mailbox {
 	enum gxp_mailbox_type type;
 	struct gxp_mailbox_ops *ops;
 	void *data; /* private data */
-
-	bool ignore_seq_order; /* allow out-of-order responses if true (always false in KCI) */
 
 #if GXP_USE_LEGACY_MAILBOX
 	u64 cur_seq;

@@ -6,6 +6,7 @@
  */
 
 #include <linux/bits.h>
+#include <linux/dma-fence-array.h>
 #include <linux/fs.h>
 #include <linux/mm_types.h>
 #include <linux/rwsem.h>
@@ -22,217 +23,78 @@
 #include "gxp-uci.h"
 #include "gxp.h"
 
-#define GXP_UCI_NULL_COMMAND_FLAG BIT(0)
-
 static int gxp_ioctl_uci_command_compat(struct gxp_client *client,
 					struct gxp_mailbox_uci_command_compat_ioctl __user *argp)
 {
 	struct gxp_mailbox_uci_command_compat_ioctl ibuf;
 	struct gxp_dev *gxp = client->gxp;
 	struct gxp_mcu *mcu = gxp_mcu_of(gxp);
-	struct gxp_uci_command cmd = {};
+	u64 cmd_seq;
 	int ret;
 
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
 
-	down_read(&client->semaphore);
+	cmd_seq = gcip_mailbox_inc_seq_num(mcu->uci.mbx->mbx_impl.gcip_mbx, 1);
 
-	if (!gxp_client_has_available_vd(client, "GXP_MAILBOX_UCI_COMMAND_COMPAT")) {
-		ret = -ENODEV;
-		goto out;
-	}
-
-	/* Caller must hold BLOCK wakelock */
-	if (!client->has_block_wakelock) {
-		dev_err(gxp->dev,
-			"GXP_MAILBOX_UCI_COMMAND_COMPAT requires the client hold a BLOCK wakelock\n");
-		ret = -ENODEV;
-		goto out;
-	}
-
-	memcpy(cmd.opaque, ibuf.opaque, sizeof(cmd.opaque));
-
-	cmd.client_id = client->vd->client_id;
-
-	ret = gxp_uci_send_command(&mcu->uci, client->vd, &cmd, NULL, NULL, NULL,
-				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
-				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
-				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
-				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
-				   client->mb_eventfds[UCI_RESOURCE_ID], 0);
-
-	up_read(&client->semaphore);
-
+	ret = gxp_uci_create_and_send_cmd(client, cmd_seq, 0, ibuf.opaque, 0, NULL, NULL);
 	if (ret) {
-		dev_err(gxp->dev,
-			"Failed to enqueue mailbox command (ret=%d)\n", ret);
+		dev_err(gxp->dev, "Failed to request an UCI command (ret=%d)", ret);
 		return ret;
 	}
-	ibuf.sequence_number = cmd.seq;
+
+	ibuf.sequence_number = cmd_seq;
 
 	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
 		return -EFAULT;
 
 	return 0;
-out:
-	up_read(&client->semaphore);
-	return ret;
 }
 
-/*
- * Finds IIF fences from @fences and copies its ID to a new allocated array. The array will be
- * returned. The number of IIF fences will be returned to @iif_fences_size.
+/**
+ * polled_dma_fence_get() - Generate a dma-fence to represent all the fan-in fences.
+ * @in_fences: The pointer to the gxp_uci_fences object containing fan-in fances.
  *
- * This function will return the array of inter-IP fence IDs and the size of array will be returned
- * to @iif_fences_size. If there is no IIF in @uci_fences, it will return NULL. Otherwise, it will
- * return an errno pointer.
+ * Use dma_fence_array to handle all the fan-in fences if @in_fences->size > 1.
+ * The caller should hold the reference count of the fences in @in_fences to make sure they will not
+ * be released during the process.
+ * The output fence will acquired 1 reference count in this function either with dma_fence_get() or
+ * dma_fence_array_create().
+ *
+ * Return: The pointer to the generated dma-fence or the error pointer on error.
+ *         A NULL pointer is returned if no in-kernel fence is passed in.
  */
-static uint16_t *get_iif_fences_id(struct gxp_uci_fences *uci_fences, uint32_t *iif_fences_size)
+static struct dma_fence *polled_dma_fence_get(struct gxp_uci_fences *in_fences)
 {
-	uint16_t *iif_fences;
-	int i, j;
+	static int array_seq;
+	const int size = in_fences->size;
+	struct dma_fence_array *fence_array;
+	struct dma_fence **in_dma_fences;
+	int i;
 
-	if (!uci_fences)
+	if (!in_fences->size || in_fences->fences[0]->type != GXP_IN_KERNEL_FENCE)
 		return NULL;
 
-	*iif_fences_size = 0;
+	if (size == 1)
+		return dma_fence_get(in_fences->fences[0]->fence.ikf);
 
-	for (i = 0; i < uci_fences->size; i++) {
-		if (uci_fences->fences[i]->type == GXP_INTER_IP_FENCE)
-			(*iif_fences_size)++;
-	}
-
-	if (!(*iif_fences_size))
-		return NULL;
-
-	iif_fences = kcalloc(*iif_fences_size, sizeof(*iif_fences), GFP_KERNEL);
-	if (!iif_fences)
+	in_dma_fences = kcalloc(size, sizeof(*in_dma_fences), GFP_KERNEL);
+	if (!in_dma_fences)
 		return ERR_PTR(-ENOMEM);
 
-	for (i = 0, j = 0; i < uci_fences->size; i++) {
-		if (uci_fences->fences[i]->type == GXP_INTER_IP_FENCE)
-			iif_fences[j++] = gxp_fence_get_iif_id(uci_fences->fences[i]);
+	for (i = 0; i < size; i++)
+		in_dma_fences[i] = dma_fence_get(in_fences->fences[i]->fence.ikf);
+
+	/* fence_array will take care of the life cycle of in_dma_fences.*/
+	fence_array = dma_fence_array_create(size, in_dma_fences, dma_fence_context_alloc(1),
+					     array_seq++, false);
+	if (!fence_array) {
+		kfree(in_dma_fences);
+		/* dma_fence_array_create only returns NULL on allocation failure. */
+		return ERR_PTR(-ENOMEM);
 	}
 
-	return iif_fences;
-}
-
-/**
- * create_and_send_uci_cmd() - Create and put the UCI command into the queue.
- * @client: The client which request the UCI command.
- * @cmd_seq: The specified sequence number used for this uci command.
- * @flags: Same as gxp_mailbox_uci_command_ioctl.
- * @opaque: Same as gxp_mailbox_uci_command_ioctl.
- * @timeout_ms: Same as gxp_mailbox_uci_command_ioctl.
- * @in_fences: Same as gxp_mailbox_uci_command_ioctl.
- * @out_fences: Same as gxp_mailbox_uci_command_ioctl.
- *
- * Following tasks will be done in this function:
- * 1. Check the client and its virtual device to see if they are still available.
- * 2. Prepare UCI command object.
- * 3. Prepare UCI additional info.
- * 4. Put the UCI command into the queue.
- *
- * Return: 0 on success or errno on failure.
- */
-static int create_and_send_uci_cmd(struct gxp_client *client, u64 cmd_seq, u32 flags, u8 *opaque,
-				   u32 timeout_ms, struct gxp_uci_fences *in_fences,
-				   struct gxp_uci_fences *out_fences)
-{
-	struct gxp_dev *gxp = client->gxp;
-	struct gxp_mcu *mcu = gxp_mcu_of(gxp);
-	struct gxp_uci_command cmd = {};
-	struct gxp_uci_additional_info additional_info = {};
-	uint16_t *in_iif_fences, *out_iif_fences;
-	uint32_t in_iif_fences_size, out_iif_fences_size;
-	int ret;
-
-	down_read(&client->semaphore);
-
-	if (!gxp_client_has_available_vd(client, "GXP_MAILBOX_UCI_COMMAND")) {
-		ret = -ENODEV;
-		goto out;
-	}
-
-	/* Caller must hold BLOCK wakelock */
-	if (!client->has_block_wakelock) {
-		dev_err(gxp->dev,
-			"GXP_MAILBOX_UCI_COMMAND requires the client hold a BLOCK wakelock\n");
-		ret = -ENODEV;
-		goto out;
-	}
-
-	in_iif_fences = get_iif_fences_id(in_fences, &in_iif_fences_size);
-	if (IS_ERR(in_iif_fences)) {
-		ret = PTR_ERR(in_iif_fences);
-		goto out;
-	}
-
-	out_iif_fences = get_iif_fences_id(out_fences, &out_iif_fences_size);
-	if (IS_ERR(out_iif_fences)) {
-		ret = PTR_ERR(out_iif_fences);
-		goto err_put_in_iif_fences;
-	}
-
-	memcpy(cmd.opaque, opaque, sizeof(cmd.opaque));
-
-	cmd.client_id = client->vd->client_id;
-	cmd.seq = cmd_seq;
-
-	if (flags & GXP_UCI_NULL_COMMAND_FLAG)
-		cmd.type = NULL_COMMAND;
-
-	gxp_uci_fill_additional_info(&additional_info, in_iif_fences, in_iif_fences_size,
-				     out_iif_fences, out_iif_fences_size, timeout_ms, NULL, 0);
-
-	ret = gxp_uci_send_command(&mcu->uci, client->vd, &cmd, &additional_info, in_fences,
-				   out_fences,
-				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].wait_queue,
-				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].dest_queue,
-				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].lock,
-				   &client->vd->mailbox_resp_queues[UCI_RESOURCE_ID].waitq,
-				   client->mb_eventfds[UCI_RESOURCE_ID],
-				   GCIP_MAILBOX_CMD_FLAGS_SKIP_ASSIGN_SEQ);
-
-	kfree(out_iif_fences);
-	kfree(in_iif_fences);
-
-	if (ret)
-		dev_err(gxp->dev, "Failed to enqueue mailbox command (ret=%d)\n", ret);
-
-	goto out;
-
-err_put_in_iif_fences:
-	kfree(in_iif_fences);
-out:
-	up_read(&client->semaphore);
-	return ret;
-}
-
-/**
- * uci_cmd_work_func() - A work_func_t wrapper function to call create_and_send_uci_cmd.
- * @work: The work object which owns this function.
- */
-static void uci_cmd_work_func(struct work_struct *work)
-{
-	struct gxp_uci_cmd_work *uci_work = container_of(work, struct gxp_uci_cmd_work, work);
-	struct gxp_client *client = uci_work->client;
-	u64 cmd_seq = uci_work->cmd_seq;
-	u32 flags = uci_work->flags;
-	u8 *opaque = uci_work->opaque;
-	u32 timeout_ms = uci_work->timeout_ms;
-	struct gxp_uci_fences *in_fences = uci_work->in_fences;
-	struct gxp_uci_fences *out_fences = uci_work->out_fences;
-	int ret;
-
-	ret = create_and_send_uci_cmd(client, cmd_seq, flags, opaque, timeout_ms, in_fences,
-				      out_fences);
-	if (ret)
-		dev_err(client->gxp->dev, "Failed to process uci command in work func (ret=%d)",
-			ret);
-
-	gxp_uci_cmd_work_destroy(uci_work);
+	return &fence_array->base;
 }
 
 static int gxp_ioctl_uci_command(struct gxp_client *client,
@@ -241,7 +103,7 @@ static int gxp_ioctl_uci_command(struct gxp_client *client,
 	struct gxp_mcu *mcu = gxp_mcu_of(client->gxp);
 	struct gxp_mailbox_uci_command_ioctl ibuf;
 	struct gxp_uci_fences *in_fences, *out_fences;
-	bool in_kernel_fence_signaled = true;
+	struct dma_fence *polled_dma_fence;
 	u64 cmd_seq;
 	int ret;
 
@@ -260,35 +122,17 @@ static int gxp_ioctl_uci_command(struct gxp_client *client,
 		return PTR_ERR(out_fences);
 	}
 
-	if (in_fences->size && in_fences->fences[0]->type == GXP_IN_KERNEL_FENCE) {
-		struct dma_fence *polled_dma_fence = NULL;
-
-		/* TODO(b/264015258): Utilize dma_fence_array and set polled_dma_fence. */
-
-		ret = gxp_uci_cmd_work_create_and_schedule(polled_dma_fence, client, &ibuf, cmd_seq,
-							   in_fences, out_fences,
-							   uci_cmd_work_func);
-		/*
-		 * If @ret is -ENOENT, it means that @polled_dma_fence is already signaled and the
-		 * poll callback is not registered to the fence. We don't have to treat it as an
-		 * error and can execute the `create_and_send_uci_cmd` function directly.
-		 */
-		if (ret && ret != -ENOENT) {
-			dev_err(client->gxp->dev,
-				"Failed to create a work waiting on in-kernel fence (ret=%d)", ret);
-			goto out;
-		}
-		if (!ret)
-			in_kernel_fence_signaled = false;
-		ret = 0;
+	polled_dma_fence = polled_dma_fence_get(in_fences);
+	if (IS_ERR(polled_dma_fence)) {
+		ret = PTR_ERR(polled_dma_fence);
+		goto out;
 	}
 
-	if (!in_fences->size || in_fences->fences[0]->type != GXP_IN_KERNEL_FENCE ||
-	    in_kernel_fence_signaled) {
-		ret = create_and_send_uci_cmd(client, cmd_seq, ibuf.flags, ibuf.opaque,
-					      ibuf.timeout_ms, in_fences, out_fences);
-		if (ret)
-			goto out;
+	ret = gxp_uci_cmd_work_create_and_schedule(polled_dma_fence, client, &ibuf, cmd_seq,
+						   in_fences, out_fences);
+	if (ret) {
+		dev_err(client->gxp->dev, "Failed to request an UCI command (ret=%d)", ret);
+		goto err_put_fence;
 	}
 
 	ibuf.sequence_number = cmd_seq;
@@ -296,6 +140,14 @@ static int gxp_ioctl_uci_command(struct gxp_client *client,
 	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
 		ret = -EFAULT;
 
+err_put_fence:
+	/*
+	 * Put the reference count of the fence acqurired in polled_dma_fence_get.
+	 * If the fence is a dma_fence_array and the callback is failed to be added,
+	 * the whole object and the array it holds will be freed.
+	 * If it is a NULL pointer, it's still safe to call this function.
+	 */
+	dma_fence_put(polled_dma_fence);
 out:
 	gxp_uci_fences_put(out_fences);
 	gxp_uci_fences_put(in_fences);

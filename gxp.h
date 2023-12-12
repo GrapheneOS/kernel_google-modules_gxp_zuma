@@ -13,7 +13,7 @@
 
 /* Interface Version */
 #define GXP_INTERFACE_VERSION_MAJOR 1
-#define GXP_INTERFACE_VERSION_MINOR 21
+#define GXP_INTERFACE_VERSION_MINOR 22
 #define GXP_INTERFACE_VERSION_BUILD 0
 
 /* mmap offsets for MCU logging and tracing buffers */
@@ -891,6 +891,7 @@ struct gxp_mailbox_uci_response_ioctl {
  *  0          - A response arrived from the MCU firmware. Note that this doesn't guarantee the
  *               success of the UCI command. The runtime must refer to @error_code field to check
  *               whether there was an error from the MCU side while processing the request.
+ *
  *  -ETIMEDOUT - MCU firmware is not responding.
  */
 #define GXP_MAILBOX_UCI_RESPONSE                                               \
@@ -999,10 +1000,10 @@ struct gxp_set_device_properties_ioctl {
 
 /*
  * The reason why the device is invalidated.
- * GXP_INVALIDATED_NONE: The device is not invalidated.
- * GXP_INVALIDATED_MCU_CRASH: The device is invalidated because the MCU is broken.
- * GXP_INVALIDATED_CLIENT_CRASH: The device is invalidated because the client is broken.
- * GXP_INVALIDATED_VMBOX_RELEASE_FAILED: The vmbox is not released successfully.
+ * - GXP_INVALIDATED_NONE: The device is not invalidated.
+ * - GXP_INVALIDATED_MCU_CRASH: The device is invalidated because the MCU is broken.
+ * - GXP_INVALIDATED_CLIENT_CRASH: The device is invalidated because the client is broken.
+ * - GXP_INVALIDATED_VMBOX_RELEASE_FAILED: The vmbox is not released successfully.
  */
 #define GXP_INVALIDATED_NONE 0
 #define GXP_INVALIDATED_MCU_CRASH 1
@@ -1146,7 +1147,7 @@ struct gxp_fence_remaining_signalers_ioctl {
 	__u32 eventfd;
 	/*
 	 * Output:
-	 * The number of remaining signalers to be submiited per fence. The
+	 * The number of remaining signalers to be submitted per fence. The
 	 * order should be same with @fences.
 	 */
 	__u32 remaining_signalers[GXP_MAX_FENCES_PER_UCI_COMMAND];

@@ -36,8 +36,8 @@
  * The API needs to either be upstreamed, integrated into this driver, or disabled for 6.1
  * compatibility. For now, disable best-fit on all non-Android kernels and any GKI > 5.15.
  */
-#define HAS_IOVAD_BEST_FIT_ALGO                                                                    \
-	(LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0) &&                                          \
+#define HAS_IOVAD_BEST_FIT_ALGO                           \
+	(LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0) && \
 	 (IS_ENABLED(CONFIG_GCIP_TEST) || IS_ENABLED(CONFIG_ANDROID)))
 
 #if GCIP_HAS_IOMMU_PASID
@@ -50,24 +50,24 @@
  */
 #define GCIP_MAP_FLAGS_DMA_DIRECTION_OFFSET 0
 #define GCIP_MAP_FLAGS_DMA_DIRECTION_BIT_SIZE 2
-#define GCIP_MAP_FLAGS_DMA_DIRECTION_TO_FLAGS(dir)                                                 \
+#define GCIP_MAP_FLAGS_DMA_DIRECTION_TO_FLAGS(dir) \
 	((u64)(dir) << GCIP_MAP_FLAGS_DMA_DIRECTION_OFFSET)
 
-#define GCIP_MAP_FLAGS_DMA_COHERENT_OFFSET                                                         \
+#define GCIP_MAP_FLAGS_DMA_COHERENT_OFFSET \
 	(GCIP_MAP_FLAGS_DMA_DIRECTION_OFFSET + GCIP_MAP_FLAGS_DMA_DIRECTION_BIT_SIZE)
 #define GCIP_MAP_FLAGS_DMA_COHERENT_BIT_SIZE 1
-#define GCIP_MAP_FLAGS_DMA_COHERENT_TO_FLAGS(coherent)                                             \
+#define GCIP_MAP_FLAGS_DMA_COHERENT_TO_FLAGS(coherent) \
 	((u64)(coherent) << GCIP_MAP_FLAGS_DMA_COHERENT_OFFSET)
 
-#define GCIP_MAP_FLAGS_DMA_ATTR_OFFSET                                                             \
+#define GCIP_MAP_FLAGS_DMA_ATTR_OFFSET \
 	(GCIP_MAP_FLAGS_DMA_COHERENT_OFFSET + GCIP_MAP_FLAGS_DMA_COHERENT_BIT_SIZE)
 #define GCIP_MAP_FLAGS_DMA_ATTR_BIT_SIZE 10
 #define GCIP_MAP_FLAGS_DMA_ATTR_TO_FLAGS(attr) ((u64)(attr) << GCIP_MAP_FLAGS_DMA_ATTR_OFFSET)
 
-#define GCIP_MAP_FLAGS_RESTRICT_IOVA_OFFSET                                                        \
+#define GCIP_MAP_FLAGS_RESTRICT_IOVA_OFFSET \
 	(GCIP_MAP_FLAGS_DMA_ATTR_OFFSET + GCIP_MAP_FLAGS_DMA_ATTR_BIT_SIZE)
 #define GCIP_MAP_FLAGS_RESTRICT_IOVA_BIT_SIZE 1
-#define GCIP_MAP_FLAGS_RESTRICT_IOVA_TO_FLAGS(restrict)                                            \
+#define GCIP_MAP_FLAGS_RESTRICT_IOVA_TO_FLAGS(restrict) \
 	((u64)(restrict) << GCIP_MAP_FLAGS_RESTRICT_IOVA_OFFSET)
 
 /*
@@ -118,6 +118,9 @@ enum gcip_iommu_mapping_type {
  * @gcip_map_flags: The flags used to create the mapping, which can be encoded with
  *                  gcip_iommu_encode_gcip_map_flags() or `GCIP_MAP_FLAGS_DMA_*_TO_FLAGS` macros.
  * @owning_mm: For holding a reference to MM.
+ * @user_specified_daddr: If true, its IOVA address was specified by the user from the `*_to_iova`
+ *                        mapping functions and it won't free that when it's going to be unmapped.
+ *                        It's user's responsibility to manage the IOVA region.
  */
 struct gcip_iommu_mapping {
 	enum gcip_iommu_mapping_type type;
@@ -133,6 +136,7 @@ struct gcip_iommu_mapping {
 	 *                    buffer mapping only.
 	 */
 	struct mm_struct *owning_mm;
+	bool user_specified_daddr;
 };
 
 /*
@@ -314,57 +318,32 @@ int gcip_iommu_domain_pool_attach_domain(struct gcip_iommu_domain_pool *pool,
 void gcip_iommu_domain_pool_detach_domain(struct gcip_iommu_domain_pool *pool,
 					  struct gcip_iommu_domain *domain);
 
-/* TODO(b/302127145): Change this function to a static function. */
-/*
- * Allocates an IOVA for the scatterlist and maps it to @domain.
- *
- * @domain: GCIP IOMMU domain which manages IOVA addresses.
- * @sgl: Scatterlist to be mapped.
- * @nents: The number of entries in @sgl.
- * @gcip_map_flags: Flags indicating mapping attributes, which can be encoded with
- *                  gcip_iommu_encode_gcip_map_flags() or `GCIP_MAP_FLAGS_DMA_*_TO_FLAGS` macros.
- *
- * Returns the number of entries which are mapped to @domain. Returns 0 if it fails.
- */
-unsigned int gcip_iommu_domain_map_sg(struct gcip_iommu_domain *domain, struct scatterlist *sgl,
-				      int nents, u64 gcip_map_flags);
-
-/* TODO(b/302127145): Change this function to a static function. */
-/*
- * Unmaps an IOVA which was mapped for the scatterlist.
- *
- * @domain: GCIP IOMMU domain which manages IOVA addresses.
- * @sgl: Scatterlist to be unmapped.
- */
-void gcip_iommu_domain_unmap_sg(struct gcip_iommu_domain *domain, struct scatterlist *sgl,
-				int nents);
-
 /**
- * gcip_iommu_mapping_map_sgt(): Maps the scatter-gather table to the target IOMMU domain.
+ * gcip_iommu_domain_map_sgt(): Maps the scatter-gather table to the target IOMMU domain.
  * @domain: The domain that the sgt will be mapped to.
- * @sgt: The sg_table to be mapped.
+ * @sgt: The scatter-gather table to be mapped.
  * @gcip_map_flags: The gcip flags used to map the @sgt.
  *
- * This function will map the scatter-gather table to the target IOMMU domain.
- * sgt->nents will be updated to the number of mapped chunks.
- * The mapping information will be stored in the mapping instance.
- * The sg_table will be synced for device.
+ * This function will allocate an IOVA space and map the scatter-gather table to the address of the
+ * allocated space in the target IOMMU domain. @sgt->nents will be updated to the number of mapped
+ * chunks. Also, @sgt will be synced for the device.
  *
  * Return: The number of the entries that are mapped successfully.
  */
-unsigned int gcip_iommu_mapping_map_sgt(struct gcip_iommu_domain *domain, struct sg_table *sgt,
-					u64 *gcip_map_flags);
+unsigned int gcip_iommu_domain_map_sgt(struct gcip_iommu_domain *domain, struct sg_table *sgt,
+				       u64 *gcip_map_flags);
 
 /**
- * gcip_iommu_mapping_unmap_sgt() - Unmaps the sgt from the given domain.
+ * gcip_iommu_domain_unmap_sgt() - Unmaps the scatter-gather table from the given domain.
  * @domain: The domain that the sgt will be unmapped from.
- * @sgt: The sg_table to be unmapped.
+ * @sgt: The scatter-gather table to be unmapped.
  * @gcip_map_flags: The gcip flags used to unmap the @sgt.
  *
- * The sg_table will be unmapped and synced for cpu.
+ * The scatter-gather table will be unmapped from @domain and synced for cpu. Also, the IOVA space
+ * which was allocated from the `gcip_iommu_domain_map_sgt` function will be released.
  */
-void gcip_iommu_mapping_unmap_sgt(struct gcip_iommu_domain *domain, struct sg_table *sgt,
-				  u64 gcip_map_flags);
+void gcip_iommu_domain_unmap_sgt(struct gcip_iommu_domain *domain, struct sg_table *sgt,
+				 u64 gcip_map_flags);
 
 /*
  * Returns a default GCIP IOMMU domain.
@@ -408,6 +387,17 @@ void gcip_iommu_dmabuf_map_show(struct gcip_iommu_mapping *mapping, struct seq_f
 struct gcip_iommu_mapping *gcip_iommu_domain_map_dma_buf(struct gcip_iommu_domain *domain, int fd,
 							 u64 gcip_map_flags);
 
+/*
+ * This function basically works the same as the `gcip_iommu_domain_map_dma_buf` function but
+ * receives the target @iova to map the dma-buf. If @iova is 0, there will be no difference.
+ *
+ * Note that the passed @iova won't be freed if it was non-zero when the returned mapping is going
+ * to be unmapped. The life cycle of the given @iova must be managed by the user.
+ */
+struct gcip_iommu_mapping *gcip_iommu_domain_map_dma_buf_to_iova(struct gcip_iommu_domain *domain,
+								 int fd, dma_addr_t iova,
+								 u64 gcip_map_flags);
+
 /**
  * gcip_iommu_domain_map_buffer() - Maps the buffer to the target IOMMU domain.
  * @domain: The desired IOMMU domain where the buffer should be mapped.
@@ -430,6 +420,18 @@ struct gcip_iommu_mapping *gcip_iommu_domain_map_buffer(struct gcip_iommu_domain
 							u64 host_address, size_t size,
 							u64 gcip_map_flags,
 							struct mutex *pin_user_pages_lock);
+
+/*
+ * This function basically works the same as the `gcip_iommu_domain_map_buffer` function but
+ * receives the target @iova to map the buffer. If @iova is 0, there will be no difference.
+ *
+ * Note that the passed @iova won't be freed if it was non-zero when the returned mapping is going
+ * to be unmapped. The life cycle of the given @iova must be managed by the user.
+ */
+struct gcip_iommu_mapping *gcip_iommu_domain_map_buffer_to_iova(struct gcip_iommu_domain *domain,
+								u64 host_address, size_t size,
+								dma_addr_t iova, u64 gcip_map_flags,
+								struct mutex *pin_user_pages_lock);
 
 /**
  * gcip_iommu_mapping_unmap() - Unmaps the mapping depends on its type.

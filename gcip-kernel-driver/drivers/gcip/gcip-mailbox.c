@@ -537,7 +537,6 @@ int gcip_mailbox_init(struct gcip_mailbox *mailbox, const struct gcip_mailbox_ar
 	mailbox->resp_elem_size = args->resp_elem_size;
 	mailbox->timeout = args->timeout;
 	mailbox->cur_seq = 0;
-	mailbox->ignore_seq_order = args->ignore_seq_order;
 	gcip_mailbox_set_data(mailbox, args->data);
 
 	ret = gcip_mailbox_set_ops(mailbox, args->ops);

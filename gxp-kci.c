@@ -350,6 +350,8 @@ int gxp_kci_init(struct gxp_mcu *mcu)
 		.type = GXP_MBOX_TYPE_KCI,
 		.ops = &mbx_ops,
 		.queue_wrap_bit = CIRCULAR_QUEUE_WRAP_BIT,
+		.cmd_elem_size = sizeof(struct gcip_kci_command_element),
+		.resp_elem_size = sizeof(struct gcip_kci_response_element),
 		.data = gkci,
 	};
 

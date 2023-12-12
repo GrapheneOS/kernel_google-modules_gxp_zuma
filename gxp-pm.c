@@ -868,9 +868,8 @@ static void gxp_pm_parse_pmu_base(struct gxp_dev *gxp)
 	if (r) {
 		gxp->power_mgr->aur_status = devm_ioremap_resource(gxp->dev, r);
 		if (IS_ERR(gxp->power_mgr->aur_status)) {
-			dev_err(gxp->dev,
-				"Failed to map PMU register base, ret=%ld\n",
-				PTR_ERR(gxp->power_mgr->aur_status));
+			dev_warn(gxp->dev, "Failed to map PMU register base, ret=%ld\n",
+				 PTR_ERR(gxp->power_mgr->aur_status));
 			gxp->power_mgr->aur_status = NULL;
 		}
 	}
@@ -880,9 +879,8 @@ static void gxp_pm_parse_pmu_base(struct gxp_dev *gxp)
 			!of_property_read_u32_index(dev->of_node, "pmu-aur-status", 0, &reg)) {
 		gxp->power_mgr->aur_status = devm_ioremap(dev, reg, 0x4);
 		if (IS_ERR(gxp->power_mgr->aur_status)) {
-			dev_err(gxp->dev,
-					"Failed to map PMU register base, ret=%ld\n",
-					PTR_ERR(gxp->power_mgr->aur_status));
+			dev_warn(gxp->dev, "Failed to map PMU register base, ret=%ld\n",
+				 PTR_ERR(gxp->power_mgr->aur_status));
 			gxp->power_mgr->aur_status = NULL;
 		}
 	} else {

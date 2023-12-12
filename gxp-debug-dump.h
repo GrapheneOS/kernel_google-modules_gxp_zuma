@@ -139,6 +139,17 @@ struct gxp_lpm_registers {
 	struct gxp_lpm_psm_registers psm_regs[PSM_COUNT];
 };
 
+struct gxp_mailbox_queue_desc {
+	u16 cmd_queue_head;
+	u16 cmd_queue_tail;
+	u16 resp_queue_head;
+	u16 resp_queue_tail;
+	u32 cmd_queue_size;
+	u32 cmd_elem_size;
+	u32 resp_queue_size;
+	u32 resp_elem_size;
+};
+
 struct gxp_user_buffer {
 	u64 device_addr; /* Device address of user buffer */
 	u32 size; /* Size of user buffer */
