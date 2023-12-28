@@ -13,6 +13,8 @@
 #include "gxp-mcu-platform.h"
 #endif
 
+#include <gcip/gcip-pm.h>
+
 #define DEBUGFS_MAILBOX "mailbox"
 
 static int debugfs_mailbox_execute_cmd(void *data, u64 val)
@@ -29,6 +31,11 @@ static int debugfs_mailbox_execute_cmd(void *data, u64 val)
 	u16 cmd_code;
 	int ret;
 
+	ret = gcip_pm_get(gxp->power_mgr->pm);
+	if (ret) {
+		dev_err(gxp->dev, "Failed to power up block %d", ret);
+		return ret;
+	}
 	mutex_lock(&gxp->debugfs_client_lock);
 	client = gxp->debugfs_client;
 
@@ -84,7 +91,8 @@ static int debugfs_mailbox_execute_cmd(void *data, u64 val)
 		cmd_code = CORE_COMMAND;
 #else
 		dev_err(gxp->dev, "This platform only supports direct-mode.\n");
-		return -ENODEV;
+		ret = -ENODEV;
+		goto out;
 #endif /* GXP_HAS_MCU */
 	}
 
@@ -101,6 +109,7 @@ out:
 	if (client && client != gxp->debugfs_client)
 		gxp_client_destroy(client);
 	mutex_unlock(&gxp->debugfs_client_lock);
+	gcip_pm_put(gxp->power_mgr->pm);
 	return ret;
 }
 DEFINE_DEBUGFS_ATTRIBUTE(debugfs_mailbox_fops, NULL,

@@ -35,7 +35,7 @@
 /* Size of slice per VD. */
 #define GXP_SHARED_SLICE_SIZE SZ_32K
 /* The max number of active virtual devices. */
-#define GXP_NUM_SHARED_SLICES 7
+#define GXP_NUM_SHARED_SLICES 15
 
 /*
  * Can be coherent with AP

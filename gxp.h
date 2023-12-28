@@ -13,7 +13,7 @@
 
 /* Interface Version */
 #define GXP_INTERFACE_VERSION_MAJOR 1
-#define GXP_INTERFACE_VERSION_MINOR 22
+#define GXP_INTERFACE_VERSION_MINOR 23
 #define GXP_INTERFACE_VERSION_BUILD 0
 
 /* mmap offsets for MCU logging and tracing buffers */

@@ -140,8 +140,8 @@ int gxp_dma_init(struct gxp_dev *gxp)
 	struct gxp_dma_iommu_manager *mgr;
 	int ret;
 
-	/* GXP can only address 32-bit IOVAs */
-	ret = dma_set_mask_and_coherent(gxp->dev, DMA_BIT_MASK(32));
+	/* Remove the limit of DMA ranges. */
+	ret = dma_set_mask_and_coherent(gxp->dev, DMA_BIT_MASK(64));
 	if (ret) {
 		dev_err(gxp->dev, "Failed to set DMA mask\n");
 		return ret;

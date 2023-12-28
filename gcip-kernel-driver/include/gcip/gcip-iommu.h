@@ -103,6 +103,17 @@ enum gcip_iommu_mapping_type {
 	GCIP_IOMMU_MAPPING_DMA_BUF,
 };
 
+/* Operaters for `struct gcip_iommu_mapping`. */
+struct gcip_iommu_mapping_ops {
+	/*
+	 * Called after the corresponding mapping of @data is unmapped and released. Since its
+	 * `struct gcip_iommu_mapping` instance is released, it won't be passed to the callback.
+	 *
+	 * This callback is optional.
+	 */
+	void (*after_unmap)(void *data);
+};
+
 /**
  * struct gcip_iommu_mapping - Contains the information of sgt mapping to the domain.
  * @type: Type of the mapping.
@@ -113,14 +124,21 @@ enum gcip_iommu_mapping_type {
  *       information to the given domain received from the custom IOVA allocator.
  *       If the given domain is the default domain, the pointer will be set to the sgt received from
  *       default allocator.
- * @dir: The data direction that user tried to map.
- *       This value may be different from the one encoded in gcip_map_flags.
+ * @dir: The dma data direction may be adjusted due to the system or hardware limit.
+ *       This value is the real one that was used for mapping and should be the same as the one
+ *       encoded in gcip_map_flags.
+ *       This field should be used in revert functions and dma sync functions.
+ * @orig_dir: The data direction that the user originally tried to map.
+ *            This value may be different from the one encoded in gcip_map_flags.
+ *            This field should be used for logging to user to hide the underlying mechanisms
  * @gcip_map_flags: The flags used to create the mapping, which can be encoded with
  *                  gcip_iommu_encode_gcip_map_flags() or `GCIP_MAP_FLAGS_DMA_*_TO_FLAGS` macros.
  * @owning_mm: For holding a reference to MM.
  * @user_specified_daddr: If true, its IOVA address was specified by the user from the `*_to_iova`
  *                        mapping functions and it won't free that when it's going to be unmapped.
  *                        It's user's responsibility to manage the IOVA region.
+ * @ops: User defined operators.
+ * @data: User defined data.
  */
 struct gcip_iommu_mapping {
 	enum gcip_iommu_mapping_type type;
@@ -130,6 +148,7 @@ struct gcip_iommu_mapping {
 	uint num_pages;
 	struct sg_table *sgt;
 	enum dma_data_direction dir;
+	enum dma_data_direction orig_dir;
 	u64 gcip_map_flags;
 	/*
 	 * TODO(b/302510715): Use another wrapper struct to contain this because it is used in
@@ -137,6 +156,8 @@ struct gcip_iommu_mapping {
 	 */
 	struct mm_struct *owning_mm;
 	bool user_specified_daddr;
+	const struct gcip_iommu_mapping_ops *ops;
+	void *data;
 };
 
 /*
@@ -464,5 +485,16 @@ dma_addr_t gcip_iommu_alloc_iova(struct gcip_iommu_domain *domain, size_t size, 
  * @size: Size in bytes.
  */
 void gcip_iommu_free_iova(struct gcip_iommu_domain *domain, dma_addr_t iova, size_t size);
+
+static inline void gcip_iommu_mapping_set_ops(struct gcip_iommu_mapping *mapping,
+					      const struct gcip_iommu_mapping_ops *ops)
+{
+	mapping->ops = ops;
+}
+
+static inline void gcip_iommu_mapping_set_data(struct gcip_iommu_mapping *mapping, void *data)
+{
+	mapping->data = data;
+}
 
 #endif /* __GCIP_IOMMU_H__ */

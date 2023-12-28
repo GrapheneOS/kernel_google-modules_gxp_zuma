@@ -16,6 +16,9 @@
 
 #include "gxp-internal.h"
 
+#define GXP_MCU_BOOT_MODE_NORMAL 0
+#define GXP_MCU_BOOT_MODE_RECOVERY 1
+
 struct gxp_mcu_firmware {
 	struct gxp_dev *gxp;
 	/* resource for MCU firmware image */

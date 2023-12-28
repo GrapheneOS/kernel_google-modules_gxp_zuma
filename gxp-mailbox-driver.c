@@ -416,7 +416,13 @@ int gxp_mailbox_gcip_ops_acquire_resp_queue_lock(struct gcip_mailbox *mailbox,
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
-	mutex_lock(&gxp_mbx->resp_queue_lock);
+	*atomic = true;
+
+	if (try)
+		return spin_trylock_irqsave(&gxp_mbx->resp_queue_lock,
+					    gxp_mbx->resp_queue_lock_flags);
+
+	spin_lock_irqsave(&gxp_mbx->resp_queue_lock, gxp_mbx->resp_queue_lock_flags);
 	return 1;
 }
 
@@ -424,7 +430,7 @@ void gxp_mailbox_gcip_ops_release_resp_queue_lock(struct gcip_mailbox *mailbox)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
-	mutex_unlock(&gxp_mbx->resp_queue_lock);
+	spin_unlock_irqrestore(&gxp_mbx->resp_queue_lock, gxp_mbx->resp_queue_lock_flags);
 }
 
 void gxp_mailbox_gcip_ops_acquire_wait_list_lock(struct gcip_mailbox *mailbox,
@@ -433,7 +439,7 @@ void gxp_mailbox_gcip_ops_acquire_wait_list_lock(struct gcip_mailbox *mailbox,
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
-	mutex_lock(&gxp_mbx->wait_list_lock);
+	spin_lock_irqsave(&gxp_mbx->wait_list_lock, *flags);
 }
 
 void gxp_mailbox_gcip_ops_release_wait_list_lock(struct gcip_mailbox *mailbox,
@@ -442,7 +448,7 @@ void gxp_mailbox_gcip_ops_release_wait_list_lock(struct gcip_mailbox *mailbox,
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
-	mutex_unlock(&gxp_mbx->wait_list_lock);
+	spin_unlock_irqrestore(&gxp_mbx->wait_list_lock, flags);
 }
 
 int gxp_mailbox_gcip_ops_wait_for_cmd_queue_not_full(

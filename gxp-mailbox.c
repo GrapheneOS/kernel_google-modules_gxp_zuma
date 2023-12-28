@@ -12,6 +12,7 @@
 #include <linux/kthread.h>
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <uapi/linux/sched/types.h>
 
 #include "gxp-config.h" /* GXP_USE_LEGACY_MAILBOX */
@@ -52,15 +53,8 @@ static void gxp_mailbox_consume_responses_work(struct kthread_work *work)
 #if GXP_USE_LEGACY_MAILBOX
 	gxp_mailbox_consume_responses(mailbox);
 #else
-	switch (mailbox->type) {
-	case GXP_MBOX_TYPE_GENERAL:
-		gcip_mailbox_consume_responses_work(mailbox->mbx_impl.gcip_mbx);
-		break;
-	case GXP_MBOX_TYPE_KCI:
-		gxp_mcu_telemetry_irq_handler(
-			((struct gxp_kci *)mailbox->data)->mcu);
-		break;
-	}
+	if (mailbox->type == GXP_MBOX_TYPE_KCI)
+		gxp_mcu_telemetry_irq_handler(((struct gxp_kci *)mailbox->data)->mcu);
 #endif
 }
 
@@ -72,10 +66,15 @@ static void gxp_mailbox_consume_responses_work(struct kthread_work *work)
 static void gxp_mailbox_handle_irq(struct gxp_mailbox *mailbox)
 {
 #if !GXP_USE_LEGACY_MAILBOX
-	if (mailbox->type == GXP_MBOX_TYPE_KCI)
+	if (mailbox->type == GXP_MBOX_TYPE_KCI) {
 		gcip_kci_handle_irq(mailbox->mbx_impl.gcip_kci);
-#endif
+		kthread_queue_work(&mailbox->response_worker, &mailbox->response_work);
+	} else if (mailbox->type == GXP_MBOX_TYPE_GENERAL) {
+		gcip_mailbox_consume_responses_work(mailbox->mbx_impl.gcip_mbx);
+	}
+#else
 	kthread_queue_work(&mailbox->response_worker, &mailbox->response_work);
+#endif
 }
 
 /* Priority level for realtime worker threads */
@@ -159,7 +158,7 @@ static struct gxp_mailbox *create_mailbox(struct gxp_mailbox_manager *mgr,
 		goto err_allocate_resources;
 
 	mutex_init(&mailbox->cmd_queue_lock);
-	mutex_init(&mailbox->resp_queue_lock);
+	spin_lock_init(&mailbox->resp_queue_lock);
 	kthread_init_worker(&mailbox->response_worker);
 	mailbox->response_thread = create_response_rt_thread(
 		mailbox->gxp->dev, &mailbox->response_worker, core_id);
@@ -336,7 +335,7 @@ static int enable_mailbox(struct gxp_mailbox *mailbox)
 		return ret;
 
 	mailbox->handle_irq = gxp_mailbox_handle_irq;
-	mutex_init(&mailbox->wait_list_lock);
+	spin_lock_init(&mailbox->wait_list_lock);
 	kthread_init_work(&mailbox->response_work,
 			  gxp_mailbox_consume_responses_work);
 

@@ -227,6 +227,7 @@ gxp_uci_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 {
 	struct gxp_uci_async_response *async_resp;
 	struct mailbox_resp_queue *mailbox_resp_queue;
+	unsigned long flags;
 	int i;
 
 	if (!awaiter)
@@ -236,16 +237,16 @@ gxp_uci_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 	mailbox_resp_queue = container_of(
 		async_resp->wait_queue, struct mailbox_resp_queue, wait_queue);
 
-	spin_lock(async_resp->queue_lock);
+	spin_lock_irqsave(async_resp->queue_lock, flags);
 	if (mailbox_resp_queue->wait_queue_closed) {
-		spin_unlock(async_resp->queue_lock);
+		spin_unlock_irqrestore(async_resp->queue_lock, flags);
 		return -EIO;
 	} else {
 		async_resp->awaiter = awaiter;
 		list_add_tail(&async_resp->wait_list_entry,
 			      async_resp->wait_queue);
 	}
-	spin_unlock(async_resp->queue_lock);
+	spin_unlock_irqrestore(async_resp->queue_lock, flags);
 
 	if (async_resp->out_fences) {
 		for (i = 0; i < async_resp->out_fences->size; i++)

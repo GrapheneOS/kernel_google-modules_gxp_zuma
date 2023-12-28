@@ -7,6 +7,7 @@
 
 #include <linux/kthread.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <uapi/linux/sched/types.h>
 
 #include "gxp-dci.h"
@@ -390,7 +391,7 @@ static int gxp_dci_allocate_resources(struct gxp_mailbox *mailbox,
 
 	mailbox->resp_queue_size = MBOX_RESP_QUEUE_NUM_ENTRIES;
 	mailbox->resp_queue_head = 0;
-	mutex_init(&mailbox->resp_queue_lock);
+	spin_lock_init(&mailbox->resp_queue_lock);
 
 	/* Allocate and initialize the mailbox descriptor */
 	ret = gxp_dma_alloc_coherent_buf(mailbox->gxp, vd->domain,
