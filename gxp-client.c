@@ -78,19 +78,28 @@ void gxp_client_destroy(struct gxp_client *client)
 	}
 #endif /* HAS_TPU_EXT */
 
-	if (client->has_block_wakelock) {
-		gcip_pm_put(client->gxp->power_mgr->pm);
-		gxp_pm_update_requested_power_states(
-			gxp, client->requested_states, off_states);
-	}
-
 	if (client->vd) {
 		down_write(&gxp->vd_semaphore);
 		gxp_vd_release(client->vd);
 		up_write(&gxp->vd_semaphore);
+		client->vd = NULL;
 	}
 
 	up_read(&client->semaphore);
+
+	/*
+	 * This part should be located outside of the @client->semaphore protection to prevent the
+	 * PM lock being dependent on client->semaphore. A reverse chain already exists inside
+	 * gxp_mcu_firmware_crash_handler().
+	 *
+	 * The protection is not required because the only place that may change states related to
+	 * has_block_wakelock is ioctl(acquire/release wakelock) but as this function is only called
+	 * on releasing client, those ioctls are impossible to be called.
+	 */
+	if (client->has_block_wakelock) {
+		gcip_pm_put(client->gxp->power_mgr->pm);
+		gxp_pm_update_requested_power_states(gxp, client->requested_states, off_states);
+	}
 
 	gxp_client_put(client);
 }

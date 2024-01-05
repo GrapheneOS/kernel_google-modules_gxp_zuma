@@ -20,7 +20,6 @@ gxp-objs += \
 		gxp-domain-pool.o \
 		gxp-doorbell.o \
 		gxp-eventfd.o \
-		gxp-fence.o \
 		gxp-firmware-data.o \
 		gxp-firmware-loader.o \
 		gxp-firmware.o \

@@ -12,10 +12,11 @@
 #include <linux/rwsem.h>
 #include <linux/slab.h>
 
+#include <gcip/gcip-fence-array.h>
+#include <gcip/gcip-fence.h>
 #include <gcip/gcip-telemetry.h>
 
 #include "gxp-client.h"
-#include "gxp-fence.h"
 #include "gxp-internal.h"
 #include "gxp-mcu-fs.h"
 #include "gxp-mcu-telemetry.h"
@@ -53,7 +54,7 @@ static int gxp_ioctl_uci_command_compat(struct gxp_client *client,
 
 /**
  * polled_dma_fence_get() - Generate a dma-fence to represent all the fan-in fences.
- * @in_fences: The pointer to the gxp_uci_fences object containing fan-in fances.
+ * @in_fences: The pointer to the gcip_fence_array object containing fan-in fances.
  *
  * Use dma_fence_array to handle all the fan-in fences if @in_fences->size > 1.
  * The caller should hold the reference count of the fences in @in_fences to make sure they will not
@@ -64,7 +65,7 @@ static int gxp_ioctl_uci_command_compat(struct gxp_client *client,
  * Return: The pointer to the generated dma-fence or the error pointer on error.
  *         A NULL pointer is returned if no in-kernel fence is passed in.
  */
-static struct dma_fence *polled_dma_fence_get(struct gxp_uci_fences *in_fences)
+static struct dma_fence *polled_dma_fence_get(struct gcip_fence_array *in_fences)
 {
 	static int array_seq;
 	const int size = in_fences->size;
@@ -72,7 +73,7 @@ static struct dma_fence *polled_dma_fence_get(struct gxp_uci_fences *in_fences)
 	struct dma_fence **in_dma_fences;
 	int i;
 
-	if (!in_fences->size || in_fences->fences[0]->type != GXP_IN_KERNEL_FENCE)
+	if (!in_fences->size || !in_fences->same_type || in_fences->type != GCIP_IN_KERNEL_FENCE)
 		return NULL;
 
 	if (size == 1)
@@ -97,28 +98,61 @@ static struct dma_fence *polled_dma_fence_get(struct gxp_uci_fences *in_fences)
 	return &fence_array->base;
 }
 
+/*
+ * Returns the number of fences. If the runtime passed an invalid fence, returns an errno
+ * accordingly.
+ */
+static int get_num_fences(const int *fences)
+{
+	int i;
+	struct gcip_fence *fence;
+
+	for (i = 0; i < GXP_MAX_FENCES_PER_UCI_COMMAND; i++) {
+		if (fences[i] == GXP_FENCE_ARRAY_TERMINATION)
+			break;
+		fence = gcip_fence_fdget(fences[i]);
+		/*
+		 * TODO(b/312819593): once the runtime adopts `GXP_FENCE_ARRAY_TERMINATION` to
+		 * indicate the end of array, always returns PTR_ERR(fence).
+		 */
+		if (IS_ERR(fence))
+			return !fences[i] ? 0 : PTR_ERR(fence);
+		gcip_fence_put(fence);
+	}
+
+	return i;
+}
+
 static int gxp_ioctl_uci_command(struct gxp_client *client,
 				 struct gxp_mailbox_uci_command_ioctl __user *argp)
 {
 	struct gxp_mcu *mcu = gxp_mcu_of(client->gxp);
 	struct gxp_mailbox_uci_command_ioctl ibuf;
-	struct gxp_uci_fences *in_fences, *out_fences;
+	struct gcip_fence_array *in_fences, *out_fences;
 	struct dma_fence *polled_dma_fence;
 	u64 cmd_seq;
-	int ret;
+	int ret, num_in_fences, num_out_fences;
 
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
 
 	cmd_seq = gcip_mailbox_inc_seq_num(mcu->uci.mbx->mbx_impl.gcip_mbx, 1);
 
-	in_fences = gxp_uci_fences_create(client->gxp, ibuf.in_fences, true);
+	num_in_fences = get_num_fences(ibuf.in_fences);
+	if (num_in_fences < 0)
+		return num_in_fences;
+
+	num_out_fences = get_num_fences(ibuf.out_fences);
+	if (num_out_fences < 0)
+		return num_out_fences;
+
+	in_fences = gcip_fence_array_create(ibuf.in_fences, num_in_fences, true);
 	if (IS_ERR(in_fences))
 		return PTR_ERR(in_fences);
 
-	out_fences = gxp_uci_fences_create(client->gxp, ibuf.out_fences, false);
+	out_fences = gcip_fence_array_create(ibuf.out_fences, num_out_fences, false);
 	if (IS_ERR(out_fences)) {
-		gxp_uci_fences_put(in_fences);
+		gcip_fence_array_put(in_fences);
 		return PTR_ERR(out_fences);
 	}
 
@@ -149,8 +183,8 @@ err_put_fence:
 	 */
 	dma_fence_put(polled_dma_fence);
 out:
-	gxp_uci_fences_put(out_fences);
-	gxp_uci_fences_put(in_fences);
+	gcip_fence_array_put(out_fences);
+	gcip_fence_array_put(in_fences);
 	return ret;
 }
 
@@ -225,7 +259,7 @@ static int gxp_ioctl_create_iif_fence(struct gxp_client *client,
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
 
-	fd = gxp_fence_create_iif(client->gxp, ibuf.signaler_ip, ibuf.total_signalers);
+	fd = gcip_fence_create_iif(client->gxp->iif_mgr, ibuf.signaler_ip, ibuf.total_signalers);
 	if (fd < 0)
 		return fd;
 
@@ -242,52 +276,30 @@ gxp_ioctl_fence_remaining_signalers(struct gxp_client *client,
 				    struct gxp_fence_remaining_signalers_ioctl __user *argp)
 {
 	struct gxp_fence_remaining_signalers_ioctl ibuf;
-	struct gxp_fence **fences;
-	int i, ret;
+	struct gcip_fence_array *fences;
+	int ret, num_fences;
 
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
 
-	down_write(&client->semaphore);
+	num_fences = get_num_fences(ibuf.fences);
+	if (num_fences < 0)
+		return num_fences;
 
-	if (!gxp_client_has_available_vd(client, "GXP_FENCE_REMAINING_SIGNALERS")) {
-		ret = -ENODEV;
-		goto err_up_write;
-	}
+	fences = gcip_fence_array_create(ibuf.fences, num_fences, true);
+	if (IS_ERR(fences))
+		return PTR_ERR(fences);
 
-	fences = kcalloc(GXP_MAX_FENCES_PER_UCI_COMMAND, sizeof(*fences), GFP_KERNEL);
-	if (!fences) {
-		ret = -ENOMEM;
-		goto err_up_write;
-	}
-
-	for (i = 0; i < GXP_MAX_FENCES_PER_UCI_COMMAND; i++) {
-		if (ibuf.fences[i] == GXP_FENCE_ARRAY_TERMINATION)
-			break;
-
-		fences[i] = gxp_fence_fdget(ibuf.fences[i]);
-		if (IS_ERR(fences[i])) {
-			ret = PTR_ERR(fences[i]);
-			goto err_free_fences;
-		}
-	}
-
-	ret = gxp_fence_wait_signaler_submission(fences, i, ibuf.eventfd, ibuf.remaining_signalers);
+	ret = gcip_fence_array_wait_signaler_submission(fences, ibuf.eventfd,
+							ibuf.remaining_signalers);
 	if (ret)
-		goto err_free_fences;
-
-	kfree(fences);
-	up_write(&client->semaphore);
+		goto out;
 
 	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
-		return -EFAULT;
+		ret = -EFAULT;
 
-	return 0;
-
-err_free_fences:
-	kfree(fences);
-err_up_write:
-	up_write(&client->semaphore);
+out:
+	gcip_fence_array_put(fences);
 	return ret;
 }
 

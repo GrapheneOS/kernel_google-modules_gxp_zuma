@@ -20,6 +20,7 @@
 #include <linux/wait.h>
 
 #include <gcip/gcip-image-config.h>
+#include <gcip/gcip-iommu-reserve.h>
 
 #include "gxp-host-device-structs.h"
 #include "gxp-internal.h"
@@ -152,6 +153,8 @@ struct gxp_virtual_device {
 	 * with any MCU FW anymore regardless of its state.
 	 */
 	bool mcu_crashed;
+	/* The manager of IOMMU reserve regions. */
+	struct gcip_iommu_reserve_manager *iommu_reserve_mgr;
 };
 
 /*

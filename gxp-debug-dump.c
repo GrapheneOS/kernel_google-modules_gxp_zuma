@@ -511,7 +511,7 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 
 		/* Check that the entire user buffer is mapped */
 		if ((user_buf_vaddrs[i] + user_buf->size) >
-		    (vaddr + mapping->size +
+		    (vaddr + mapping->gcip_mapping->size +
 		     (mapping->gcip_mapping->device_address & ~PAGE_MASK))) {
 			dev_warn(gxp->dev, "%pad user buffer requested with invalid size(%#x).\n",
 				 &daddr, user_buf->size);

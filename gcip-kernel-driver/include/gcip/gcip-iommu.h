@@ -20,6 +20,7 @@
 #define __GCIP_IOMMU_H__
 
 #include <linux/device.h>
+#include <linux/dma-buf.h>
 #include <linux/dma-direction.h>
 #include <linux/iommu.h>
 #include <linux/iova.h>
@@ -303,13 +304,25 @@ struct gcip_iommu_domain *gcip_iommu_domain_pool_alloc_domain(struct gcip_iommu_
 void gcip_iommu_domain_pool_free_domain(struct gcip_iommu_domain_pool *pool,
 					struct gcip_iommu_domain *domain);
 
-/* Sets the range of valid PASIDs to be used when attaching a domain
+/*
+ * Sets the range of valid PASIDs to be used when attaching a domain
  *
  * @min: The smallest acceptable value to be assigned to an attached domain
  * @max: The largest acceptable value to be assigned to an attached domain
  */
 void gcip_iommu_domain_pool_set_pasid_range(struct gcip_iommu_domain_pool *pool, ioasid_t min,
 					    ioasid_t max);
+
+/*
+ * Returns the number of PASIDs can be used previously set by
+ * gcip_iommu_domain_pool_set_pasid_range().
+ *
+ * @pool: IOMMU domain pool.
+ */
+static inline int gcip_iommu_domain_pool_get_num_pasid(struct gcip_iommu_domain_pool *pool)
+{
+	return pool->max_pasid - pool->min_pasid + 1;
+}
 
 /*
  * Attaches a GCIP IOMMU domain and sets the obtained PASID
@@ -393,7 +406,7 @@ void gcip_iommu_dmabuf_map_show(struct gcip_iommu_mapping *mapping, struct seq_f
 /**
  * gcip_iommu_domain_map_dma_buf() - Maps the DMA buffer to the target IOMMU domain.
  * @domain: The desired IOMMU domain where the DMA buffer should be mapped.
- * @fd: The file descripter which will be used to retrieved dma_buf.
+ * @dmabuf: The dma_buf to map to @domain.
  * @gcip_map_flags: The flags used to create the mapping, which can be encoded with
  *                  gcip_iommu_encode_gcip_map_flags() or `GCIP_MAP_FLAGS_DMA_*_TO_FLAGS` macros.
  *
@@ -405,7 +418,8 @@ void gcip_iommu_dmabuf_map_show(struct gcip_iommu_mapping *mapping, struct seq_f
  * Return: The mapping of the desired DMA buffer with type GCIP_IOMMU_MAPPING_DMA_BUF
  *         or an error pointer on failure.
  */
-struct gcip_iommu_mapping *gcip_iommu_domain_map_dma_buf(struct gcip_iommu_domain *domain, int fd,
+struct gcip_iommu_mapping *gcip_iommu_domain_map_dma_buf(struct gcip_iommu_domain *domain,
+							 struct dma_buf *dmabuf,
 							 u64 gcip_map_flags);
 
 /*
@@ -416,7 +430,8 @@ struct gcip_iommu_mapping *gcip_iommu_domain_map_dma_buf(struct gcip_iommu_domai
  * to be unmapped. The life cycle of the given @iova must be managed by the user.
  */
 struct gcip_iommu_mapping *gcip_iommu_domain_map_dma_buf_to_iova(struct gcip_iommu_domain *domain,
-								 int fd, dma_addr_t iova,
+								 struct dma_buf *dmabuf,
+								 dma_addr_t iova,
 								 u64 gcip_map_flags);
 
 /**

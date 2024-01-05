@@ -37,9 +37,9 @@ int gxp_domain_pool_init(struct gxp_dev *gxp,
 	ret = of_property_read_u32(gxp->dev->of_node, "pasid-num-bits", &num_bits);
 	if (ret || num_bits > 31) {
 		/* TODO(b/285949227) remove fallback once device-trees are updated */
-		dev_warn(gxp->dev, "Failed to fetch pasid-num-bits, defaulting to 8 PASIDs (%d)\n",
-			 ret);
-		num_pasids = 8;
+		dev_warn(gxp->dev, "Failed to fetch pasid-num-bits, defaulting to %d PASIDs (%d)\n",
+			 GXP_DEFAULT_NUM_PASIDS, ret);
+		num_pasids = GXP_DEFAULT_NUM_PASIDS;
 	} else {
 		num_pasids = BIT(num_bits);
 	}

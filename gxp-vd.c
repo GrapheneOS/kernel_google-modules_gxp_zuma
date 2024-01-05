@@ -16,6 +16,7 @@
 
 #include <gcip/gcip-alloc-helper.h>
 #include <gcip/gcip-image-config.h>
+#include <gcip/gcip-iommu-reserve.h>
 
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
@@ -665,6 +666,17 @@ static int gxp_detach_mmu_domain(struct gxp_dev *gxp, struct gxp_virtual_device 
 }
 #endif /* GXP_MMU_REQUIRE_ATTACH */
 
+
+static void gxp_vd_iommu_reserve_manager_unmap(struct gcip_iommu_reserve_manager *mgr,
+					       struct gcip_iommu_mapping *mapping, void *data)
+{
+	gxp_vd_mapping_remove(mgr->data, data);
+}
+
+static const struct gcip_iommu_reserve_manager_ops iommu_reserve_manager_ops = {
+	.unmap = gxp_vd_iommu_reserve_manager_unmap,
+};
+
 struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 					   u16 requested_cores)
 {
@@ -766,10 +778,19 @@ struct gxp_virtual_device *gxp_vd_allocate(struct gxp_dev *gxp,
 	if (err)
 		goto error_unmap_core_telemetry_buffer;
 
+	vd->iommu_reserve_mgr =
+		gcip_iommu_reserve_manager_create(vd->domain, &iommu_reserve_manager_ops, vd);
+	if (IS_ERR(vd->iommu_reserve_mgr)) {
+		err = PTR_ERR(vd->iommu_reserve_mgr);
+		goto error_unmap_debug_dump_buffer;
+	}
+
 	trace_gxp_vd_allocate_end(vd->vdid);
 
 	return vd;
 
+error_unmap_debug_dump_buffer:
+	unmap_debug_dump_buffer(gxp, vd);
 error_unmap_core_telemetry_buffer:
 	unmap_core_telemetry_buffers(gxp, vd, vd->core_list);
 error_unmap_fw_data:
@@ -818,6 +839,7 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 		mutex_unlock(&gxp->secure_vd_lock);
 	}
 
+	gcip_iommu_reserve_manager_retire(vd->iommu_reserve_mgr);
 	unmap_debug_dump_buffer(gxp, vd);
 	unmap_core_telemetry_buffers(gxp, vd, core_list);
 	unmap_fw_image(gxp, vd);
@@ -1373,8 +1395,12 @@ void gxp_vd_mapping_remove_locked(struct gxp_virtual_device *vd, struct gxp_mapp
 {
 	lockdep_assert_held_write(&vd->mappings_semaphore);
 
+	if (RB_EMPTY_NODE(&map->node))
+		return;
+
 	/* Drop the mapping from this virtual device's records */
 	rb_erase(&map->node, &vd->mappings_root);
+	RB_CLEAR_NODE(&map->node);
 
 	/* Release the reference obtained in gxp_vd_mapping_store() */
 	gxp_mapping_put(map);
@@ -1384,7 +1410,8 @@ static bool is_device_address_in_mapping(struct gxp_mapping *mapping,
 					 dma_addr_t device_address)
 {
 	return ((device_address >= mapping->gcip_mapping->device_address) &&
-		(device_address < (mapping->gcip_mapping->device_address + mapping->size)));
+		(device_address <
+		 (mapping->gcip_mapping->device_address + mapping->gcip_mapping->size)));
 }
 
 static struct gxp_mapping *

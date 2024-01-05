@@ -11,10 +11,11 @@
 #include <linux/kref.h>
 #include <linux/kthread.h>
 
+#include <gcip/gcip-fence-array.h>
+#include <gcip/gcip-fence.h>
 #include <gcip/gcip-mailbox.h>
 
 #include "gxp-client.h"
-#include "gxp-fence.h"
 #include "gxp-internal.h"
 #include "gxp-mailbox.h"
 #include "gxp-vd.h"
@@ -100,8 +101,8 @@ struct gxp_uci_cmd_work {
 	u32 flags;
 	u8 opaque[GXP_UCI_CMD_OPAQUE_SIZE];
 	u32 timeout_ms;
-	struct gxp_uci_fences *in_fences;
-	struct gxp_uci_fences *out_fences;
+	struct gcip_fence_array *in_fences;
+	struct gcip_fence_array *out_fences;
 };
 
 /*
@@ -175,15 +176,6 @@ struct gxp_uci_additional_info {
 	uint8_t *runtime_additional_info;
 };
 
-struct gxp_uci_fences {
-	/* Fences. */
-	struct gxp_fence *fences[GXP_MAX_FENCES_PER_UCI_COMMAND];
-	/* The number of fences. */
-	int size;
-	/* Refcount. */
-	struct kref kref;
-};
-
 struct gxp_uci_response {
 	/* sequence number, should match the corresponding command */
 	uint64_t seq;
@@ -240,9 +232,9 @@ struct gxp_uci_async_response {
 	/* Additional info buffer. */
 	struct gxp_mapped_resource additional_info_buf;
 	/* In-fences. */
-	struct gxp_uci_fences *in_fences;
+	struct gcip_fence_array *in_fences;
 	/* Out-fences. */
-	struct gxp_uci_fences *out_fences;
+	struct gcip_fence_array *out_fences;
 };
 
 struct gxp_uci_wait_list {
@@ -298,7 +290,7 @@ void gxp_uci_exit(struct gxp_uci *uci);
 int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
 			 struct gxp_uci_command *cmd,
 			 struct gxp_uci_additional_info *additional_info,
-			 struct gxp_uci_fences *in_fences, struct gxp_uci_fences *out_fences,
+			 struct gcip_fence_array *in_fences, struct gcip_fence_array *out_fences,
 			 struct list_head *wait_queue, struct list_head *resp_queue,
 			 spinlock_t *queue_lock, wait_queue_head_t *queue_waitq,
 			 struct gxp_eventfd *eventfd, gcip_mailbox_cmd_flags_t flags);
@@ -322,8 +314,8 @@ int gxp_uci_send_command(struct gxp_uci *uci, struct gxp_virtual_device *vd,
  * Return: 0 on success or errno on failure.
  */
 int gxp_uci_create_and_send_cmd(struct gxp_client *client, u64 cmd_seq, u32 flags, const u8 *opaque,
-				u32 timeout_ms, struct gxp_uci_fences *in_fences,
-				struct gxp_uci_fences *out_fences);
+				u32 timeout_ms, struct gcip_fence_array *in_fences,
+				struct gcip_fence_array *out_fences);
 
 /*
  * gxp_uci_wait_async_response() - API for waiting and fetching a response from
@@ -363,8 +355,8 @@ void gxp_uci_fill_additional_info(struct gxp_uci_additional_info *info, uint16_t
  */
 int gxp_uci_cmd_work_create_and_schedule(struct dma_fence *fence, struct gxp_client *client,
 					 const struct gxp_mailbox_uci_command_ioctl *ibuf,
-					 u64 cmd_seq, struct gxp_uci_fences *in_fences,
-					 struct gxp_uci_fences *out_fences);
+					 u64 cmd_seq, struct gcip_fence_array *in_fences,
+					 struct gcip_fence_array *out_fences);
 
 /**
  * gxp_uci_cmd_work_destroy() - Destroys the UCI command work object.
@@ -373,25 +365,5 @@ int gxp_uci_cmd_work_create_and_schedule(struct dma_fence *fence, struct gxp_cli
  * The reference count of the client has to be decreased by one.
  */
 void gxp_uci_cmd_work_destroy(struct gxp_uci_cmd_work *work);
-
-/*
- * Gets the fence objects from fence FD array, @fences. If @same_type is true, the type of fences
- * must be the same.
- *
- * Returns `struct gxp_uci_fences` instance which contains the fence objects. Otherwise, returns an
- * errno pointer.
- *
- * Note that the returned instance will be released when its refcount becomes 0.
- */
-struct gxp_uci_fences *gxp_uci_fences_create(struct gxp_dev *gxp, int *fences, bool same_type);
-
-/* Increments the refcount of @uci_fences. */
-struct gxp_uci_fences *gxp_uci_fences_get(struct gxp_uci_fences *uci_fences);
-
-/*
- * Decrements the refcount of @uci_fences. If it becomes 0, it will release the refcount of the
- * fences which it is referring to.
- */
-void gxp_uci_fences_put(struct gxp_uci_fences *uci_fences);
 
 #endif /* __GXP_UCI_H__ */

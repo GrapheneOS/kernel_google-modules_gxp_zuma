@@ -15,6 +15,8 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 
+#include <gcip/gcip-iommu-reserve.h>
+
 #include "gxp-client.h"
 #include "gxp-debug-dump.h"
 #include "gxp-dma.h"
@@ -52,7 +54,8 @@ void gxp_mapping_iova_log(struct gxp_client *client, struct gxp_mapping *map,
 	}
 
 	dev_info(dev, "iova_log: %s, %s, %d, %d, %#llx, %pad, %zu", op, buf_type, client->pid,
-		 client->tgid, map->host_address, &map->gcip_mapping->device_address, map->size);
+		 client->tgid, map->host_address, &map->gcip_mapping->device_address,
+		 map->gcip_mapping->size);
 }
 
 /* Destructor for a mapping created with `gxp_mapping_create()` */
@@ -73,10 +76,10 @@ static void destroy_mapping(struct gxp_mapping *mapping)
 	trace_gxp_mapping_destroy_end(device_address, size);
 }
 
-struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
-				       struct gcip_iommu_domain *domain,
-				       u64 user_address, size_t size, u32 flags,
-				       enum dma_data_direction dir)
+struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp, struct gcip_iommu_reserve_manager *mgr,
+				       struct gcip_iommu_domain *domain, u64 user_address,
+				       size_t size, u32 flags, enum dma_data_direction dir,
+				       dma_addr_t iova_hint)
 {
 	struct gxp_mapping *mapping;
 	int ret;
@@ -94,10 +97,16 @@ struct gxp_mapping *gxp_mapping_create(struct gxp_dev *gxp,
 	mapping->destructor = destroy_mapping;
 	mapping->host_address = user_address;
 	mapping->gxp = gxp;
-	mapping->size = size;
 	mapping->gxp_dma_flags = flags;
-	mapping->gcip_mapping = gcip_iommu_domain_map_buffer(
-		domain, user_address, size, gcip_map_flags, &gxp->pin_user_pages_lock);
+
+	if (!iova_hint)
+		mapping->gcip_mapping = gcip_iommu_domain_map_buffer(
+			domain, user_address, size, gcip_map_flags, &gxp->pin_user_pages_lock);
+	else
+		mapping->gcip_mapping = gcip_iommu_reserve_map_buffer(mgr, user_address, size,
+								      gcip_map_flags,
+								      &gxp->pin_user_pages_lock,
+								      iova_hint, mapping);
 	if (IS_ERR(mapping->gcip_mapping)) {
 		ret = PTR_ERR(mapping->gcip_mapping);
 		dev_err(gxp->dev, "Failed to map user buffer (ret=%d)\n", ret);
@@ -156,7 +165,7 @@ int gxp_mapping_sync(struct gxp_mapping *mapping, u32 offset, u32 size,
 	 * - offset + size does not overflow (offset + size > offset)
 	 * - the mapped range falls within [0 : mapping->size]
 	 */
-	if (offset + size <= offset || offset + size > mapping->size) {
+	if (offset + size <= offset || offset + size > mapping->gcip_mapping->size) {
 		ret = -EINVAL;
 		goto out;
 	}

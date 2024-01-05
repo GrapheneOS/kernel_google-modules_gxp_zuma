@@ -12,6 +12,9 @@
 
 #include "gxp-dma.h"
 
+/* Default number of PASIDs if it's not configured. */
+#define GXP_DEFAULT_NUM_PASIDS 8
+
 /*
  * Initializes a domain pool.
  *

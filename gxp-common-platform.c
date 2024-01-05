@@ -24,6 +24,7 @@
 #include <linux/uidgid.h>
 
 #include <gcip/gcip-dma-fence.h>
+#include <gcip/gcip-fence.h>
 #include <gcip/gcip-pm.h>
 #include <gcip/gcip-resource-accessor.h>
 
@@ -35,7 +36,6 @@
 #include "gxp-dma.h"
 #include "gxp-dmabuf.h"
 #include "gxp-domain-pool.h"
-#include "gxp-fence.h"
 #include "gxp-firmware.h"
 #include "gxp-firmware-data.h"
 #include "gxp-firmware-loader.h"
@@ -233,10 +233,9 @@ static int gxp_ioctl_map_buffer(struct gxp_client *client, struct gxp_map_ioctl 
 		goto out;
 	}
 
-	map = gxp_mapping_create(gxp, client->vd->domain, ibuf.host_address,
-				 ibuf.size,
-				 ibuf.flags,
-				 mapping_flags_to_dma_dir(ibuf.flags));
+	map = gxp_mapping_create(gxp, client->vd->iommu_reserve_mgr, client->vd->domain,
+				 ibuf.host_address, ibuf.size, ibuf.flags,
+				 mapping_flags_to_dma_dir(ibuf.flags), ibuf.device_address);
 	if (IS_ERR(map)) {
 		ret = PTR_ERR(map);
 		dev_err(gxp->dev, "Failed to create mapping (ret=%d)\n", ret);
@@ -537,6 +536,8 @@ static int gxp_ioctl_get_specs(struct gxp_client *client, struct gxp_specs_ioctl
 		.secure_telemetry_buffer_size =
 			(u8)(SECURE_CORE_TELEMETRY_BUFFER_SIZE /
 			     GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE),
+		.max_vd_allocation = GXP_NUM_SHARED_SLICES,
+		.max_vd_activation = gcip_iommu_domain_pool_get_num_pasid(gxp->domain_pool),
 		.memory_per_core = client->gxp->memory_per_core,
 	};
 
@@ -1237,7 +1238,8 @@ static int gxp_ioctl_map_dmabuf(struct gxp_client *client, struct gxp_map_dmabuf
 		goto out_unlock;
 	}
 
-	mapping = gxp_dmabuf_map(gxp, client->vd->domain, ibuf.dmabuf_fd, ibuf.flags);
+	mapping = gxp_dmabuf_map(gxp, client->vd->iommu_reserve_mgr, client->vd->domain,
+				 ibuf.dmabuf_fd, ibuf.flags, ibuf.device_address);
 	if (IS_ERR(mapping)) {
 		ret = PTR_ERR(mapping);
 		dev_err(gxp->dev, "Failed to map dma-buf (ret=%d)\n", ret);
@@ -1537,18 +1539,18 @@ static int gxp_ioctl_signal_sync_fence(struct gxp_signal_sync_fence_data __user 
 static int gxp_ioctl_sync_fence_status(struct gxp_sync_fence_status __user *datap)
 {
 	struct gxp_sync_fence_status data;
-	struct gxp_fence *fence;
+	struct gcip_fence *fence;
 	int ret = 0;
 
 	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
 		return -EFAULT;
 
-	fence = gxp_fence_fdget(data.fence);
+	fence = gcip_fence_fdget(data.fence);
 	if (IS_ERR(fence))
 		return PTR_ERR(fence);
 
-	data.status = gxp_fence_get_status(fence);
-	gxp_fence_put(fence);
+	data.status = gcip_fence_get_status(fence);
+	gcip_fence_put(fence);
 
 	if (copy_to_user((void __user *)datap, &data, sizeof(data)))
 		ret = -EFAULT;
@@ -1634,6 +1636,70 @@ static int gxp_ioctl_get_invalidated_reason(struct gxp_client *client, __u32 __u
 		return -EFAULT;
 
 	return 0;
+}
+
+static int gxp_ioctl_reserve_iova_region(struct gxp_client *client,
+					 struct gxp_reserve_iova_region_ioctl __user *argp)
+{
+	struct gxp_reserve_iova_region_ioctl ibuf;
+	int ret;
+
+	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
+		return -EFAULT;
+
+	down_write(&client->semaphore);
+
+	if (!gxp_client_has_available_vd(client, "GXP_RESERVE_IOVA_REGION")) {
+		ret = -ENODEV;
+		goto err_out;
+	}
+
+	if (!ibuf.size) {
+		ret = -EINVAL;
+		goto err_out;
+	}
+
+	ibuf.device_address =
+		gcip_iommu_reserve_region_create(client->vd->iommu_reserve_mgr, ibuf.size, 0);
+	if (!ibuf.device_address) {
+		ret = -ENOSPC;
+		goto err_out;
+	}
+
+	up_write(&client->semaphore);
+
+	if (copy_to_user(argp, &ibuf, sizeof(ibuf))) {
+		/* The reserved region will be released when @client->vd is being destroyed. */
+		return -EFAULT;
+	}
+
+	return 0;
+
+err_out:
+	up_write(&client->semaphore);
+	return ret;
+}
+
+static int gxp_ioctl_retire_iova_region(struct gxp_client *client,
+					struct gxp_reserve_iova_region_ioctl __user *argp)
+{
+	struct gxp_reserve_iova_region_ioctl ibuf;
+	int ret;
+
+	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
+		return -EFAULT;
+
+	down_write(&client->semaphore);
+
+	if (!gxp_client_has_available_vd(client, "GXP_RETIRE_IOVA_REGION")) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	ret = gcip_iommu_reserve_region_retire(client->vd->iommu_reserve_mgr, ibuf.device_address);
+out:
+	up_write(&client->semaphore);
+	return ret;
 }
 
 static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
@@ -1738,6 +1804,12 @@ static long gxp_ioctl(struct file *file, uint cmd, ulong arg)
 		break;
 	case GXP_GET_INVALIDATED_REASON:
 		ret = gxp_ioctl_get_invalidated_reason(client, argp);
+		break;
+	case GXP_RESERVE_IOVA_REGION:
+		ret = gxp_ioctl_reserve_iova_region(client, argp);
+		break;
+	case GXP_RETIRE_IOVA_REGION:
+		ret = gxp_ioctl_retire_iova_region(client, argp);
 		break;
 	default:
 		ret = -ENOTTY; /* unknown command */

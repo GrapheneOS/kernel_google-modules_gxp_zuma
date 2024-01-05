@@ -13,7 +13,7 @@
 
 /* Interface Version */
 #define GXP_INTERFACE_VERSION_MAJOR 1
-#define GXP_INTERFACE_VERSION_MINOR 23
+#define GXP_INTERFACE_VERSION_MINOR 26
 #define GXP_INTERFACE_VERSION_BUILD 0
 
 /* mmap offsets for MCU logging and tracing buffers */
@@ -83,7 +83,20 @@ struct gxp_map_ioctl {
 	 *   [31:3]  - RESERVED
 	 */
 	__u32 flags;
-	__u64 device_address; /* returned device address */
+	/*
+	 * - GXP_MAP_BUFFER (Input / Output):
+	 * If the value is 0, the buffer will be mapped to any free location of
+	 * the unreserved region and its device address will be returned to this
+	 * field.
+	 *
+	 * If the value is non-zero, the buffer will be mapped to the passed
+	 * specific address. The user must reserve an IOVA region which can map
+	 * the buffer to the address first. (See GXP_RESERVE_IOVA_REGION)
+	 *
+	 * - GXP_UNMAP_BUFFER (Input):
+	 * The device address of the buffer to be unmapped.
+	 */
+	__u64 device_address;
 };
 
 /*
@@ -209,8 +222,16 @@ struct gxp_specs_ioctl {
 	 * units of GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE.
 	 */
 	__u8 secure_telemetry_buffer_size;
+	/*
+	 * The number of virtual devices can be allocated at the same time.
+	 */
+	__u8 max_vd_allocation;
+	/*
+	 * The number of virtual devices can acquire wakelock at the same time.
+	 */
+	__u8 max_vd_activation;
 	/* Deprecated fields that should be ignored */
-	__u8 reserved[8];
+	__u8 reserved[6];
 	/*
 	 * Amount of "tightly-coupled memory" or TCM available to each core.
 	 * The value returned will be in kB, or 0 if the value was not
@@ -486,11 +507,17 @@ struct gxp_map_dmabuf_ioctl {
 	 */
 	__u32 flags;
 	/*
-	 * Device address the dmabuf is mapped to.
-	 * - GXP_MAP_DMABUF uses this field to return the address the dma-buf
-	 *   can be accessed from by the device.
-	 * - GXP_UNMAP_DMABUF expects this field to contain the value from the
-	 *   mapping call, and uses it to determine which dma-buf to unmap.
+	 * - GXP_MAP_DMABUF (Input / Output):
+	 * If the value is 0, the dma-buf will be mapped to any free location of
+	 * the unreserved region and its device address will be returned to this
+	 * field.
+	 *
+	 * If the value is non-zero, the dma-buf will be mapped to the passed
+	 * specific address. The user must reserve an IOVA region which can map
+	 * the dma-buf to the address first. (See GXP_RESERVE_IOVA_REGION)
+	 *
+	 * - GXP_UNMAP_DMABUF (Input):
+	 * The device address of the dma-buf to be unmapped.
 	 */
 	__u64 device_address;
 };
@@ -1119,6 +1146,8 @@ struct gxp_create_iif_fence_ioctl {
 /*
  * The ioctl won't register @eventfd and will simply return the number of remaining signalers of
  * each fence. Must be synced with IIF driver.
+ *
+ * The value must be synced with `GCIP_FENCE_REMAINING_SIGNALERS_NO_REGISTER_EVENTFD`.
  */
 #define GXP_FENCE_REMAINING_SIGNALERS_NO_REGISTER_EVENTFD (~0u)
 
@@ -1158,10 +1187,61 @@ struct gxp_fence_remaining_signalers_ioctl {
  * If all signalers have been submitted, the runtime is expected to send UCI
  * commands right away. Otherwise, it will listen the eventfd to wait signaler
  * submission to be finished.
- *
- * The client must have allocated a virtual device.
  */
 #define GXP_FENCE_REMAINING_SIGNALERS                                          \
 	_IOWR(GXP_IOCTL_BASE, 41, struct gxp_fence_remaining_signalers_ioctl)
+
+struct gxp_reserve_iova_region_ioctl {
+	/*
+	 * Input (GXP_RESERVE_IOVA_REGION):
+	 * The size of region to reserve. It should be page-aligned.
+	 */
+	__u64 size;
+	/*
+	 * Output (GXP_RESERVE_IOVA_REGION):
+	 * The start IOVA address of the reserved region.
+	 *
+	 * Input (GXP_RETIRE_IOVA_REGION):
+	 * The start IOVA address of the region to be retired.
+	 */
+	__u64 device_address;
+};
+
+/*
+ * Reserves an IOVA region from the virtual device's IOMMU domain.
+ *
+ * The runtime can use `GXP_MAP_{BUFFER,DMABUF}` ioctls with specifying
+ * the address inside of the reserved region to map to @device_address
+ * field of those ioctl.
+ *
+ * The reserved region can be returned using `GXP_RETIRE_IOVA_REGION` ioctl.
+ * Otherwise, the regions will be returned when the virtual device is going to
+ * be destroyed.
+ *
+ * The client must have allocated a virtual device.
+ */
+#define GXP_RESERVE_IOVA_REGION                                                \
+	_IOWR(GXP_IOCTL_BASE, 42, struct gxp_reserve_iova_region_ioctl)
+
+/*
+ * Retires the reserved IOVA region.
+ *
+ * If there are buffers or dma-bufs which are not yet unmapped from the region,
+ * this ioctl will try to unmap all of them. If all mappings have been unmapped
+ * normally, it will return the reserved region eventually.
+ *
+ * However, if there are mapping(s) which are still accessed by other threads
+ * by the race condition and are not unmapped even after this ioctl, the region
+ * will be returned later once all mappings are not in use.
+ *
+ * The runtime must not map any buffers/dma-bufs to the retired region and not
+ * access the mappings of the region after this ioctl is called.
+ *
+ * Only the @device_address field will be used.
+ *
+ * The client must have allocated a virtual device.
+ */
+#define GXP_RETIRE_IOVA_REGION                                                 \
+	_IOW(GXP_IOCTL_BASE, 43, struct gxp_reserve_iova_region_ioctl)
 
 #endif /* __GXP_H__ */
