@@ -11,6 +11,7 @@
 #include <linux/slab.h>
 #include <uapi/linux/sched/types.h>
 
+#include <gcip/iif/iif.h>
 #include <gcip/gcip-fence-array.h>
 #include <gcip/gcip-fence.h>
 
@@ -231,6 +232,7 @@ gxp_uci_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 	struct gxp_uci_async_response *async_resp;
 	struct mailbox_resp_queue *mailbox_resp_queue;
 	unsigned long flags;
+	int ret;
 
 	if (!awaiter)
 		return 0;
@@ -240,6 +242,7 @@ gxp_uci_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 		async_resp->wait_queue, struct mailbox_resp_queue, wait_queue);
 
 	spin_lock_irqsave(async_resp->queue_lock, flags);
+
 	if (mailbox_resp_queue->wait_queue_closed) {
 		spin_unlock_irqrestore(async_resp->queue_lock, flags);
 		return -EIO;
@@ -248,12 +251,17 @@ gxp_uci_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 		list_add_tail(&async_resp->wait_list_entry,
 			      async_resp->wait_queue);
 	}
+
+	ret = gcip_fence_array_submit_waiter_and_signaler(async_resp->in_fences,
+							  async_resp->out_fences);
+	if (ret) {
+		dev_err(mailbox->dev, "Failed to submit waiter or signaler to fences, ret=%d", ret);
+		list_del_init(&async_resp->wait_list_entry);
+	}
+
 	spin_unlock_irqrestore(async_resp->queue_lock, flags);
 
-	gcip_fence_array_submit_signaler(async_resp->out_fences);
-	gcip_fence_array_submit_waiter(async_resp->in_fences);
-
-	return 0;
+	return ret;
 }
 
 /*
@@ -678,15 +686,18 @@ int gxp_uci_create_and_send_cmd(struct gxp_client *client, u64 cmd_seq, u32 flag
 		goto out;
 	}
 
-	in_iif_fences = gcip_fence_array_get_iif_id(in_fences, &in_iif_fences_size);
+	in_iif_fences = gcip_fence_array_get_iif_id(in_fences, &in_iif_fences_size, false, 0);
 	if (IS_ERR(in_iif_fences)) {
 		ret = PTR_ERR(in_iif_fences);
+		dev_err(gxp->dev, "Failed to get IIF IDs from in-fences, ret=%d", ret);
 		goto out;
 	}
 
-	out_iif_fences = gcip_fence_array_get_iif_id(out_fences, &out_iif_fences_size);
+	out_iif_fences =
+		gcip_fence_array_get_iif_id(out_fences, &out_iif_fences_size, true, IIF_IP_DSP);
 	if (IS_ERR(out_iif_fences)) {
 		ret = PTR_ERR(out_iif_fences);
+		dev_err(gxp->dev, "Failed to get IIF IDs from out-fences, ret=%d", ret);
 		goto err_put_in_iif_fences;
 	}
 
@@ -746,7 +757,7 @@ int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
 	if (timeout <= 0) {
 		spin_unlock_irq(&uci_resp_queue->lock);
 		/* unusual case - this only happens when there is no command pushed */
-		return -ETIMEDOUT;
+		return -ENOENT;
 	}
 	async_resp = list_first_entry(&uci_resp_queue->dest_queue,
 				      struct gxp_uci_async_response,
@@ -767,6 +778,14 @@ int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
 			dev_err(async_resp->uci->gxp->dev,
 				"Completed response with an error from the firmware side %hu\n",
 				*error_code);
+		break;
+	case GXP_RESP_CANCELLED:
+		*error_code = -ETIMEDOUT;
+		/* TODO(b/318800357): Return success for GXP_RESP_CANCELLED. */
+		ret = -ETIMEDOUT;
+		dev_err(async_resp->uci->gxp->dev,
+			"Response not received for seq: %llu under %ums\n", *resp_seq,
+			gxp_uci_get_cmd_timeout(NULL, NULL, NULL, async_resp));
 		break;
 	default:
 		ret = -ETIMEDOUT;
@@ -809,57 +828,44 @@ void gxp_uci_fill_additional_info(struct gxp_uci_additional_info *info, uint16_t
 }
 
 /**
- * uci_cmd_work_func() - A work_func_t wrapper function to call gxp_uci_create_and_send_cmd.
- * @work: The work object which owns this function.
- */
-static void uci_cmd_work_func(struct work_struct *work)
-{
-	struct gxp_uci_cmd_work *uci_work = container_of(work, struct gxp_uci_cmd_work, work);
-	struct gxp_client *client = uci_work->client;
-	u64 cmd_seq = uci_work->cmd_seq;
-	u32 flags = uci_work->flags;
-	u8 *opaque = uci_work->opaque;
-	u32 timeout_ms = uci_work->timeout_ms;
-	struct gcip_fence_array *in_fences = uci_work->in_fences;
-	struct gcip_fence_array *out_fences = uci_work->out_fences;
-	int ret;
-
-	ret = gxp_uci_create_and_send_cmd(client, cmd_seq, flags, opaque, timeout_ms, in_fences,
-					  out_fences);
-	if (ret)
-		dev_err(client->gxp->dev, "Failed to process uci command in work func (ret=%d)",
-			ret);
-
-	gxp_uci_cmd_work_destroy(uci_work);
-}
-
-/**
  * in_fence_cb_func() - A dma_fence_func_t wrapper function to schedule the UCI command work.
  * @fence: The fence that is signaled.
  * @cb: The callback object that is registered to the signaled fence.
  *
- * If the fence is signaled without error, the UCI command work will be scheduled.
- * The container of this callback has to be released on error because in this case the work
- * function, where the destroy function located, will never be triggered.
+ * If the fence is signaled without error, the UCI command work will be removed from the client's
+ * callback list and added to the client's work list and then the worker will be scheduled.
  *
  * Context: This function will be called in IRQ context.
  */
 static void in_fence_cb_func(struct dma_fence *fence, struct dma_fence_cb *cb)
 {
 	struct gxp_uci_cmd_work *uci_work = container_of(cb, struct gxp_uci_cmd_work, cb);
+	struct gxp_client *client = uci_work->client;
+	unsigned long flag1, flag2;
 
-	if (dma_fence_get_status_locked(fence) != 1)
-		goto err_destroy_work;
+	spin_lock_irqsave(&client->uci_cb_list_lock, flag1);
 
-	if (schedule_work(&uci_work->work))
-		return;
+	if (client->uci_cb_disabled)
+		goto out;
 
-err_destroy_work:
-	gxp_uci_cmd_work_destroy(uci_work);
+	list_del(&uci_work->node);
+
+	if (dma_fence_get_status_locked(fence) == 1) {
+		spin_lock_irqsave(&client->uci_work_list_lock, flag2);
+		list_add(&uci_work->node, &client->uci_work_list);
+		spin_unlock_irqrestore(&client->uci_work_list_lock, flag2);
+		schedule_work(&client->uci_worker);
+	} else {
+		gxp_uci_work_destroy(uci_work);
+	}
+
+out:
+	spin_unlock_irqrestore(&client->uci_cb_list_lock, flag1);
 }
 
 /**
  * gxp_uci_cmd_work_create() - Allocates and initializes the UCI command work object.
+ * @fence: Same as gxp_uci_cmd_work_create_and_schedule.
  * @client: Same as gxp_uci_cmd_work_create_and_schedule.
  * @ibuf: Same as gxp_uci_cmd_work_create_and_schedule.
  * @cmd_seq: Same as gxp_uci_cmd_work_create_and_schedule.
@@ -867,9 +873,9 @@ err_destroy_work:
  * @out_fences: Same as gxp_uci_cmd_work_create_and_schedule.
  */
 static struct gxp_uci_cmd_work *
-gxp_uci_cmd_work_create(struct gxp_client *client, const struct gxp_mailbox_uci_command_ioctl *ibuf,
-			u64 cmd_seq, struct gcip_fence_array *in_fences,
-			struct gcip_fence_array *out_fences)
+gxp_uci_cmd_work_create(struct dma_fence *fence, struct gxp_client *client,
+			const struct gxp_mailbox_uci_command_ioctl *ibuf, u64 cmd_seq,
+			struct gcip_fence_array *in_fences, struct gcip_fence_array *out_fences)
 {
 	struct gxp_uci_cmd_work *uci_work;
 
@@ -877,9 +883,8 @@ gxp_uci_cmd_work_create(struct gxp_client *client, const struct gxp_mailbox_uci_
 	if (!uci_work)
 		return ERR_PTR(-ENOMEM);
 
-	INIT_WORK(&uci_work->work, uci_cmd_work_func);
-	INIT_LIST_HEAD(&uci_work->cb.node);
-	uci_work->client = gxp_client_get(client);
+	uci_work->fence = dma_fence_get(fence);
+	uci_work->client = client;
 	uci_work->cmd_seq = cmd_seq;
 	uci_work->flags = ibuf->flags;
 	uci_work->timeout_ms = ibuf->timeout_ms;
@@ -895,52 +900,57 @@ int gxp_uci_cmd_work_create_and_schedule(struct dma_fence *fence, struct gxp_cli
 					 u64 cmd_seq, struct gcip_fence_array *in_fences,
 					 struct gcip_fence_array *out_fences)
 {
-	int ret = 0;
+	struct gxp_uci_cmd_work *uci_work;
+	unsigned long flags;
+	int ret;
 
-	if (fence) {
-		struct gxp_uci_cmd_work *uci_work;
+	if (!fence)
+		goto send_cmd;
 
-		uci_work = gxp_uci_cmd_work_create(client, ibuf, cmd_seq, in_fences, out_fences);
-		if (IS_ERR(uci_work))
-			return PTR_ERR(uci_work);
+	uci_work = gxp_uci_cmd_work_create(fence, client, ibuf, cmd_seq, in_fences, out_fences);
+	if (IS_ERR(uci_work))
+		return PTR_ERR(uci_work);
 
-		ret = dma_fence_add_callback(fence, &uci_work->cb, in_fence_cb_func);
+	spin_lock_irqsave(&client->uci_cb_list_lock, flags);
+	list_add(&uci_work->node, &client->uci_cb_list);
+	spin_unlock_irqrestore(&client->uci_cb_list_lock, flags);
 
-		/*
-		 * This means the fence has not been signaled yet and the callback is successfully
-		 * registered. The in_fence_cb_func() callback will eventually schedule a work to
-		 * create and send UCI command to the firmware once the fence is signaled.
-		 * The work object will be destroyed in in_fence_cb_func() or when the fence is
-		 * signaled with error.
-		 */
-		if (!ret)
-			goto out;
+	ret = dma_fence_add_callback(fence, &uci_work->cb, in_fence_cb_func);
 
-		/* Destroy the work object if failed to add callback. */
-		gxp_uci_cmd_work_destroy(uci_work);
+	/*
+	 * This means the fence has not been signaled yet and the callback is successfully
+	 * registered. The in_fence_cb_func() callback will eventually schedule a work to
+	 * create and send UCI command to the firmware once the fence is signaled.
+	 * The work object will be destroyed in in_fence_cb_func() or when the client is destroyed.
+	 */
+	if (!ret)
+		return 0;
 
-		/*
-		 * If @ret is -ENOENT, it means that @fence is already signaled so the callback was
-		 * not registered to the fence. We don't have to treat it as an error and can run
-		 * the work directly.
-		 */
-		if (ret != -ENOENT)
-			goto out;
-	}
+	spin_lock_irqsave(&client->uci_cb_list_lock, flags);
+	list_del_init(&uci_work->node);
+	spin_unlock_irqrestore(&client->uci_cb_list_lock, flags);
 
-	ret = gxp_uci_create_and_send_cmd(client, cmd_seq, ibuf->flags, ibuf->opaque,
-					  ibuf->timeout_ms, in_fences, out_fences);
+	gxp_uci_work_destroy(uci_work);
 
-out:
+	/*
+	 * If @ret is -ENOENT, it means that @fence is already signaled so the callback was
+	 * not registered to the fence. We don't have to treat it as an error and can run
+	 * the work directly.
+	 */
+	if (ret == -ENOENT)
+		goto send_cmd;
+
 	return ret;
+
+send_cmd:
+	return gxp_uci_create_and_send_cmd(client, cmd_seq, ibuf->flags, ibuf->opaque,
+					   ibuf->timeout_ms, in_fences, out_fences);
 }
 
-void gxp_uci_cmd_work_destroy(struct gxp_uci_cmd_work *work)
+void gxp_uci_work_destroy(struct gxp_uci_cmd_work *uci_work)
 {
-	struct gxp_client *client = work->client;
-
-	gcip_fence_array_put(work->in_fences);
-	gcip_fence_array_put(work->out_fences);
-	kfree(work);
-	gxp_client_put(client);
+	gcip_fence_array_put(uci_work->in_fences);
+	gcip_fence_array_put(uci_work->out_fences);
+	dma_fence_put(uci_work->fence);
+	kfree(uci_work);
 }
