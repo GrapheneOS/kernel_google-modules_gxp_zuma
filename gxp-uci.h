@@ -83,8 +83,9 @@ struct gxp_uci_command {
 
 /**
  * struct gxp_uci_command_work - The callback and work object to carry data for a UCI command.
- * @work: The embedded work object.
  * @cb: The embedded DMA callback.
+ * @node: The list node used to add to the client.
+ * @fence: The fence that the callback is added to.
  * @client: The client which request the UCI command.
  * @cmd_seq: The specified sequence number used for the uci command.
  * @flags: Same as gxp_mailbox_uci_command_ioctl.
@@ -94,8 +95,9 @@ struct gxp_uci_command {
  * @out_fences: Same as gxp_mailbox_uci_command_ioctl.
  */
 struct gxp_uci_cmd_work {
-	struct work_struct work;
 	struct dma_fence_cb cb;
+	struct list_head node;
+	struct dma_fence *fence;
 	struct gxp_client *client;
 	u64 cmd_seq;
 	u32 flags;
@@ -348,8 +350,15 @@ void gxp_uci_fill_additional_info(struct gxp_uci_additional_info *info, uint16_t
  *
  * This function creates a deferred work which will be scheduled when @fence is signaled and will
  * call the gxp_uci_create_and_send_cmd function.
+ *
  * If the given fence is NULL or the fence has already been signaled, skips the register process and
  * run gxp_uci_create_and_send_cmd() directly.
+ *
+ * The work will be added to the @client->uci_cb_list for tracking if the callback is added to the
+ * fence successfully.
+ *
+ * This function should be called in the ioctl function only, where the gxp_client_destroy() is
+ * guaranteed not to be called simultaneously.
  *
  * Return: 0 on success or errno on failure.
  */
@@ -359,11 +368,9 @@ int gxp_uci_cmd_work_create_and_schedule(struct dma_fence *fence, struct gxp_cli
 					 struct gcip_fence_array *out_fences);
 
 /**
- * gxp_uci_cmd_work_destroy() - Destroys the UCI command work object.
- * @cb: The target work to be destroyed.
- *
- * The reference count of the client has to be decreased by one.
+ * gxp_uci_work_destroy() - The revert function of gxp_uci_cmd_work_create().
+ * @uci_work: The target work to be destroyed.
  */
-void gxp_uci_cmd_work_destroy(struct gxp_uci_cmd_work *work);
+void gxp_uci_work_destroy(struct gxp_uci_cmd_work *uci_work);
 
 #endif /* __GXP_UCI_H__ */

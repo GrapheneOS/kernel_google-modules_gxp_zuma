@@ -76,6 +76,13 @@ static struct dma_fence *polled_dma_fence_get(struct gcip_fence_array *in_fences
 	if (!in_fences->size || !in_fences->same_type || in_fences->type != GCIP_IN_KERNEL_FENCE)
 		return NULL;
 
+	/* TODO(b/320401031): Remove this constraint after dma-fence-unwrap adopted. */
+	/* dma-fence-array as in-fences is currently not supported. */
+	for (i = 0; i < size; i++) {
+		if (dma_fence_is_array(in_fences->fences[i]->fence.ikf))
+			return ERR_PTR(-EINVAL);
+	}
+
 	if (size == 1)
 		return dma_fence_get(in_fences->fences[0]->fence.ikf);
 
@@ -218,7 +225,7 @@ gxp_ioctl_uci_response(struct gxp_client *client,
 	ret = gxp_uci_wait_async_response(
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID],
 		&ibuf.sequence_number, &ibuf.error_code, ibuf.opaque);
-	if (ret)
+	if (ret == -ENOENT)
 		goto out;
 
 	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))

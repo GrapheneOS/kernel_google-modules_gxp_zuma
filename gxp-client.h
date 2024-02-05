@@ -30,8 +30,6 @@ struct gxp_client {
 	struct rw_semaphore semaphore;
 	struct lock_class_key key;
 
-	struct kref ref;
-
 	bool has_block_wakelock;
 	bool has_vd_wakelock;
 
@@ -47,6 +45,15 @@ struct gxp_client {
 	pid_t tgid;
 	/* client process ID is really the thread ID, may be transient. */
 	pid_t pid;
+
+	struct work_struct uci_worker;
+	/* Protects @uci_cb_disabled, @uci_cb_list and @uci_work_list. */
+	spinlock_t uci_cb_list_lock;
+	bool uci_cb_disabled;
+	struct list_head uci_cb_list;
+	/* Protects @uci_work_list. */
+	spinlock_t uci_work_list_lock;
+	struct list_head uci_work_list;
 };
 
 /*
