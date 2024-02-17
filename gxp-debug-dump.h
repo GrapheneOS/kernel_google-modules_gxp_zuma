@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * GXP debug dump handler
  *
@@ -16,8 +16,7 @@
 #include "gxp-dma.h"
 #include "gxp-internal.h"
 
-#define HAS_COREDUMP                                                           \
-	(IS_ENABLED(CONFIG_GXP_TEST) || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP))
+#define HAS_COREDUMP (IS_GXP_TEST || IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP))
 
 #if HAS_COREDUMP
 #include <linux/platform_data/sscoredump.h>

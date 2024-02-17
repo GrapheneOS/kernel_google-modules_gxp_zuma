@@ -225,7 +225,7 @@ gxp_ioctl_uci_response(struct gxp_client *client,
 	ret = gxp_uci_wait_async_response(
 		&client->vd->mailbox_resp_queues[UCI_RESOURCE_ID],
 		&ibuf.sequence_number, &ibuf.error_code, ibuf.opaque);
-	if (ret == -ENOENT)
+	if (ret == -ENOENT || ret == -EAGAIN)
 		goto out;
 
 	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))

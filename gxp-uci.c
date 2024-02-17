@@ -24,7 +24,7 @@
 #include "gxp-vd.h"
 #include "gxp.h"
 
-#if IS_ENABLED(CONFIG_GXP_TEST)
+#if IS_GXP_TEST
 #include "unittests/factory/fake-gxp-mcu-firmware.h"
 
 #define TEST_FLUSH_FIRMWARE_WORK() fake_gxp_mcu_firmware_flush_work_all()
@@ -755,9 +755,22 @@ int gxp_uci_wait_async_response(struct mailbox_resp_queue *uci_resp_queue,
 		uci_resp_queue->waitq, !list_empty(&uci_resp_queue->dest_queue),
 		uci_resp_queue->lock, msecs_to_jiffies(MAILBOX_TIMEOUT));
 	if (timeout <= 0) {
+		*resp_seq = 0;
+		if (list_empty(&uci_resp_queue->wait_queue)) {
+			/* This only happens when there is no command pushed or signaled. */
+			*error_code = -ENOENT;
+			ret = -ENOENT;
+		} else {
+			/*
+			 * Might be a race with gcip_mailbox_async_cmd_timeout_work or the command
+			 * use a runtime specified timeout that is larger than MAILBOX_TIMEOUT.
+			 */
+			*error_code = -EAGAIN;
+			ret = -EAGAIN;
+		}
 		spin_unlock_irq(&uci_resp_queue->lock);
-		/* unusual case - this only happens when there is no command pushed */
-		return -ENOENT;
+
+		return ret;
 	}
 	async_resp = list_first_entry(&uci_resp_queue->dest_queue,
 				      struct gxp_uci_async_response,

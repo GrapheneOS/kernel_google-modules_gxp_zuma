@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP virtual device manager.
  *
@@ -17,6 +17,7 @@
 #include <gcip/gcip-alloc-helper.h>
 #include <gcip/gcip-image-config.h>
 #include <gcip/gcip-iommu-reserve.h>
+#include <gcip/gcip-iommu.h>
 
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
@@ -84,7 +85,7 @@ static int map_ns_region(struct gxp_virtual_device *vd, dma_addr_t daddr,
 	struct sg_table *sgt;
 	size_t idx;
 	const size_t n_reg = ARRAY_SIZE(vd->ns_regions);
-	int ret;
+	u64 gcip_map_flags = GCIP_MAP_FLAGS_DMA_RW;
 
 	for (idx = 0; idx < n_reg; idx++) {
 		if (!vd->ns_regions[idx].sgt)
@@ -98,13 +99,10 @@ static int map_ns_region(struct gxp_virtual_device *vd, dma_addr_t daddr,
 	if (!sgt)
 		return -ENOMEM;
 
-	ret = gxp_dma_map_iova_sgt(gxp, vd->domain, daddr, sgt,
-				   IOMMU_READ | IOMMU_WRITE);
-	if (ret) {
-		dev_err(gxp->dev, "NS map %pad with size %#zx failed", &daddr,
-			size);
+	if (!gcip_iommu_domain_map_sgt_to_iova(vd->domain, sgt, daddr, &gcip_map_flags)) {
+		dev_err(gxp->dev, "NS map %pad with size %#zx failed", &daddr, size);
 		gcip_free_noncontiguous(sgt);
-		return ret;
+		return -EBUSY;
 	}
 	vd->ns_regions[idx].daddr = daddr;
 	vd->ns_regions[idx].sgt = sgt;
@@ -131,7 +129,7 @@ static void unmap_ns_region(struct gxp_virtual_device *vd, dma_addr_t daddr)
 	sgt = vd->ns_regions[idx].sgt;
 	vd->ns_regions[idx].sgt = NULL;
 	vd->ns_regions[idx].daddr = 0;
-	gxp_dma_unmap_iova_sgt(gxp, vd->domain, daddr, sgt);
+	gcip_iommu_domain_unmap_sgt_from_iova(vd->domain, sgt, GCIP_MAP_FLAGS_DMA_RW);
 	gcip_free_noncontiguous(sgt);
 }
 
@@ -143,10 +141,9 @@ static int map_core_shared_buffer(struct gxp_virtual_device *vd)
 
 	if (!gxp->shared_buf.paddr)
 		return 0;
-	return gxp_iommu_map(gxp, vd->domain, gxp->shared_buf.daddr,
-			     gxp->shared_buf.paddr +
-				     shared_size * vd->slice_index,
-			     shared_size, IOMMU_READ | IOMMU_WRITE);
+	return gcip_iommu_map(vd->domain, gxp->shared_buf.daddr,
+			      gxp->shared_buf.paddr + shared_size * vd->slice_index, shared_size,
+			      GCIP_MAP_FLAGS_DMA_RW);
 }
 
 /* Reverts map_core_shared_buffer. */
@@ -157,26 +154,23 @@ static void unmap_core_shared_buffer(struct gxp_virtual_device *vd)
 
 	if (!gxp->shared_buf.paddr)
 		return;
-	gxp_iommu_unmap(gxp, vd->domain, gxp->shared_buf.daddr, shared_size);
+	gcip_iommu_unmap(vd->domain, gxp->shared_buf.daddr, shared_size);
 }
 
 /* Maps @res->daddr to @res->paddr to @vd->domain. */
-static int map_resource(struct gxp_virtual_device *vd,
-			struct gxp_mapped_resource *res)
+static int map_resource(struct gxp_virtual_device *vd, struct gxp_mapped_resource *res)
 {
 	if (res->daddr == 0)
 		return 0;
-	return gxp_iommu_map(vd->gxp, vd->domain, res->daddr, res->paddr,
-			     res->size, IOMMU_READ | IOMMU_WRITE);
+	return gcip_iommu_map(vd->domain, res->daddr, res->paddr, res->size, GCIP_MAP_FLAGS_DMA_RW);
 }
 
 /* Reverts map_resource. */
-static void unmap_resource(struct gxp_virtual_device *vd,
-			   struct gxp_mapped_resource *res)
+static void unmap_resource(struct gxp_virtual_device *vd, struct gxp_mapped_resource *res)
 {
 	if (res->daddr == 0)
 		return;
-	gxp_iommu_unmap(vd->gxp, vd->domain, res->daddr, res->size);
+	gcip_iommu_unmap(vd->domain, res->daddr, res->size);
 }
 
 /*
@@ -197,15 +191,13 @@ static int map_sys_cfg_resource(struct gxp_virtual_device *vd,
 		dev_err(gxp->dev, "invalid system cfg size: %#llx", res->size);
 		return -EINVAL;
 	}
-	ret = gxp_iommu_map(gxp, vd->domain, res->daddr, res->paddr, ro_size,
-			    IOMMU_READ);
+	ret = gcip_iommu_map(vd->domain, res->daddr, res->paddr, ro_size, GCIP_MAP_FLAGS_DMA_RO);
 	if (ret)
 		return ret;
-	ret = gxp_iommu_map(gxp, vd->domain, res->daddr + ro_size,
-			    res->paddr + ro_size, res->size - ro_size,
-			    IOMMU_READ | IOMMU_WRITE);
+	ret = gcip_iommu_map(vd->domain, res->daddr + ro_size, res->paddr + ro_size,
+			     res->size - ro_size, GCIP_MAP_FLAGS_DMA_RW);
 	if (ret) {
-		gxp_iommu_unmap(gxp, vd->domain, res->daddr, ro_size);
+		gcip_iommu_unmap(vd->domain, res->daddr, ro_size);
 		return ret;
 	}
 	return 0;
@@ -427,15 +419,13 @@ static void unmap_fw_image_config(struct gxp_dev *gxp,
 static int map_fw_image(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
 	/* Maps all FW regions together. */
-	return gxp_iommu_map(gxp, vd->domain, gxp->fwbufs[0].daddr,
-			     gxp->fwbufs[0].paddr,
-			     gxp->fwbufs[0].size * GXP_NUM_CORES, IOMMU_READ);
+	return gcip_iommu_map(vd->domain, gxp->fwbufs[0].daddr, gxp->fwbufs[0].paddr,
+			      gxp->fwbufs[0].size * GXP_NUM_CORES, GCIP_MAP_FLAGS_DMA_RO);
 }
 
 static void unmap_fw_image(struct gxp_dev *gxp, struct gxp_virtual_device *vd)
 {
-	gxp_iommu_unmap(gxp, vd->domain, gxp->fwbufs[0].daddr,
-			gxp->fwbufs[0].size * GXP_NUM_CORES);
+	gcip_iommu_unmap(vd->domain, gxp->fwbufs[0].daddr, gxp->fwbufs[0].size * GXP_NUM_CORES);
 }
 
 static int map_core_telemetry_buffers(struct gxp_dev *gxp,
@@ -1411,7 +1401,8 @@ static bool is_device_address_in_mapping(struct gxp_mapping *mapping,
 {
 	return ((device_address >= mapping->gcip_mapping->device_address) &&
 		(device_address <
-		 (mapping->gcip_mapping->device_address + mapping->gcip_mapping->size)));
+		((mapping->gcip_mapping->device_address & PAGE_MASK) +
+		mapping->gcip_mapping->size)));
 }
 
 static struct gxp_mapping *

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Records the mapped device addresses.
  *
@@ -26,7 +26,7 @@
 
 #include <trace/events/gxp.h>
 
-#if IS_ENABLED(CONFIG_GXP_TEST)
+#if IS_GXP_TEST
 /* expose this variable to have unit tests set it dynamically */
 bool gxp_log_iova;
 #else

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP debug dump handler
  *
@@ -73,19 +73,19 @@ enum gxp_common_segments_idx {
 	GXP_LPM_REGISTERS_IDX
 };
 
-#if IS_ENABLED(CONFIG_GXP_TEST)
+#if IS_GXP_TEST
 #include <gcip-unit/helper/test-sleep.h>
 #define TEST_SLEEP() test_sleep_may_sleep(1000)
 #else
 #define TEST_SLEEP()
-#endif /* IS_ENABLED(CONFIG_GXP_TEST) */
+#endif /* IS_GXP_TEST */
 
 /* Whether or not the debug dump subsystem should be enabled. */
-#if !IS_ENABLED(CONFIG_GXP_TEST) && !GXP_ENABLE_DEBUG_DUMP
+#if !IS_GXP_TEST && !GXP_ENABLE_DEBUG_DUMP
 static int gxp_debug_dump_enable;
 #else
 static int gxp_debug_dump_enable = 1;
-#endif /* !IS_ENABLED(CONFIG_GXP_TEST) && !GXP_ENABLE_DEBUG_DUMP */
+#endif /* !IS_GXP_TEST && !GXP_ENABLE_DEBUG_DUMP */
 module_param_named(debug_dump_enable, gxp_debug_dump_enable, int, 0660);
 
 static void gxp_debug_dump_cache_invalidate(struct gxp_dev *gxp)
@@ -446,6 +446,7 @@ static void gxp_user_buffers_vunmap(struct gxp_dev *gxp,
 		}
 
 		gxp_mapping_vunmap(mapping);
+		/* Release the reference acquired in `gxp_vd_mapping_search_in_range()` above. */
 		gxp_mapping_put(mapping);
 	}
 }
@@ -510,12 +511,15 @@ static int gxp_user_buffers_vmap(struct gxp_dev *gxp,
 			vaddr + daddr - (mapping->gcip_mapping->device_address & PAGE_MASK);
 
 		/* Check that the entire user buffer is mapped */
-		if ((user_buf_vaddrs[i] + user_buf->size) >
-		    (vaddr + mapping->gcip_mapping->size +
-		     (mapping->gcip_mapping->device_address & ~PAGE_MASK))) {
+		if ((user_buf_vaddrs[i] + user_buf->size) > (vaddr + mapping->gcip_mapping->size)) {
 			dev_warn(gxp->dev, "%pad user buffer requested with invalid size(%#x).\n",
 				 &daddr, user_buf->size);
 			user_buf->size = 0;
+			/*
+			 * Decrement the `mapping->vmap_count` incremented in gxp_mapping_vmap()
+			 * above.
+			 */
+			gxp_mapping_vunmap(mapping);
 			continue;
 		}
 

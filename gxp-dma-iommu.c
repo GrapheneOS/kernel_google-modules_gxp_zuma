@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP DMA implemented via IOMMU.
  *
@@ -76,33 +76,33 @@ static int sysmmu_fault_handler(struct iommu_fault *fault, void *token)
 
 #define SYNC_BARRIERS_SIZE 0x100000
 
-static int gxp_map_csrs(struct gxp_dev *gxp, struct iommu_domain *domain,
+static int gxp_map_csrs(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 			struct gxp_mapped_resource *regs)
 {
-	int ret = iommu_map(domain, GXP_IOVA_AURORA_TOP, gxp->regs.paddr,
-			    gxp->regs.size, IOMMU_READ | IOMMU_WRITE);
+	int ret = gcip_iommu_map(gdomain, GXP_IOVA_AURORA_TOP, gxp->regs.paddr, gxp->regs.size,
+				 GCIP_MAP_FLAGS_DMA_RW);
 	if (ret)
 		return ret;
 	/*
 	 * Firmware expects to access the sync barriers at a separate
 	 * address, lower than the rest of the AURORA_TOP registers.
 	 */
-	ret = iommu_map(domain, GXP_IOVA_SYNC_BARRIERS,
-			gxp->regs.paddr + GXP_IOVA_SYNC_BARRIERS,
-			SYNC_BARRIERS_SIZE, IOMMU_READ | IOMMU_WRITE);
+	ret = gcip_iommu_map(gdomain, GXP_IOVA_SYNC_BARRIERS,
+			     gxp->regs.paddr + GXP_IOVA_SYNC_BARRIERS, SYNC_BARRIERS_SIZE,
+			     GCIP_MAP_FLAGS_DMA_RW);
 	if (ret) {
-		iommu_unmap(domain, GXP_IOVA_AURORA_TOP, gxp->regs.size);
+		gcip_iommu_unmap(gdomain, GXP_IOVA_AURORA_TOP, gxp->regs.size);
 		return ret;
 	}
 
 	return 0;
 }
 
-static void gxp_unmap_csrs(struct gxp_dev *gxp, struct iommu_domain *domain,
+static void gxp_unmap_csrs(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 			   struct gxp_mapped_resource *regs)
 {
-	iommu_unmap(domain, GXP_IOVA_SYNC_BARRIERS, SYNC_BARRIERS_SIZE);
-	iommu_unmap(domain, GXP_IOVA_AURORA_TOP, gxp->regs.size);
+	gcip_iommu_unmap(gdomain, GXP_IOVA_SYNC_BARRIERS, SYNC_BARRIERS_SIZE);
+	gcip_iommu_unmap(gdomain, GXP_IOVA_AURORA_TOP, gxp->regs.size);
 }
 
 #endif /* GXP_HAS_LAP */
@@ -121,18 +121,6 @@ struct gcip_iommu_domain *gxp_iommu_get_domain_for_dev(struct gxp_dev *gxp)
 	}
 
 	return gdomain;
-}
-
-int gxp_iommu_map(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
-		  unsigned long iova, phys_addr_t paddr, size_t size, int prot)
-{
-	return iommu_map(gdomain->domain, iova, paddr, size, prot);
-}
-
-void gxp_iommu_unmap(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
-		     unsigned long iova, size_t size)
-{
-	iommu_unmap(gdomain->domain, iova, size);
 }
 
 int gxp_dma_init(struct gxp_dev *gxp)
@@ -217,28 +205,25 @@ void gxp_dma_domain_detach_device(struct gxp_dev *gxp, struct gcip_iommu_domain 
 	gcip_iommu_domain_pool_detach_domain(gxp->domain_pool, gdomain);
 }
 
-int gxp_dma_map_core_resources(struct gxp_dev *gxp,
-			       struct gcip_iommu_domain *gdomain,
+int gxp_dma_map_core_resources(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 			       uint core_list, u8 slice_index)
 {
 	int ret;
 	uint i;
-	struct iommu_domain *domain = gdomain->domain;
 
 	if (!gxp_is_direct_mode(gxp))
 		return 0;
 
-	ret = gxp_map_csrs(gxp, domain, &gxp->regs);
+	ret = gxp_map_csrs(gxp, gdomain, &gxp->regs);
 	if (ret)
 		goto err;
 
 	for (i = 0; i < GXP_NUM_CORES; i++) {
 		if (!(BIT(i) & core_list))
 			continue;
-		ret = iommu_map(domain, gxp->mbx[i].daddr,
-				gxp->mbx[i].paddr +
-					MAILBOX_DEVICE_INTERFACE_OFFSET,
-				gxp->mbx[i].size, IOMMU_READ | IOMMU_WRITE);
+		ret = gcip_iommu_map(gdomain, gxp->mbx[i].daddr,
+				     gxp->mbx[i].paddr + MAILBOX_DEVICE_INTERFACE_OFFSET,
+				     gxp->mbx[i].size, GCIP_MAP_FLAGS_DMA_RW);
 		if (ret)
 			goto err;
 	}
@@ -247,11 +232,9 @@ int gxp_dma_map_core_resources(struct gxp_dev *gxp,
 		for (i = 0; i < GXP_NUM_CORES; i++) {
 			if (!(BIT(i) & core_list))
 				continue;
-			ret = iommu_map(
-				domain,
-				GXP_IOVA_EXT_TPU_MBX + i * EXT_TPU_MBX_SIZE,
-				gxp->tpu_dev.mbx_paddr + i * EXT_TPU_MBX_SIZE,
-				EXT_TPU_MBX_SIZE, IOMMU_READ | IOMMU_WRITE);
+			ret = gcip_iommu_map(gdomain, GXP_IOVA_EXT_TPU_MBX + i * EXT_TPU_MBX_SIZE,
+					     gxp->tpu_dev.mbx_paddr + i * EXT_TPU_MBX_SIZE,
+					     EXT_TPU_MBX_SIZE, GCIP_MAP_FLAGS_DMA_RW);
 			if (ret)
 				goto err;
 		}
@@ -268,12 +251,10 @@ err:
 	return ret;
 }
 
-void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
-				  struct gcip_iommu_domain *gdomain,
+void gxp_dma_unmap_core_resources(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 				  uint core_list)
 {
 	uint i;
-	struct iommu_domain *domain = gdomain->domain;
 
 	if (!gxp_is_direct_mode(gxp))
 		return;
@@ -283,17 +264,16 @@ void gxp_dma_unmap_core_resources(struct gxp_dev *gxp,
 		for (i = 0; i < GXP_NUM_CORES; i++) {
 			if (!(BIT(i) & core_list))
 				continue;
-			iommu_unmap(domain,
-				    GXP_IOVA_EXT_TPU_MBX + i * EXT_TPU_MBX_SIZE,
-				    EXT_TPU_MBX_SIZE);
+			gcip_iommu_unmap(gdomain, GXP_IOVA_EXT_TPU_MBX + i * EXT_TPU_MBX_SIZE,
+					 EXT_TPU_MBX_SIZE);
 		}
 	}
 	for (i = 0; i < GXP_NUM_CORES; i++) {
 		if (!(BIT(i) & core_list))
 			continue;
-		iommu_unmap(domain, gxp->mbx[i].daddr, gxp->mbx[i].size);
+		gcip_iommu_unmap(gdomain, gxp->mbx[i].daddr, gxp->mbx[i].size);
 	}
-	gxp_unmap_csrs(gxp, domain, &gxp->regs);
+	gxp_unmap_csrs(gxp, gdomain, &gxp->regs);
 }
 
 static inline struct sg_table *alloc_sgt_for_buffer(void *ptr, size_t size,
@@ -375,7 +355,6 @@ int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp,
 	int core;
 	int ret;
 	int i = 0;
-	struct iommu_domain *domain = gdomain->domain;
 
 	while (core_list) {
 		phys_addr_t cmdq_pa = mbx_info->mailboxes[i].cmdq_pa;
@@ -383,14 +362,14 @@ int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp,
 
 		core = ffs(core_list) - 1;
 		queue_iova = GXP_IOVA_TPU_MBX_BUFFER(core);
-		ret = iommu_map(domain, queue_iova, cmdq_pa,
-				mbx_info->cmdq_size, IOMMU_WRITE);
+		ret = gcip_iommu_map(gdomain, queue_iova, cmdq_pa, mbx_info->cmdq_size,
+				     GCIP_MAP_FLAGS_DMA_RW);
 		if (ret)
 			goto error;
-		ret = iommu_map(domain, queue_iova + mbx_info->cmdq_size,
-				respq_pa, mbx_info->respq_size, IOMMU_READ);
+		ret = gcip_iommu_map(gdomain, queue_iova + mbx_info->cmdq_size, respq_pa,
+				     mbx_info->respq_size, GCIP_MAP_FLAGS_DMA_RO);
 		if (ret) {
-			iommu_unmap(domain, queue_iova, mbx_info->cmdq_size);
+			gcip_iommu_unmap(gdomain, queue_iova, mbx_info->cmdq_size);
 			goto error;
 		}
 		core_list &= ~BIT(core);
@@ -403,29 +382,25 @@ error:
 		core = ffs(core_list) - 1;
 		core_list &= ~BIT(core);
 		queue_iova = GXP_IOVA_TPU_MBX_BUFFER(core);
-		iommu_unmap(domain, queue_iova, mbx_info->cmdq_size);
-		iommu_unmap(domain, queue_iova + mbx_info->cmdq_size,
-			    mbx_info->respq_size);
+		gcip_iommu_unmap(gdomain, queue_iova, mbx_info->cmdq_size);
+		gcip_iommu_unmap(gdomain, queue_iova + mbx_info->cmdq_size, mbx_info->respq_size);
 	}
 	return ret;
 }
 
-void gxp_dma_unmap_tpu_buffer(struct gxp_dev *gxp,
-			      struct gcip_iommu_domain *gdomain,
+void gxp_dma_unmap_tpu_buffer(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 			      struct gxp_tpu_mbx_desc mbx_desc)
 {
 	uint core_list = mbx_desc.phys_core_list;
 	u64 queue_iova;
 	int core;
-	struct iommu_domain *domain = gdomain->domain;
 
 	while (core_list) {
 		core = ffs(core_list) - 1;
 		core_list &= ~BIT(core);
 		queue_iova = GXP_IOVA_TPU_MBX_BUFFER(core);
-		iommu_unmap(domain, queue_iova, mbx_desc.cmdq_size);
-		iommu_unmap(domain, queue_iova + mbx_desc.cmdq_size,
-			    mbx_desc.respq_size);
+		gcip_iommu_unmap(gdomain, queue_iova, mbx_desc.cmdq_size);
+		gcip_iommu_unmap(gdomain, queue_iova + mbx_desc.cmdq_size, mbx_desc.respq_size);
 	}
 }
 
@@ -439,15 +414,13 @@ int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp,
 	struct gxp_dma_iommu_manager *mgr = container_of(
 		gxp->dma_mgr, struct gxp_dma_iommu_manager, dma_mgr);
 	struct sg_table *sgt;
-	ssize_t size_mapped;
+	unsigned int nents_mapped;
 	int ret = 0;
-	size_t size;
-	struct iommu_domain *domain = gdomain->domain;
+	u64 gcip_map_flags = GCIP_MAP_FLAGS_DMA_RW;
 
 	if (gdomain == gxp_iommu_get_domain_for_dev(gxp))
 		return 0;
 
-	size = buf->size;
 	sgt = alloc_sgt_for_buffer(buf->vaddr, buf->size,
 				   mgr->default_domain->domain, buf->dma_addr);
 	if (IS_ERR(sgt)) {
@@ -456,10 +429,10 @@ int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp,
 		return PTR_ERR(sgt);
 	}
 
-	size_mapped = iommu_map_sg(domain, buf->dsp_addr, sgt->sgl, sgt->orig_nents,
-				   IOMMU_READ | IOMMU_WRITE);
-	if (size_mapped != size)
-		ret = size_mapped < 0 ? -EINVAL : (int)size_mapped;
+	nents_mapped =
+		gcip_iommu_domain_map_sgt_to_iova(gdomain, sgt, buf->dsp_addr, &gcip_map_flags);
+	if (!nents_mapped)
+		ret = -ENOSPC;
 
 	sg_free_table(sgt);
 	kfree(sgt);
@@ -518,8 +491,7 @@ void gxp_dma_unmap_allocated_coherent_buffer(struct gxp_dev *gxp,
 	if (gdomain == gxp_iommu_get_domain_for_dev(gxp))
 		return;
 
-	if (buf->size != iommu_unmap(gdomain->domain, buf->dsp_addr, buf->size))
-		dev_warn(gxp->dev, "Failed to unmap coherent buffer\n");
+	gcip_iommu_unmap(gdomain, buf->dsp_addr, buf->size);
 }
 
 void gxp_dma_free_coherent_buf(struct gxp_dev *gxp,
@@ -531,41 +503,6 @@ void gxp_dma_free_coherent_buf(struct gxp_dev *gxp,
 		gcip_iommu_free_iova(gdomain, buf->dsp_addr, buf->size);
 	}
 	dma_free_coherent(gxp->dev, buf->size, buf->vaddr, buf->dma_addr);
-}
-
-int gxp_dma_map_iova_sgt(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
-			 dma_addr_t iova, struct sg_table *sgt, int prot)
-{
-	ssize_t size_mapped;
-
-	size_mapped = (ssize_t)iommu_map_sg(gdomain->domain, iova, sgt->sgl,
-					    sgt->orig_nents, prot);
-	if (size_mapped <= 0) {
-		dev_err(gxp->dev, "map IOVA %pad to SG table failed: %d", &iova,
-			(int)size_mapped);
-		if (size_mapped == 0)
-			return -EINVAL;
-		return size_mapped;
-	}
-	dma_sync_sg_for_device(gxp->dev, sgt->sgl, sgt->orig_nents,
-			       DMA_BIDIRECTIONAL);
-
-	return 0;
-}
-
-void gxp_dma_unmap_iova_sgt(struct gxp_dev *gxp,
-			    struct gcip_iommu_domain *gdomain, dma_addr_t iova,
-			    struct sg_table *sgt)
-{
-	struct scatterlist *s;
-	int i;
-	size_t size = 0;
-
-	for_each_sg (sgt->sgl, s, sgt->orig_nents, i)
-		size += s->length;
-
-	if (!iommu_unmap(gdomain->domain, iova, size))
-		dev_warn(gxp->dev, "Failed to unmap sgt");
 }
 
 void gxp_dma_sync_sg_for_cpu(struct gxp_dev *gxp, struct scatterlist *sg,

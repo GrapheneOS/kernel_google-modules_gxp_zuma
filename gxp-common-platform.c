@@ -2132,7 +2132,11 @@ static __init int gxp_fs_init(void)
 {
 	int ret;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0)
 	gxp_class = class_create(THIS_MODULE, GXP_NAME);
+#else
+	gxp_class = class_create(GXP_NAME);
+#endif
 	if (IS_ERR(gxp_class)) {
 		pr_err(GXP_NAME " error creating gxp class: %ld\n",
 		       PTR_ERR(gxp_class));

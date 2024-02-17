@@ -110,7 +110,10 @@ static int gxp_dci_mailbox_manager_wait_async_resp(struct gxp_client *client,
 		resp_queue->lock, msecs_to_jiffies(MAILBOX_TIMEOUT));
 	if (timeout <= 0) {
 		spin_unlock_irq(&resp_queue->lock);
-		/* unusual case - this only happens when there is no command pushed */
+		/*
+		 * Unusual case - this only happens when there is no command pushed or a race with
+		 * gcip_mailbox_async_cmd_timeout_work.
+		 */
 		return timeout ? -ETIMEDOUT : timeout;
 	}
 	resp_ptr = list_first_entry(&resp_queue->dest_queue,

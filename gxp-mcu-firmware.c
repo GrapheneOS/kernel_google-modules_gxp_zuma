@@ -19,6 +19,7 @@
 #include <gcip/gcip-common-image-header.h>
 #include <gcip/gcip-fault-injection.h>
 #include <gcip/gcip-image-config.h>
+#include <gcip/gcip-iommu.h>
 #include <gcip/gcip-pm.h>
 #include <gcip/gcip-thermal.h>
 
@@ -26,7 +27,6 @@
 #include "gxp-config.h"
 #include "gxp-core-telemetry.h"
 #include "gxp-debug-dump.h"
-#include "gxp-dma.h"
 #include "gxp-doorbell.h"
 #include "gxp-firmware-loader.h"
 #include "gxp-gsa.h"
@@ -745,16 +745,15 @@ static int image_config_map(void *data, dma_addr_t daddr, phys_addr_t paddr,
 		return -EINVAL;
 	}
 
-	return gxp_iommu_map(gxp, gxp_iommu_get_domain_for_dev(gxp), daddr,
-			     paddr, size, IOMMU_READ | IOMMU_WRITE);
+	return gcip_iommu_map(gxp_iommu_get_domain_for_dev(gxp), daddr, paddr, size,
+			      GCIP_MAP_FLAGS_DMA_RW);
 }
 
-static void image_config_unmap(void *data, dma_addr_t daddr, size_t size,
-			       unsigned int flags)
+static void image_config_unmap(void *data, dma_addr_t daddr, size_t size, unsigned int flags)
 {
 	struct gxp_dev *gxp = data;
 
-	gxp_iommu_unmap(gxp, gxp_iommu_get_domain_for_dev(gxp), daddr, size);
+	gcip_iommu_unmap(gxp_iommu_get_domain_for_dev(gxp), daddr, size);
 }
 
 static void gxp_mcu_firmware_crash_handler_work(struct work_struct *work)

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * GXP firmware data manager.
  * A sub-module responsible for managing the resources/data regions shared

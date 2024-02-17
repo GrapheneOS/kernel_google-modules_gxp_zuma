@@ -13,7 +13,7 @@
 
 #define to_mcu_dev(gxp) container_of(gxp, struct gxp_mcu_dev, gxp)
 
-#if IS_ENABLED(CONFIG_GXP_TEST)
+#if IS_GXP_TEST
 /* expose this variable to have unit tests set it dynamically */
 extern char *gxp_work_mode_name;
 #endif

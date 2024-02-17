@@ -23,7 +23,7 @@
 #include <soc/google/tpu-ext.h>
 #endif
 
-#if IS_ENABLED(CONFIG_GXP_TEST)
+#if IS_GXP_TEST
 char *gxp_work_mode_name = "mcu";
 #else
 static char *gxp_work_mode_name = "mcu";

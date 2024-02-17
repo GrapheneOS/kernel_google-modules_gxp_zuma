@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * GXP power management.
  *
@@ -33,17 +33,7 @@ enum aur_power_state {
 	AUR_UD_PLUS = 8,
 };
 
-static const uint aur_power_state2rate[] = {
-	AUR_OFF_RATE,
-	AUR_UUD_RATE,
-	AUR_SUD_RATE,
-	AUR_UD_RATE,
-	AUR_NOM_RATE,
-	AUR_READY_RATE,
-	AUR_UUD_PLUS_RATE,
-	AUR_SUD_PLUS_RATE,
-	AUR_UD_PLUS_RATE,
-};
+extern const uint aur_power_state2rate[];
 
 enum aur_memory_power_state {
 	AUR_MEM_UNDEFINED = 0,
@@ -115,10 +105,8 @@ struct gxp_power_states {
 	bool low_clkmux;
 };
 
-static const struct gxp_power_states off_states = { AUR_OFF, AUR_MEM_UNDEFINED,
-						    false };
-static const struct gxp_power_states uud_states = { AUR_UUD, AUR_MEM_UNDEFINED,
-						    false };
+extern const struct gxp_power_states off_states;
+extern const struct gxp_power_states uud_states;
 
 struct gxp_power_manager {
 	struct gxp_dev *gxp;

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP client structure.
  *
@@ -138,7 +138,7 @@ void gxp_client_destroy(struct gxp_client *client)
 
 	cleanup_uci_cmd_work(client);
 
-	down_read(&client->semaphore);
+	down_write(&client->semaphore);
 
 	if (client->vd && client->vd->state != GXP_VD_OFF) {
 		down_write(&gxp->vd_semaphore);
@@ -179,7 +179,7 @@ void gxp_client_destroy(struct gxp_client *client)
 		client->vd = NULL;
 	}
 
-	up_read(&client->semaphore);
+	up_write(&client->semaphore);
 
 	/*
 	 * This part should be located outside of the @client->semaphore protection to prevent the

@@ -35,6 +35,13 @@
 #define MBOX_CMD_QUEUE_NUM_ENTRIES 1024
 #define MBOX_RESP_QUEUE_NUM_ENTRIES 1024
 
+/*
+ * `flags` in `gcip_kci_dma_descriptor` struct is used to pass the gxp kernel driver major and
+ * minor version for the `GCIP_KCI_CODE_EXCHANGE_INFO` gcip_kci_code . First 16 bits of `flags`
+ * represent the major version and last 16 bits represent the minor version.
+ */
+#define GXP_INTERFACE_VERSION_MAJOR_SHIFT 16
+
 /* Callback functions for struct gcip_kci. */
 
 static u32 gxp_kci_get_cmd_queue_head(struct gcip_kci *kci)
@@ -396,10 +403,13 @@ enum gcip_fw_flavor gxp_kci_fw_info(struct gxp_kci *gkci,
 {
 	struct gxp_dev *gxp = gkci->gxp;
 	struct gcip_kci_command_element cmd = {
-		.code = GCIP_KCI_CODE_FIRMWARE_INFO,
+		.code = GCIP_KCI_CODE_EXCHANGE_INFO,
 		.dma = {
 			.address = 0,
 			.size = 0,
+			.flags =
+				(GXP_INTERFACE_VERSION_MAJOR << GXP_INTERFACE_VERSION_MAJOR_SHIFT) |
+				GXP_INTERFACE_VERSION_MINOR,
 		},
 	};
 	enum gcip_fw_flavor flavor = GCIP_FW_FLAVOR_UNKNOWN;

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * GXP DMA interface.
  *
@@ -41,24 +41,6 @@ struct gxp_dma_manager {
 #ifndef DMA_MAPPING_ERROR
 #define DMA_MAPPING_ERROR (~(dma_addr_t)0)
 #endif
-
-/**
- * gxp_iommu_map() - Create mappings in iommu
- * @gxp: The GXP device
- * @gdomain: The IOMMU domain to create mappings in.
- *
- * Return: 0 on success or negative value indicating error
- */
-int gxp_iommu_map(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
-		  unsigned long iova, phys_addr_t paddr, size_t size, int prot);
-
-/**
- * gxp_iommu_unmap() - Reverts mappings created by gxp_iommu_map()
- * @gxp: The GXP device
- * @gdomain: The IOMMU domain to revert mappings in.
- */
-void gxp_iommu_unmap(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
-		     unsigned long iova, size_t size);
 
 /**
  * gxp_dma_init() - Initialize the GXP DMA subsystem
@@ -236,30 +218,6 @@ int gxp_dma_alloc_coherent_buf(struct gxp_dev *gxp,
 void gxp_dma_free_coherent_buf(struct gxp_dev *gxp,
 			       struct gcip_iommu_domain *gdomain,
 			       struct gxp_coherent_buf *buf);
-
-/**
- * gxp_dma_map_iova_sgt() - Create a mapping for a scatter-gather list, with specific IOVA.
- * @gxp: The GXP device to map the scatter-gather list for
- * @gdomain: The IOMMU domain to be mapped
- * @iova: The IOVA to be mapped.
- * @sgt: The scatter-gather list table of the buffer to be mapped
- * @prot: The protection bits to be passed to IOMMU API
- *
- * Return: 0 on success. Negative errno otherwise.
- */
-int gxp_dma_map_iova_sgt(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
-			 dma_addr_t iova, struct sg_table *sgt, int prot);
-/**
- * gxp_dma_unmap_iova_sgt() - Revert gxp_dma_map_iova_sgt()
- * @gxp: The GXP device the scatter-gather list was mapped for
- * @gdomain: The IOMMU domain mapping was mapped on
- * @iova: The IOVA to be un-mapped.
- * @sgt: The scatter-gather list to unmap; The same one passed to
- *      `gxp_dma_map_iova_sgt()`
- */
-void gxp_dma_unmap_iova_sgt(struct gxp_dev *gxp,
-			    struct gcip_iommu_domain *gdomain, dma_addr_t iova,
-			    struct sg_table *sgt);
 
 /**
  * gxp_dma_sync_sg_for_cpu() - Sync sg list for reading by the  CPU

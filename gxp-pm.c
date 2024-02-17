@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP power management.
  *
@@ -38,6 +38,13 @@
 
 static bool gxp_slow_clk_on_idle = true;
 module_param_named(slow_clk, gxp_slow_clk_on_idle, bool, 0660);
+
+const uint aur_power_state2rate[] = {
+	AUR_OFF_RATE,	AUR_UUD_RATE,	   AUR_SUD_RATE,      AUR_UD_RATE,	AUR_NOM_RATE,
+	AUR_READY_RATE, AUR_UUD_PLUS_RATE, AUR_SUD_PLUS_RATE, AUR_UD_PLUS_RATE,
+};
+const struct gxp_power_states off_states = { AUR_OFF, AUR_MEM_UNDEFINED, false };
+const struct gxp_power_states uud_states = { AUR_UUD, AUR_MEM_UNDEFINED, false };
 
 /*
  * The order of this array decides the voting priority, should be increasing in

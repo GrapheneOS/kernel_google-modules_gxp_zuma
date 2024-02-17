@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP firmware loader.
  *
@@ -9,7 +9,6 @@
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/elf.h>
-#include <linux/gsa/gsa_image_auth.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/moduleparam.h>
@@ -38,7 +37,13 @@
 #include "gxp-pm.h"
 #include "gxp-vd.h"
 
-#if IS_ENABLED(CONFIG_GXP_TEST)
+#if !GXP_HAS_MCU
+#include <linux/gsa/gsa_image_auth.h>
+#else
+#define gsa_authenticate_image(...) (0)
+#endif /* GXP_HAS_MCU */
+
+#if IS_GXP_TEST
 #include "unittests/factory/fake-gxp-firmware.h"
 #endif
 
@@ -368,7 +373,7 @@ static int gxp_firmware_handshake(struct gxp_dev *gxp,
 	 * space as an alive message
 	 */
 	ctr = 5000;
-#if IS_ENABLED(CONFIG_GXP_TEST)
+#if IS_GXP_TEST
 	fake_gxp_firmware_flush_work_all();
 	/*
 	 * As the fake firmware works are flushed, we don't have to busy-wait the response of

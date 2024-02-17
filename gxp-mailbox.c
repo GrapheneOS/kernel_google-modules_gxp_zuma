@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GXP mailbox.
  *
@@ -53,7 +53,9 @@ static void gxp_mailbox_consume_responses_work(struct kthread_work *work)
 #if GXP_USE_LEGACY_MAILBOX
 	gxp_mailbox_consume_responses(mailbox);
 #else
-	if (mailbox->type == GXP_MBOX_TYPE_KCI)
+	if (gxp_is_direct_mode(mailbox->gxp))
+		gcip_mailbox_consume_responses_work(mailbox->mbx_impl.gcip_mbx);
+	else if (mailbox->type == GXP_MBOX_TYPE_KCI)
 		gxp_mcu_telemetry_irq_handler(((struct gxp_kci *)mailbox->data)->mcu);
 #endif
 }
@@ -65,16 +67,18 @@ static void gxp_mailbox_consume_responses_work(struct kthread_work *work)
  */
 static void gxp_mailbox_handle_irq(struct gxp_mailbox *mailbox)
 {
-#if !GXP_USE_LEGACY_MAILBOX
+	if (gxp_is_direct_mode(mailbox->gxp)) {
+		kthread_queue_work(&mailbox->response_worker, &mailbox->response_work);
+		return;
+	}
+#if GXP_HAS_MCU
 	if (mailbox->type == GXP_MBOX_TYPE_KCI) {
 		gcip_kci_handle_irq(mailbox->mbx_impl.gcip_kci);
 		kthread_queue_work(&mailbox->response_worker, &mailbox->response_work);
 	} else if (mailbox->type == GXP_MBOX_TYPE_GENERAL) {
 		gcip_mailbox_consume_responses_work(mailbox->mbx_impl.gcip_mbx);
 	}
-#else
-	kthread_queue_work(&mailbox->response_worker, &mailbox->response_work);
-#endif
+#endif /* GXP_HAS_MCU */
 }
 
 /* Priority level for realtime worker threads */
