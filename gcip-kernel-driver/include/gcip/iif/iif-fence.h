@@ -46,10 +46,6 @@ typedef void (*iif_fence_all_signaler_submitted_cb_t)(
 enum iif_fence_state {
 	/* Initial state. */
 	IIF_FENCE_STATE_INITIALIZED,
-	/* There is a sync file bound with this fence. */
-	IIF_FENCE_STATE_FILE_CREATED,
-	/* The file bound to this fence has been released. */
-	IIF_FENCE_STATE_FILE_RELEASED,
 	/* The fence ID has been retired. */
 	IIF_FENCE_STATE_RETIRED,
 };
@@ -95,6 +91,8 @@ struct iif_fence {
 	int signal_error;
 	/* Will be set to a negative errno if waiting the signaler submission fails. */
 	int all_signaler_submitted_error;
+	/* The number of sync_file(s) bound to the fence. */
+	atomic_t num_sync_file;
 };
 
 /* Operators of `struct iif_fence`. */
