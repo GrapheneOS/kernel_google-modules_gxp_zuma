@@ -161,7 +161,7 @@ static void iif_fence_retire_if_possible_locked(struct iif_fence *fence)
 {
 	lockdep_assert_held(&fence->outstanding_waiters_lock);
 
-	if (!fence->outstanding_waiters && fence->state != IIF_FENCE_STATE_FILE_CREATED)
+	if (!fence->outstanding_waiters && !atomic_read(&fence->num_sync_file))
 		iif_fence_retire(fence);
 }
 
@@ -230,6 +230,7 @@ int iif_fence_init(struct iif_manager *mgr, struct iif_fence *fence,
 	iif_fence_table_init_fence_entry(&mgr->fence_table, fence->id, total_signalers);
 	INIT_LIST_HEAD(&fence->poll_cb_list);
 	INIT_LIST_HEAD(&fence->all_signaler_submitted_cb_list);
+	atomic_set(&fence->num_sync_file, 0);
 
 	return 0;
 }
@@ -237,45 +238,21 @@ int iif_fence_init(struct iif_manager *mgr, struct iif_fence *fence,
 int iif_fence_install_fd(struct iif_fence *fence)
 {
 	struct iif_sync_file *sync_file;
-	int fd, ret;
+	int fd;
 
-	spin_lock(&fence->outstanding_waiters_lock);
-
-	if (fence->state != IIF_FENCE_STATE_INITIALIZED) {
-		if (iif_fence_has_retired(fence)) {
-			pr_err("The fence is already retired, can't install an FD");
-			ret = -EPERM;
-		} else {
-			pr_err("Only one file can be bound to an fence");
-			ret = -EEXIST;
-		}
-		goto err_unlock;
-	}
-
-	ret = get_unused_fd_flags(O_CLOEXEC);
-	if (ret < 0)
-		goto err_unlock;
-	fd = ret;
+	fd = get_unused_fd_flags(O_CLOEXEC);
+	if (fd < 0)
+		return fd;
 
 	sync_file = iif_sync_file_create(fence);
 	if (IS_ERR(sync_file)) {
-		ret = PTR_ERR(sync_file);
-		goto err_put_fd;
+		put_unused_fd(fd);
+		return PTR_ERR(sync_file);
 	}
 
 	fd_install(fd, sync_file->file);
-	fence->state = IIF_FENCE_STATE_FILE_CREATED;
-
-	spin_unlock(&fence->outstanding_waiters_lock);
 
 	return fd;
-
-err_put_fd:
-	put_unused_fd(fd);
-err_unlock:
-	spin_unlock(&fence->outstanding_waiters_lock);
-
-	return ret;
 }
 
 void iif_fence_on_sync_file_release(struct iif_fence *fence)
@@ -283,10 +260,7 @@ void iif_fence_on_sync_file_release(struct iif_fence *fence)
 	unsigned long flags;
 
 	spin_lock_irqsave(&fence->outstanding_waiters_lock, flags);
-
-	fence->state = IIF_FENCE_STATE_FILE_RELEASED;
 	iif_fence_retire_if_possible_locked(fence);
-
 	spin_unlock_irqrestore(&fence->outstanding_waiters_lock, flags);
 }
 
