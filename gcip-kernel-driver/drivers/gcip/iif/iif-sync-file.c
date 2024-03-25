@@ -6,6 +6,7 @@
  */
 
 #include <linux/anon_inodes.h>
+#include <linux/atomic.h>
 #include <linux/bitops.h>
 #include <linux/file.h>
 #include <linux/fs.h>
@@ -28,7 +29,8 @@ static int iif_sync_file_release(struct inode *inode, struct file *file)
 {
 	struct iif_sync_file *sync_file = file->private_data;
 
-	iif_fence_on_sync_file_release(sync_file->fence);
+	if (atomic_dec_and_test(&sync_file->fence->num_sync_file))
+		iif_fence_on_sync_file_release(sync_file->fence);
 	if (test_bit(IIF_SYNC_FILE_FLAGS_POLL_ENABLED, &sync_file->flags))
 		iif_fence_remove_poll_callback(sync_file->fence, &sync_file->poll_cb);
 	iif_fence_put(sync_file->fence);
@@ -109,6 +111,7 @@ struct iif_sync_file *iif_sync_file_create(struct iif_fence *fence)
 	}
 
 	sync_file->fence = iif_fence_get(fence);
+	atomic_inc(&fence->num_sync_file);
 
 	init_waitqueue_head(&sync_file->wq);
 	INIT_LIST_HEAD(&sync_file->poll_cb.node);
